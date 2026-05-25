@@ -13,6 +13,12 @@ import numpy as np
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
+import re    
+import base64     
+
+import io                  
+from PIL import Image      
+
 def smooth_curve(values, smoothing=0.9):
     """
     TensorBoard-style exponential moving average smoothing.
@@ -129,15 +135,34 @@ def load_tensorboard_data(log_dir: str) -> dict:
     return metrics
 
 @st.cache_data(ttl=5)
-def get_sample_images(output_dir: str, output_name: str) -> list:
-    """Retrieve all generated sample images, sorted by modification time (newest first)."""
+def get_sample_images(output_dir: str, output_name: str) -> dict:
+    """Retrieve generated sample images, grouped by step and sorted by repeat_idx."""
     sample_dir = Path(output_dir) / f"{output_name}_samples"
     if not sample_dir.exists():
-        return []
+        return {}
     
     images = list(sample_dir.glob("*.png"))
-    images.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    return images
+    
+    pattern = re.compile(r'_(\d+)_(\d+)\.png$')
+    
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    
+    for img_path in images:
+        match = pattern.search(img_path.name)
+        if match:
+            step = int(match.group(1))
+            repeat_idx = int(match.group(2))
+            grouped[step].append((repeat_idx, img_path))
+        else:
+            grouped[-1].append((0, img_path))
+            
+    sorted_groups = {}
+    for step in sorted(grouped.keys(), reverse=True):
+        sorted_items = sorted(grouped[step], key=lambda x: x[0])
+        sorted_groups[step] = [item[1] for item in sorted_items]
+        
+    return sorted_groups
 
 # ==========================================
 # UI Construction
@@ -235,18 +260,47 @@ def main():
 
     st.divider()
 
-    # 3. Generated Samples Scrollable Grid
+# 3. Generated Samples Scrollable Grid
     st.subheader("Generated Samples")
-    images = get_sample_images(cfg_dict['output_dir'], cfg_dict['output_name'])
+    grouped_images = get_sample_images(cfg_dict['output_dir'], cfg_dict['output_name'])
     
-    if images:
-        # Create a fixed-height scrollable container
+    if grouped_images:
+        # 优化 3：兜底机制，最多只渲染最近的 15 个 Step
+        MAX_STEPS_TO_SHOW = 15 
+        
         with st.container(height=650):
-            cols = st.columns(3)
-            for i, img_path in enumerate(images):
-                with cols[i % 3]:
-                    # Use use_container_width=True to fix the deprecation warning
-                    st.image(str(img_path), caption=img_path.name, use_container_width=True)
+            for i, (step, img_paths) in enumerate(grouped_images.items()):
+                if i >= MAX_STEPS_TO_SHOW:
+                    st.caption(f"{MAX_STEPS_TO_SHOW} Steps shown")
+                    break
+                    
+                step_label = f"Step: {step:,}" if step != -1 else "Other / Unknown Step"
+                st.markdown(f"**{step_label}**")
+                
+                html_code = "<div style='display: flex; overflow-x: auto; gap: 15px; padding-bottom: 15px; margin-bottom: 20px;'>"
+                
+                for img_path in img_paths:
+                    try:
+                        with Image.open(img_path) as img:
+                            img.thumbnail((512, 512))
+                            img = img.convert("RGB")
+                            
+                            buffered = io.BytesIO()
+                            img.save(buffered, format="JPEG", quality=80)
+                            b64_img = base64.b64encode(buffered.getvalue()).decode()
+                    except Exception as e:
+                        continue
+                    
+                    img_card = (
+                        "<div style='flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;'>"
+                        f"<img src='data:image/jpeg;base64,{b64_img}' loading='lazy' style='height: 256px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);'>"
+                        f"<span style='font-size: 0.85em; color: #888; margin-top: 8px; font-family: monospace;'>{img_path.name}</span>"
+                        "</div>"
+                    )
+                    html_code += img_card
+                
+                html_code += "</div>"
+                st.markdown(html_code, unsafe_allow_html=True)
     else:
         st.info("No sample images generated yet.")
 

@@ -90,8 +90,8 @@ def generate_sample_image(
     cfg: TrainConfig,
     device: torch.device,
     dtype: torch.dtype,
-    global_step: int,          # 修改：直接传入全局步数，方便命名
-    output_dir_base: Path,     # 修改：传入输出根路径
+    global_step: int,  
+    output_dir_base: Path, 
 ) -> None:
     if not accelerator.is_main_process:
         return
@@ -151,7 +151,6 @@ def generate_sample_image(
         dtype=dtype,
     )
 
-    # =================【核心修改：支持循环重复生成与新命名】=================
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -200,7 +199,6 @@ def generate_sample_image(
     finally:
         pipe.vae.to("cpu")
         flush_memory(device)
-    # =======================================================================
 
 
 def maybe_enable_amp_backends() -> None:

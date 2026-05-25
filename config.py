@@ -66,5 +66,5 @@ class TrainConfig:
     sample_height: int = 768
     sample_steps: int = 35
     sample_seed: int = 0
-    sample_repeat: int = 3
-    guidance_scale: float = 6.0
+    sample_repeat: int = 5
+    guidance_scale: float = 5.5
