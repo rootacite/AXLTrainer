@@ -1,5 +1,6 @@
 # models.py
 import logging
+import math
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -7,19 +8,38 @@ import torch
 from accelerate import Accelerator
 from safetensors.torch import save_file
 from diffusers import StableDiffusionXLPipeline
-from diffusers.models.attention_processor import AttnProcessor2_0   # 新增
+from diffusers.models.attention_processor import AttnProcessor2_0
 
 from config import TrainConfig
 from utils import parse_kv_args
 
 logger = logging.getLogger(__name__)
 
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_steps: int,
+    cfg: TrainConfig,
+) -> torch.optim.lr_scheduler.LRScheduler:
+    warmup_steps = max(0, min(cfg.lr_warmup_steps, total_steps))
+
+    def lr_lambda(step: int) -> float:
+        # step 是 scheduler.step() 之后的全局更新步
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, (step - warmup_steps) / decay_steps))
+
+        if cfg.lr_scheduler == "cosine":
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        if cfg.lr_scheduler == "linear":
+            return 1.0 - progress
+        return 1.0
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
 
 def enable_flash_attention(unet: Any) -> None:
-    """
-    启用 PyTorch 2.x 的 SDPA 注意力实现。
-    在支持的环境下会走 flash/memory-efficient backend。
-    """
     if not hasattr(unet, "set_attn_processor"):
         logger.warning("UNet does not support set_attn_processor; flash attention not enabled.")
         return
@@ -36,16 +56,10 @@ def build_optimizer(cfg: TrainConfig, params: Iterable[torch.nn.Parameter]) -> t
             return Prodigy(params, lr=cfg.learning_rate, **kwargs)
         except ImportError:
             logger.warning("Prodigy optimizer package missing. Falling back cleanly to AdamW.")
-            return torch.optim.AdamW(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.04)
+            return torch.optim.AdamW(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.03)
 
     return torch.optim.AdamW(params, lr=cfg.learning_rate)
 
-def build_scheduler(optimizer: torch.optim.Optimizer, total_steps: int, cfg: TrainConfig) -> torch.optim.lr_scheduler.LRScheduler:
-    if cfg.lr_scheduler == "cosine":
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_steps), eta_min=0.0)
-    if cfg.lr_scheduler == "linear":
-        return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: max(0.0, 1.0 - step / max(1, total_steps)))
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0)
 
 def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeline:
     path_obj = Path(path)
@@ -54,7 +68,6 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
     return loader_func(
         str(path_obj),
         torch_dtype=dtype,
-        attn_implementation="flash_attention_2",
         safety_checker=None,
         feature_extractor=None,
         requires_safety_checker=False,

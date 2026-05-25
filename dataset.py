@@ -48,13 +48,16 @@ class SDXLLoraDataset(Dataset):
         with Image.open(image_path) as img:
             src_w, src_h = img.size
 
-        bucket_w, bucket_h = pick_bucket_size(
-            src_w, src_h,
-            min_reso=self.cfg.min_bucket_reso,
-            max_reso=self.cfg.max_bucket_reso,
-            step=self.cfg.bucket_reso_steps,
-            no_upscale=self.cfg.bucket_no_upscale,
-        )
+        if self.cfg.enable_bucket:
+            bucket_w, bucket_h = pick_bucket_size(
+                src_w, src_h,
+                min_reso=self.cfg.min_bucket_reso,
+                max_reso=self.cfg.max_bucket_reso,
+                step=self.cfg.bucket_reso_steps,
+                no_upscale=self.cfg.bucket_no_upscale,
+            )
+        else:
+            bucket_w = bucket_h = self.cfg.train_resolution
 
         cache_path = self._cache_path(image_path, bucket_w, bucket_h)
         
