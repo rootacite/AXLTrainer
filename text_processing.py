@@ -43,13 +43,9 @@ def tokenize_long_prompt(
         max_token_length,
     )
 
-    # =================【核心修复 1】=================
-    # 根据最大 token 限制，计算出固定的最大 chunk 数量
     max_chunks = max(1, max_token_length // chunk_size)
-    # 用空 chunk 补齐，确保 batch 内所有 prompt 转换出的张量形状整齐划一
     while len(chunks) < max_chunks:
         chunks.append([])
-    # ===============================================
 
     seqs = []
 
@@ -90,7 +86,6 @@ def _get_pooled_output(output) -> torch.Tensor:
     return output.last_hidden_state[:, 0]
 
 
-@torch.no_grad()
 def encode_prompt_batch(
     prompts: Sequence[str],
     tokenizer_1: CLIPTokenizer,

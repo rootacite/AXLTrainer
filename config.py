@@ -3,11 +3,14 @@ from dataclasses import dataclass
 @dataclass
 class TrainConfig:
     # Environment and Paths
-    pretrained_model_name_or_path: str = "/home/acite/LLM/ComfyUI/models/checkpoints/waiIllustriousSDXL_v160.safetensors"
+    pretrained_model_name_or_path: str = "/home/acite/LLM/ComfyUI/models/checkpoints/waiIllustriousSDXL_v170.safetensors"
     train_data_dir: str = "/home/acite/Pictures/03_tsukuyumi"
-    output_dir: str = "/home/acite/LLM/kohya_ss/outputs"
-    logging_dir: str = "/home/acite/LLM/kohya_ss/logs"
+    output_dir: str = "/tmp/axltrainer//outputs"
+    logging_dir: str = "/tmp/axltrainer/logs"
     output_name: str = "tsukuyumi"
+
+    is_vpred: bool = False    # For noobAI   
+    min_snr_gamma: float = 5.0   
 
     # Core Hyperparameters
     seed: int = 1145141919
@@ -25,8 +28,8 @@ class TrainConfig:
     # Network Dimensions
     network_dim: int = 64
     network_alpha: int = 64
-    network_dropout: float = 0.2
-    clip_skip: int = 2
+    network_dropout: float = 0.25
+    clip_skip: int = 1
     max_token_length: int = 225
 
     # Aspect Ratio Bucketing
@@ -45,12 +48,19 @@ class TrainConfig:
     caption_extension: str = ".txt"
     noise_offset: float = 0.05
 
-    # Optimizer Configurations
-    optimizer: str = "Prodigy"
-    optimizer_args: str = (
+    # UNet optimizer (fixed Prodigy)
+    unet_learning_rate: float = 1.0
+    unet_prodigy_args: str = (
         '"decouple=True" "weight_decay=0.03" "d_coef=1.0" '
-        '"use_bias_correction=True" "safeguard_warmup=True" "betas=0.9,0.99" '
+        '"use_bias_correction=True" "safeguard_warmup=True" "betas=0.9,0.99"'
     )
+
+    # TE optimizer (fixed AdamW)
+    te_learning_rate: float = 5e-5
+    te_weight_decay: float = 0.01
+    te_betas_1: float = 0.9
+    te_betas_2: float = 0.99
+    te_max_grad_norm: float = 0.3
 
     # Infrastructure
     max_data_loader_n_workers: int = 20
@@ -61,10 +71,10 @@ class TrainConfig:
         "tsukuyumi_style,cube_style,newest,1girl,1boy,visual novel,soft shading, "
         "low twintails, grey hair, looking at viewer, dress, twintails,large breasts,closed mouth,shy,smile,lying on bed,"
     )
-    sample_negative: str = "lowres, bad anatomy, (mosaic censoring:1.3)"
-    sample_width: int = 768
-    sample_height: int = 768
-    sample_steps: int = 35
+    sample_negative: str = "lowres, bad anatomy, (mosaic censoring:1.3), (text:1.3)"
+    sample_width: int = 1024
+    sample_height: int = 1024
+    sample_steps: int = 36
     sample_seed: int = 0
-    sample_repeat: int = 5
-    guidance_scale: float = 5.5
+    sample_repeat: int = 3
+    guidance_scale: float = 6.3

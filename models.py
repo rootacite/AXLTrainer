@@ -2,7 +2,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import torch
 from accelerate import Accelerator
@@ -15,6 +15,7 @@ from utils import parse_kv_args
 
 logger = logging.getLogger(__name__)
 
+
 def build_scheduler(
     optimizer: torch.optim.Optimizer,
     total_steps: int,
@@ -23,7 +24,6 @@ def build_scheduler(
     warmup_steps = max(0, min(cfg.lr_warmup_steps, total_steps))
 
     def lr_lambda(step: int) -> float:
-        # step 是 scheduler.step() 之后的全局更新步
         if warmup_steps > 0 and step < warmup_steps:
             return float(step + 1) / float(warmup_steps)
 
@@ -48,23 +48,33 @@ def enable_flash_attention(unet: Any) -> None:
     logger.info("UNet attention processor set to AttnProcessor2_0.")
 
 
-def build_optimizer(cfg: TrainConfig, params: Iterable[torch.nn.Parameter]) -> torch.optim.Optimizer:
-    if cfg.optimizer.lower() == "prodigy":
-        try:
-            from prodigyopt import Prodigy
-            kwargs = parse_kv_args(cfg.optimizer_args)
-            return Prodigy(params, lr=cfg.learning_rate, **kwargs)
-        except ImportError:
-            logger.warning("Prodigy optimizer package missing. Falling back cleanly to AdamW.")
-            return torch.optim.AdamW(params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.03)
+def build_unet_optimizer(cfg: TrainConfig, params):
+    try:
+        from prodigyopt import Prodigy
+    except ImportError as e:
+        raise RuntimeError("Prodigy is required for UNet optimizer.") from e
 
-    return torch.optim.AdamW(params, lr=cfg.learning_rate)
+    kwargs = parse_kv_args(cfg.unet_prodigy_args)
+    return Prodigy(params, lr=cfg.unet_learning_rate, **kwargs)
+
+
+def build_te_optimizer(cfg: TrainConfig, params):
+    return torch.optim.AdamW(
+        params,
+        lr=cfg.te_learning_rate,
+        betas=(cfg.te_betas_1, cfg.te_betas_2),
+        weight_decay=cfg.te_weight_decay,
+    )
 
 
 def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeline:
     path_obj = Path(path)
-    loader_func = StableDiffusionXLPipeline.from_single_file if path_obj.is_file() else StableDiffusionXLPipeline.from_pretrained
-    
+    loader_func = (
+        StableDiffusionXLPipeline.from_single_file
+        if path_obj.is_file()
+        else StableDiffusionXLPipeline.from_pretrained
+    )
+
     return loader_func(
         str(path_obj),
         torch_dtype=dtype,
@@ -73,20 +83,39 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
         requires_safety_checker=False,
     )
 
+
+def _merge_lora_state_dicts(*state_dicts: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Merge LoRA tensors into one flat safetensors payload."""
+    merged: dict[str, torch.Tensor] = {}
+    for state_dict in state_dicts:
+        for key, value in state_dict.items():
+            merged[key] = value.detach().cpu()
+    return merged
+
+
 def save_lora_checkpoint(
     accelerator: Accelerator,
     unet: Any,
+    text_encoder_1: Any,
+    text_encoder_2: Any,
     cfg: TrainConfig,
     global_step: int,
     epoch: Optional[int] = None,
     final: bool = False,
 ) -> None:
+    """Export a ComfyUI-friendly LoRA safetensors file."""
     if not accelerator.is_main_process:
         return
 
     from peft import get_peft_model_state_dict
-    unwrapped = accelerator.unwrap_model(unet)
-    lora_state = get_peft_model_state_dict(unwrapped)
+
+    unwrapped_unet = accelerator.unwrap_model(unet)
+    unwrapped_te1 = accelerator.unwrap_model(text_encoder_1)
+    unwrapped_te2 = accelerator.unwrap_model(text_encoder_2)
+
+    unet_lora_state = get_peft_model_state_dict(unwrapped_unet)
+    te1_lora_state = get_peft_model_state_dict(unwrapped_te1)
+    te2_lora_state = get_peft_model_state_dict(unwrapped_te2)
 
     if final:
         out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_final"
@@ -94,12 +123,29 @@ def save_lora_checkpoint(
         out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_e{epoch:03d}_s{global_step:06d}"
     else:
         out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_s{global_step:06d}"
-        
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    StableDiffusionXLPipeline.save_lora_weights(
-        save_directory=str(out_dir),
-        unet_lora_layers=lora_state,
-        safe_serialization=True,
+    out_file = out_dir / "pytorch_lora_weights.safetensors"
+
+    # Keep the export self-describing for downstream tools.
+    metadata = {
+        "format": "diffusers_lora",
+        "base_model": str(cfg.pretrained_model_name_or_path),
+        "architecture": "sdxl",
+        "trained_components": "unet,text_encoder,text_encoder_2",
+        "network_dim": str(cfg.network_dim),
+        "network_alpha": str(cfg.network_alpha),
+        "output_name": str(cfg.output_name),
+        "global_step": str(global_step),
+        "final": str(bool(final)),
+    }
+
+    merged_state = _merge_lora_state_dicts(
+        unet_lora_state,
+        te1_lora_state,
+        te2_lora_state,
     )
-    save_file(lora_state, str(out_dir / "pytorch_lora_weights.safetensors"))
+
+    save_file(merged_state, str(out_file), metadata=metadata)
+    logger.info("Saved LoRA checkpoint to %s", out_file)

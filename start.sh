@@ -16,5 +16,5 @@ export MIOPEN_DEBUG_ENABLE_AI_IMMED_MODE_FALLBACK=0
 export MIOPEN_CUSTOM_CACHE_DIR="$HOME/.cache/miopen"
 export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
-exec python -u train.py \
+exec python -u main.py \
     1> >(grep -Ev "grid_desc|CandidateSelectionModel|metadata" >> /dev/null)

@@ -213,48 +213,58 @@ def main():
         st.subheader("Real-time Metrics")
         
         col1, col2, col3, col4 = st.columns(4)
+
         if "Train/Loss" in metrics_data and not metrics_data["Train/Loss"].empty:
             latest_step = metrics_data["Train/Loss"].index[-1]
             latest_loss = metrics_data["Train/Loss"].iloc[-1].values[0]
             col1.metric("Current Step", f"{latest_step:,}")
             col2.metric("Latest Loss", f"{latest_loss:.4f}")
-            
-        if "LR/Effective_Actual_LR" in metrics_data and not metrics_data["LR/Effective_Actual_LR"].empty:
-            latest_lr = metrics_data["LR/Effective_Actual_LR"].iloc[-1].values[0]
-            col3.metric("Effective LR", f"{latest_lr:.2e}")
 
-        if "LR/Prodigy_D_Factor" in metrics_data and not metrics_data["LR/Prodigy_D_Factor"].empty:
-            latest_d = metrics_data["LR/Prodigy_D_Factor"].iloc[-1].values[0]
-            col4.metric("Prodigy D Factor", f"{latest_d:.4f}")
+        if "UNet/LR/Effective_Actual_LR" in metrics_data and not metrics_data["UNet/LR/Effective_Actual_LR"].empty:
+            latest_unet_lr = metrics_data["UNet/LR/Effective_Actual_LR"].iloc[-1].values[0]
+            col3.metric("UNet Effective LR", f"{latest_unet_lr:.2e}")
+
+        if "TE/LR/Effective_Actual_LR" in metrics_data and not metrics_data["TE/LR/Effective_Actual_LR"].empty:
+            latest_te_lr = metrics_data["TE/LR/Effective_Actual_LR"].iloc[-1].values[0]
+            col4.metric("TE Effective LR", f"{latest_te_lr:.2e}")
 
         st.divider()
 
         # 2. Plotting Charts (2x2 Grid)
         st.subheader("Training Charts")
-        
-        # Row 1
+
         r1_col1, r1_col2 = st.columns(2)
         with r1_col1:
             if "Train/Loss" in metrics_data:
                 st.markdown("**Train / Loss**")
                 plot_metric_chart(metrics_data["Train/Loss"], "Train / Loss", "#ff4b4b", smoothing)
-                
-        with r1_col2:
-            if "LR/Effective_Actual_LR" in metrics_data:
-                st.markdown("**LR / Effective Actual LR**")
-                plot_metric_chart(metrics_data["LR/Effective_Actual_LR"],"LR / Effective Actual LR", "#0068c9",smoothing)
 
-        # Row 2
+        with r1_col2:
+            if "UNet/LR/Effective_Actual_LR" in metrics_data:
+                st.markdown("**UNet / Effective LR**")
+                plot_metric_chart(metrics_data["UNet/LR/Effective_Actual_LR"], "UNet / Effective LR", "#0068c9", smoothing)
+
         r2_col1, r2_col2 = st.columns(2)
         with r2_col1:
-            if "LR/Base_Scheduled" in metrics_data:
-                st.markdown("**LR / Base Scheduled**")
-                plot_metric_chart(metrics_data["LR/Base_Scheduled"],"LR / Base Scheduled","#00c968", smoothing)
-                
+            if "UNet/LR/Base_Scheduled" in metrics_data:
+                st.markdown("**UNet / Base LR**")
+                plot_metric_chart(metrics_data["UNet/LR/Base_Scheduled"], "UNet / Base LR", "#00c968", smoothing)
+
         with r2_col2:
-            if "LR/Prodigy_D_Factor" in metrics_data:
-                st.markdown("**LR / Prodigy D Factor**")
-                plot_metric_chart(metrics_data["LR/Prodigy_D_Factor"],"LR / Prodigy D Factor", "#c900c9",smoothing)
+            if "UNet/LR/Prodigy_D_Factor" in metrics_data:
+                st.markdown("**UNet / Prodigy D Factor**")
+                plot_metric_chart(metrics_data["UNet/LR/Prodigy_D_Factor"], "UNet / Prodigy D Factor", "#c900c9", smoothing)
+
+        r3_col1, r3_col2 = st.columns(2)
+        with r3_col1:
+            if "TE/LR/Base_Scheduled" in metrics_data:
+                st.markdown("**TE / Base LR**")
+                plot_metric_chart(metrics_data["TE/LR/Base_Scheduled"], "TE / Base LR", "#f5a623", smoothing)
+
+        with r3_col2:
+            if "TE/LR/Effective_Actual_LR" in metrics_data:
+                st.markdown("**TE / Effective LR**")
+                plot_metric_chart(metrics_data["TE/LR/Effective_Actual_LR"], "TE / Effective LR", "#7b61ff", smoothing)
     else:
         st.info("No TensorBoard logs found yet. Waiting for training to start logging...")
 
