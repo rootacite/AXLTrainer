@@ -5,3 +5,4 @@ output/
 project_dump.md
 __pycache__/
 .vscode/
+tagger/selected_tags.csv
