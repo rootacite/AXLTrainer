@@ -65,12 +65,18 @@ def enable_flash_attention(unet: Any) -> None:
 
 def build_unet_optimizer(cfg: TrainConfig, params):
     try:
-        from prodigyopt import Prodigy
+        from schedulefree import AdamWScheduleFree
     except ImportError as e:
-        raise RuntimeError("Prodigy is required for UNet optimizer.") from e
+        raise RuntimeError("schedulefree is required for UNet optimizer.") from e
 
-    kwargs = parse_kv_args(cfg.unet_prodigy_args)
-    return Prodigy(params, lr=cfg.unet_learning_rate, **kwargs)
+    return AdamWScheduleFree(
+        params,
+        lr=cfg.unet_learning_rate,
+        betas=(cfg.unet_betas_1, cfg.unet_betas_2),
+        eps=cfg.unet_eps,
+        weight_decay=cfg.unet_weight_decay,
+        warmup_steps=cfg.unet_warmup_steps,
+    )
 
 
 def build_te_optimizer(cfg: TrainConfig, params):

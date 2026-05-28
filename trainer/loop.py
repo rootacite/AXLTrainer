@@ -170,7 +170,6 @@ def _maybe_log_and_sample(
     text_encoder_2,
     unet_optimizer,
     te_optimizer,
-    unet_scheduler,
     te_scheduler,
     device: torch.device,
     weight_dtype: torch.dtype,
@@ -178,17 +177,13 @@ def _maybe_log_and_sample(
 ) -> None:
     """Save checkpoints and generate samples on step boundaries."""
     if accelerator.is_main_process:
-        unet_base_lr = unet_scheduler.get_last_lr()[0]
+        unet_effective_lr = unet_optimizer.param_groups[0].get("scheduled_lr",
+                                                      unet_optimizer.param_groups[0]["lr"])
         te_base_lr = te_scheduler.get_last_lr()[0]
-
-        unet_prodigy_d = unet_optimizer.param_groups[0].get("d", 1.0)
-        unet_effective_lr = unet_base_lr * unet_prodigy_d
 
         accelerator.log(
             {
                 "Train/Loss": _maybe_log_and_sample.last_loss,
-                "UNet/LR/Base_Scheduled": unet_base_lr,
-                "UNet/LR/Prodigy_D_Factor": unet_prodigy_d,
                 "UNet/LR/Effective_Actual_LR": unet_effective_lr,
                 "TE/LR/Base_Scheduled": te_base_lr,
                 "TE/LR/Effective_Actual_LR": te_base_lr,
@@ -197,20 +192,25 @@ def _maybe_log_and_sample(
         )
 
         if cfg.save_every_n_steps > 0 and global_step % cfg.save_every_n_steps == 0:
-            save_lora_checkpoint(accelerator, unet, text_encoder_1, text_encoder_2, cfg, global_step)
-            generate_sample_image(
-                accelerator=accelerator,
-                pipe=pipe,
-                trained_unet=accelerator.unwrap_model(unet),
-                trained_te1=accelerator.unwrap_model(text_encoder_1),
-                trained_te2=accelerator.unwrap_model(text_encoder_2),
-                cfg=cfg,
-                device=device,
-                dtype=weight_dtype,
-                global_step=global_step,
-                output_dir_base=Path(cfg.output_dir),
-            )
-
+            if hasattr(unet_optimizer, "eval"):
+                unet_optimizer.eval()
+            try:
+                save_lora_checkpoint(accelerator, unet, text_encoder_1, text_encoder_2, cfg, global_step)
+                generate_sample_image(
+                    accelerator=accelerator,
+                    pipe=pipe,
+                    trained_unet=accelerator.unwrap_model(unet),
+                    trained_te1=accelerator.unwrap_model(text_encoder_1),
+                    trained_te2=accelerator.unwrap_model(text_encoder_2),
+                    cfg=cfg,
+                    device=device,
+                    dtype=weight_dtype,
+                    global_step=global_step,
+                    output_dir_base=Path(cfg.output_dir),
+                )
+            finally:
+                if hasattr(unet_optimizer, "train"):
+                    unet_optimizer.train()
 
 _maybe_log_and_sample.last_loss = 0.0
 
@@ -228,7 +228,6 @@ def train_one_epoch(
     noise_scheduler,
     unet_optimizer,
     te_optimizer,
-    unet_scheduler,
     te_scheduler,
     device: torch.device,
     weight_dtype: torch.dtype,
@@ -237,6 +236,8 @@ def train_one_epoch(
 ) -> int:
     """Train one epoch and keep all step-based actions aligned with optimizer steps."""
     unet.train()
+    if hasattr(unet_optimizer, "train"):
+        unet_optimizer.train()
     text_encoder_1.train()
     text_encoder_2.train()
 
@@ -290,7 +291,6 @@ def train_one_epoch(
 
             unet_optimizer.step()
             te_optimizer.step()
-            unet_scheduler.step()
             te_scheduler.step()
             unet_optimizer.zero_grad(set_to_none=True)
             te_optimizer.zero_grad(set_to_none=True)
@@ -313,7 +313,6 @@ def train_one_epoch(
                 text_encoder_2=text_encoder_2,
                 unet_optimizer=unet_optimizer,
                 te_optimizer=te_optimizer,
-                unet_scheduler=unet_scheduler,
                 te_scheduler=te_scheduler,
                 device=device,
                 weight_dtype=weight_dtype,

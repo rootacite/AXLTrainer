@@ -37,9 +37,8 @@ class TrainArtifacts:
     noise_scheduler: DDIMScheduler
     train_dataset: SDXLLoraDataset
     dataloader: DataLoader
-    unet_optimizer: Any
+    unet_optimizer: Any # SF AdamW don't needs scheduler
     te_optimizer: Any
-    unet_scheduler: Any
     te_scheduler: Any
 
 
@@ -111,7 +110,7 @@ def build_optimizers_and_schedulers(
     text_encoder_2,
     dataloader: DataLoader,
 ):
-    """Build optimizers and schedulers for UNet and text encoders."""
+    """Build optimizers for UNet and text encoders."""
     unet_params = [p for p in unet.parameters() if p.requires_grad]
     te_params = [
         p for p in text_encoder_1.parameters() if p.requires_grad
@@ -125,10 +124,11 @@ def build_optimizers_and_schedulers(
     steps_per_epoch = max(1, math.ceil(len(dataloader) / cfg.gradient_accumulation_steps))
     total_steps = steps_per_epoch * cfg.epoch
 
-    unet_scheduler = build_scheduler(unet_optimizer, total_steps, cfg)
+    # Schedule-Free AdamW does not need a real scheduler; keep a constant one
+    # so the rest of the training loop can stay almost unchanged.
+    
     te_scheduler = build_scheduler(te_optimizer, total_steps, cfg)
-
-    return unet_optimizer, te_optimizer, unet_scheduler, te_scheduler
+    return unet_optimizer, te_optimizer, te_scheduler
 
 
 def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
@@ -175,7 +175,7 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
     text_encoder_2.to(device=device, dtype=weight_dtype)
 
     train_dataset, dataloader = build_dataloader(cfg)
-    unet_optimizer, te_optimizer, unet_scheduler, te_scheduler = build_optimizers_and_schedulers(
+    unet_optimizer, te_optimizer, te_scheduler = build_optimizers_and_schedulers(
         cfg,
         unet,
         text_encoder_1,
@@ -199,6 +199,5 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
         dataloader=dataloader,
         unet_optimizer=unet_optimizer,
         te_optimizer=te_optimizer,
-        unet_scheduler=unet_scheduler,
         te_scheduler=te_scheduler,
     )

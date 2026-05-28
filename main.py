@@ -49,7 +49,6 @@ def main() -> None:
         artifacts.unet_optimizer,
         artifacts.te_optimizer,
         artifacts.dataloader,
-        artifacts.unet_scheduler,
         artifacts.te_scheduler,
     ) = accelerator.prepare(
         artifacts.unet,
@@ -58,7 +57,6 @@ def main() -> None:
         artifacts.unet_optimizer,
         artifacts.te_optimizer,
         artifacts.dataloader,
-        artifacts.unet_scheduler,
         artifacts.te_scheduler,
     )
 
@@ -96,7 +94,6 @@ def main() -> None:
             noise_scheduler=artifacts.noise_scheduler,
             unet_optimizer=artifacts.unet_optimizer,
             te_optimizer=artifacts.te_optimizer,
-            unet_scheduler=artifacts.unet_scheduler,
             te_scheduler=artifacts.te_scheduler,
             device=device,
             weight_dtype=weight_dtype,
@@ -104,28 +101,33 @@ def main() -> None:
             progress=progress,
         )
 
-    save_lora_checkpoint(
-        accelerator,
-        artifacts.unet,
-        artifacts.text_encoder_1,
-        artifacts.text_encoder_2,
-        cfg,
-        global_step,
-        final=True,
-    )
-
-    generate_sample_image(
-        accelerator=accelerator,
-        pipe=artifacts.pipe,
-        trained_unet=accelerator.unwrap_model(artifacts.unet),
-        trained_te1=accelerator.unwrap_model(artifacts.text_encoder_1),
-        trained_te2=accelerator.unwrap_model(artifacts.text_encoder_2),
-        cfg=cfg,
-        device=device,
-        dtype=weight_dtype,
-        global_step=global_step,
-        output_dir_base=Path(cfg.output_dir),
-    )
+    if hasattr(artifacts.unet_optimizer, "eval"):
+        artifacts.unet_optimizer.eval()
+    try:
+        save_lora_checkpoint(
+            accelerator,
+            artifacts.unet,
+            artifacts.text_encoder_1,
+            artifacts.text_encoder_2,
+            cfg,
+            global_step,
+            final=True,
+        )
+        generate_sample_image(
+            accelerator=accelerator,
+            pipe=artifacts.pipe,
+            trained_unet=accelerator.unwrap_model(artifacts.unet),
+            trained_te1=accelerator.unwrap_model(artifacts.text_encoder_1),
+            trained_te2=accelerator.unwrap_model(artifacts.text_encoder_2),
+            cfg=cfg,
+            device=device,
+            dtype=weight_dtype,
+            global_step=global_step,
+            output_dir_base=Path(cfg.output_dir),
+        )
+    finally:
+        if hasattr(artifacts.unet_optimizer, "train"):
+            artifacts.unet_optimizer.train()
 
     progress.close()
     accelerator.wait_for_everyone()

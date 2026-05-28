@@ -7,6 +7,8 @@ from transformers import (
     CLIPTokenizer,
 )
 
+import math
+
 
 def _chunk_ids(
     token_ids: List[int],
@@ -43,7 +45,7 @@ def tokenize_long_prompt(
         max_token_length,
     )
 
-    max_chunks = max(1, max_token_length // chunk_size)
+    max_chunks = max(1, math.ceil(max_token_length / chunk_size))
     while len(chunks) < max_chunks:
         chunks.append([])
 

@@ -54,7 +54,7 @@ def enhance_bounding_box(image, bounding_box, inpaint_pipe, denoise_strength, gu
         mask_image=full_inpaint_mask,
         strength=denoise_strength,
         guidance_scale=config.CFG_SCALE,
-        num_inference_steps=60,
+        num_inference_steps=config.STEPS * 4,
         generator=generator
     ).images[0]
     

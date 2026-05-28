@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class TrainConfig:
     # Environment and Paths
-    pretrained_model_name_or_path: str = "/home/acite/LLM/ComfyUI/models/diffusers/waillu_170"
+    pretrained_model_name_or_path: str = "/home/acite/LLM/models/diffusers/waillu_170"
     train_data_dir: str = "/home/acite/Pictures/05_miyako"
     output_dir: str = "/home/acite/LLM/axltrainer/outputs"
     logging_dir: str = "/home/acite/LLM/axltrainer/logs"
@@ -26,7 +26,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 2
     learning_rate: float = 1.0
     lr_scheduler: str = "cosine"
-    lr_warmup_steps: int = 100
+    lr_warmup_steps: int = 240
     max_grad_norm: float = 1.0
     epoch: int = 64
     save_every_n_epochs: int = 1
@@ -55,15 +55,16 @@ class TrainConfig:
     caption_extension: str = ".txt"
     noise_offset: float = 0.05
 
-    # UNet optimizer (fixed Prodigy)
-    unet_learning_rate: float = 1
-    unet_prodigy_args: str = (
-        '"decouple=True" "weight_decay=0.02" "d_coef=2.0" '
-        '"use_bias_correction=True" "safeguard_warmup=True" "betas=0.9,0.99"'
-    )
+     # UNet optimizer (Schedule-Free AdamW)
+    unet_learning_rate: float = 3e-5
+    unet_weight_decay: float = 0.01
+    unet_betas_1: float = 0.9
+    unet_betas_2: float = 0.99
+    unet_eps: float = 1e-8
+    unet_warmup_steps: int = 240
 
     # TE optimizer (fixed AdamW)
-    te_learning_rate: float = 5e-5
+    te_learning_rate: float = 3e-6
     te_weight_decay: float = 0.01
     te_betas_1: float = 0.9
     te_betas_2: float = 0.99
@@ -75,8 +76,7 @@ class TrainConfig:
 
     # Inference Validation Samples
     sample_prompts: str = (
-        "miyako_style, masterpiece, best quality, soft shading, newest, "
-        "1girl, white thighhighs, large breasts, closed mouth, shy, smile, lying on bed, breasts out, nipples, anal, ass, doggystyle, panties around one leg"
+        "miyako_style, newest, soft shading, (large breasts:1.2), white thighhighs, large breasts, closed mouth, shy, lying on bed, breasts out, nipples, anal sex, anus, doggystyle, panties around one leg, cum in ass, huge ass, huge penis, spread ass, ass grab"
     )
     sample_negative: str = "lowres, bad anatomy, (mosaic censoring:1.3), (text:1.3)"
     sample_width: int = 1280

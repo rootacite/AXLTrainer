@@ -222,7 +222,7 @@ def main():
 
         if "UNet/LR/Effective_Actual_LR" in metrics_data and not metrics_data["UNet/LR/Effective_Actual_LR"].empty:
             latest_unet_lr = metrics_data["UNet/LR/Effective_Actual_LR"].iloc[-1].values[0]
-            col3.metric("UNet Effective LR", f"{latest_unet_lr:.2e}")
+            col3.metric("UNet LR", f"{latest_unet_lr:.2e}")
 
         if "TE/LR/Effective_Actual_LR" in metrics_data and not metrics_data["TE/LR/Effective_Actual_LR"].empty:
             latest_te_lr = metrics_data["TE/LR/Effective_Actual_LR"].iloc[-1].values[0]
@@ -241,27 +241,16 @@ def main():
 
         with r1_col2:
             if "UNet/LR/Effective_Actual_LR" in metrics_data:
-                st.markdown("**UNet / Effective LR**")
-                plot_metric_chart(metrics_data["UNet/LR/Effective_Actual_LR"], "UNet / Effective LR", "#0068c9", smoothing)
+                st.markdown("**UNet / LR**")
+                plot_metric_chart(metrics_data["UNet/LR/Effective_Actual_LR"], "UNet / LR", "#0068c9", smoothing)
 
         r2_col1, r2_col2 = st.columns(2)
         with r2_col1:
-            if "UNet/LR/Base_Scheduled" in metrics_data:
-                st.markdown("**UNet / Base LR**")
-                plot_metric_chart(metrics_data["UNet/LR/Base_Scheduled"], "UNet / Base LR", "#00c968", smoothing)
-
-        with r2_col2:
-            if "UNet/LR/Prodigy_D_Factor" in metrics_data:
-                st.markdown("**UNet / Prodigy D Factor**")
-                plot_metric_chart(metrics_data["UNet/LR/Prodigy_D_Factor"], "UNet / Prodigy D Factor", "#c900c9", smoothing)
-
-        r3_col1, r3_col2 = st.columns(2)
-        with r3_col1:
             if "TE/LR/Base_Scheduled" in metrics_data:
                 st.markdown("**TE / Base LR**")
                 plot_metric_chart(metrics_data["TE/LR/Base_Scheduled"], "TE / Base LR", "#f5a623", smoothing)
 
-        with r3_col2:
+        with r2_col2:
             if "TE/LR/Effective_Actual_LR" in metrics_data:
                 st.markdown("**TE / Effective LR**")
                 plot_metric_chart(metrics_data["TE/LR/Effective_Actual_LR"], "TE / Effective LR", "#7b61ff", smoothing)

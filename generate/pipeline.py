@@ -4,7 +4,17 @@ import config
 
 def generate_base_image(pipe):
     """Generates the initial base canvas using specific seed and text configurations."""
-    generator = torch.Generator(device=config.DEVICE).manual_seed(config.SEED)
+    
+    if config.SEED == 0:
+        actual_seed = torch.seed()
+    else:
+        actual_seed = config.SEED
+
+    generator = torch.Generator(
+        device=config.DEVICE
+    ).manual_seed(actual_seed)
+
+    print(f"Using seed: {actual_seed}")
     
     output = pipe(
         prompt=config.POSITIVE_PROMPT,
