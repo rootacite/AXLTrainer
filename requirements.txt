@@ -1,19 +1,19 @@
-# --- 核心深度学习框架 (ROCm 专用) ---
 
-# --- 矩阵计算与图像处理 ---
-numpy<2.0.0
+numpy
 Pillow
 
-# --- Hugging Face 家族工具链 ---
 transformers
 diffusers
 accelerate
 peft
 safetensors
 
-# --- 进度条与优化器 ---
 tqdm
 prodigyopt
 tensorboard
 plotly
 streamlit-autorefresh
+
+basicsr
+realesrgan
+ultralytics

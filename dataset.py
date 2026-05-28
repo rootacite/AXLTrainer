@@ -84,17 +84,19 @@ class SDXLLoraDataset(Dataset):
             "cache_path": str(cache_path),
         }
 
+def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "image_path": [ex["image_path"] for ex in examples],
+        "caption": [ex["caption"] for ex in examples],
+        "bucket_w": torch.tensor([ex["bucket_w"] for ex in examples], dtype=torch.long),
+        "bucket_h": torch.tensor([ex["bucket_h"] for ex in examples], dtype=torch.long),
+        "src_w": torch.tensor([ex["src_w"] for ex in examples], dtype=torch.long),
+        "src_h": torch.tensor([ex["src_h"] for ex in examples], dtype=torch.long),
+        "img_type": [ex["img_type"] for ex in examples],
+        "img_data": [ex["img_data"] for ex in examples], 
+        "cache_path": [ex["cache_path"] for ex in examples],
+    }
+
+
 def make_collate_fn():
-    def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {
-            "image_path": [ex["image_path"] for ex in examples],
-            "caption": [ex["caption"] for ex in examples],
-            "bucket_w": torch.tensor([ex["bucket_w"] for ex in examples], dtype=torch.long),
-            "bucket_h": torch.tensor([ex["bucket_h"] for ex in examples], dtype=torch.long),
-            "src_w": torch.tensor([ex["src_w"] for ex in examples], dtype=torch.long),
-            "src_h": torch.tensor([ex["src_h"] for ex in examples], dtype=torch.long),
-            "img_type": [ex["img_type"] for ex in examples],
-            "img_data": [ex["img_data"] for ex in examples], 
-            "cache_path": [ex["cache_path"] for ex in examples],
-        }
     return collate_fn

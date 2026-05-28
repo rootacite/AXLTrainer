@@ -1,3 +1,8 @@
 LICENSE
 README.md
-ui.py
+.venv/
+migraphx_cache/
+model.onnx
+selected_tags.csv
+translated_output.csv
+output/

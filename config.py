@@ -3,14 +3,21 @@ from dataclasses import dataclass
 @dataclass
 class TrainConfig:
     # Environment and Paths
-    pretrained_model_name_or_path: str = "/home/acite/LLM/ComfyUI/models/checkpoints/waiIllustriousSDXL_v170.safetensors"
-    train_data_dir: str = "/home/acite/Pictures/03_tsukuyumi"
-    output_dir: str = "/tmp/axltrainer//outputs"
-    logging_dir: str = "/tmp/axltrainer/logs"
-    output_name: str = "tsukuyumi"
+    pretrained_model_name_or_path: str = "/home/acite/LLM/ComfyUI/models/diffusers/waillu_170"
+    train_data_dir: str = "/home/acite/Pictures/05_miyako"
+    output_dir: str = "/home/acite/LLM/axltrainer/outputs"
+    logging_dir: str = "/home/acite/LLM/axltrainer/logs"
+    output_name: str = "miyako"
 
-    is_vpred: bool = False    # For noobAI   
-    min_snr_gamma: float = 5.0   
+    # Model / dataset spec
+    base_model_version: str = "sdxl_base_v1-0"
+    modelspec_architecture: str = "stable-diffusion-xl-v1-base/lora"
+    modelspec_implementation: str = "https://github.com/Stability-AI/generative-models"
+    modelspec_sai_model_spec: str = "1.0.0"
+
+    # Training mode
+    is_vpred: bool = False
+    min_snr_gamma: float = 5.0
 
     # Core Hyperparameters
     seed: int = 1145141919
@@ -19,16 +26,16 @@ class TrainConfig:
     gradient_accumulation_steps: int = 2
     learning_rate: float = 1.0
     lr_scheduler: str = "cosine"
-    lr_warmup_steps: int = 50
+    lr_warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    epoch: int = 32
+    epoch: int = 64
     save_every_n_epochs: int = 1
-    save_every_n_steps: int = 20
+    save_every_n_steps: int = 40
 
     # Network Dimensions
     network_dim: int = 64
     network_alpha: int = 64
-    network_dropout: float = 0.25
+    network_dropout: float = 0.20
     clip_skip: int = 1
     max_token_length: int = 225
 
@@ -49,9 +56,9 @@ class TrainConfig:
     noise_offset: float = 0.05
 
     # UNet optimizer (fixed Prodigy)
-    unet_learning_rate: float = 1.0
+    unet_learning_rate: float = 1
     unet_prodigy_args: str = (
-        '"decouple=True" "weight_decay=0.03" "d_coef=1.0" '
+        '"decouple=True" "weight_decay=0.02" "d_coef=2.0" '
         '"use_bias_correction=True" "safeguard_warmup=True" "betas=0.9,0.99"'
     )
 
@@ -68,13 +75,21 @@ class TrainConfig:
 
     # Inference Validation Samples
     sample_prompts: str = (
-        "tsukuyumi_style,cube_style,newest,1girl,1boy,visual novel,soft shading, "
-        "low twintails, grey hair, looking at viewer, dress, twintails,large breasts,closed mouth,shy,smile,lying on bed,"
+        "miyako_style, masterpiece, best quality, soft shading, newest, "
+        "1girl, white thighhighs, large breasts, closed mouth, shy, smile, lying on bed, breasts out, nipples, anal, ass, doggystyle, panties around one leg"
     )
     sample_negative: str = "lowres, bad anatomy, (mosaic censoring:1.3), (text:1.3)"
-    sample_width: int = 1024
-    sample_height: int = 1024
+    sample_width: int = 1280
+    sample_height: int = 720
     sample_steps: int = 36
     sample_seed: int = 0
     sample_repeat: int = 3
-    guidance_scale: float = 6.3
+    guidance_scale: float = 6.0
+
+    # Optional kohya-like bookkeeping
+    ss_session_id: int | None = None
+    ss_training_comment: str | None = None
+    ss_sd_model_hash: str | None = None
+    ss_new_sd_model_hash: str | None = None
+    ss_dataset_dirs: str | None = None
+    ss_bucket_info: str | None = None

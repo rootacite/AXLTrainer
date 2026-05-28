@@ -288,12 +288,12 @@ def train_one_epoch(
                 accelerator.clip_grad_norm_(unet_clip_params, cfg.max_grad_norm)
                 accelerator.clip_grad_norm_(te_clip_params, cfg.te_max_grad_norm)
 
-                unet_optimizer.step()
-                te_optimizer.step()
-                unet_scheduler.step()
-                te_scheduler.step()
-                unet_optimizer.zero_grad(set_to_none=True)
-                te_optimizer.zero_grad(set_to_none=True)
+            unet_optimizer.step()
+            te_optimizer.step()
+            unet_scheduler.step()
+            te_scheduler.step()
+            unet_optimizer.zero_grad(set_to_none=True)
+            te_optimizer.zero_grad(set_to_none=True)
 
         if accelerator.sync_gradients:
             global_step += 1

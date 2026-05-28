@@ -13,6 +13,16 @@ from text_processing import encode_prompt_batch
 from trainer.env import flush_memory
 
 
+def _offload_module(module: torch.nn.Module) -> None:
+    """Move a module back to CPU to release GPU memory."""
+    module.to("cpu")
+
+
+def _move_module_to_device(module: torch.nn.Module, device: torch.device, dtype: torch.dtype) -> None:
+    """Move a module to the target device with the requested dtype."""
+    module.to(device=device, dtype=dtype)
+
+
 @torch.inference_mode()
 def generate_sample_image(
     *,
@@ -27,42 +37,36 @@ def generate_sample_image(
     global_step: int,
     output_dir_base: Path,
 ) -> None:
-    """Generate and save sample images from the current LoRA weights."""
+    """Generate and save sample images with aggressive module offloading."""
     if not accelerator.is_main_process:
         return
+    
+    prev_unet_training = trained_unet.training
+    prev_te1_training = trained_te1.training
+    prev_te2_training = trained_te2.training
 
     flush_memory(device)
 
-    pipe = pipe.to(device)
-    
-    sampler_kwargs = {"timestep_spacing": "linspace"}
-    if cfg.is_vpred:
-        sampler_kwargs["prediction_type"] = "v_prediction"
-        sampler_kwargs["rescale_betas_zero_snr"] = True
-    else:
-        sampler_kwargs["prediction_type"] = "epsilon"
+    _offload_module(pipe.vae)
 
-    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
-        pipe.scheduler.config,
-        **sampler_kwargs
-    )
+    trained_unet.eval()
+    trained_te1.eval()
+    trained_te2.eval()
 
     pipe.unet = trained_unet
     pipe.text_encoder = trained_te1
     pipe.text_encoder_2 = trained_te2
 
-    pipe.unet.eval()
-    pipe.text_encoder.to(device=device, dtype=dtype).eval()
-    pipe.text_encoder_2.to(device=device, dtype=dtype).eval()
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+        pipe.scheduler.config,
+        timestep_spacing="linspace",
+    )
 
-    vae_dtype = torch.bfloat16
-    pipe.vae.to(device=device, dtype=vae_dtype).eval()
-
-    if hasattr(pipe.vae.config, "force_upcast"):
-        pipe.vae.config.force_upcast = False
-
-    pipe.vae.enable_slicing()
-    pipe.vae.enable_tiling()
+    num_inference_steps = cfg.sample_steps
+    sigmas = np.linspace(pipe.scheduler.config.num_train_timesteps - 1, 0, num_inference_steps)
+    sigmas = np.append(sigmas, 0.0).astype(np.float32)
+    pipe.scheduler.sigmas = torch.from_numpy(sigmas).to(device)
+    pipe.scheduler.num_inference_steps = num_inference_steps
 
     prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
         prompts=[cfg.sample_prompts],
@@ -90,9 +94,12 @@ def generate_sample_image(
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
+    vae_dtype = torch.bfloat16
+
     try:
         for repeat_idx in range(max(1, cfg.sample_repeat)):
-            generator = torch.Generator(device=device)
+            # Use a CPU generator to match diffusers' latent preparation path.
+            generator = torch.Generator(device="cpu")
             if cfg.sample_seed == 0:
                 current_seed = int(torch.randint(0, 2**32, (1,)).item())
                 generator.manual_seed(current_seed)
@@ -119,6 +126,14 @@ def generate_sample_image(
             latents = latent_result.images.to(device=device, dtype=vae_dtype)
             latents = latents / pipe.vae.config.scaling_factor
 
+            flush_memory(device)
+
+            _move_module_to_device(pipe.vae, device, vae_dtype)
+            if hasattr(pipe.vae.config, "force_upcast"):
+                pipe.vae.config.force_upcast = False
+            pipe.vae.enable_slicing()
+            pipe.vae.enable_tiling()
+
             decoded = pipe.vae.decode(latents, return_dict=False)[0]
             image = (decoded / 2 + 0.5).clamp(0, 1)
             image = image[0].permute(1, 2, 0).detach().float().cpu().numpy()
@@ -127,6 +142,26 @@ def generate_sample_image(
             out_filename = f"{cfg.output_name}_{global_step:06d}_{repeat_idx}.png"
             out_path = sample_dir / out_filename
             Image.fromarray(image).save(out_path)
+
+            _offload_module(pipe.vae)
+            flush_memory(device)
+
     finally:
-        pipe.vae.to("cpu")
+        _offload_module(pipe.vae)
+
+        if prev_unet_training:
+            trained_unet.train()
+        else:
+            trained_unet.eval()
+
+        if prev_te1_training:
+            trained_te1.train()
+        else:
+            trained_te1.eval()
+
+        if prev_te2_training:
+            trained_te2.train()
+        else:
+            trained_te2.eval()
+
         flush_memory(device)

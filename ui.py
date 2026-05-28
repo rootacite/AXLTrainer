@@ -296,15 +296,15 @@ def main():
                             img = img.convert("RGB")
                             
                             buffered = io.BytesIO()
-                            img.save(buffered, format="JPEG", quality=80)
+                            img.save(buffered, format="JPEG", quality=95)
                             b64_img = base64.b64encode(buffered.getvalue()).decode()
                     except Exception as e:
                         continue
                     
                     img_card = (
                         "<div style='flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;'>"
-                        f"<img src='data:image/jpeg;base64,{b64_img}' loading='lazy' style='height: 256px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);'>"
-                        f"<span style='font-size: 0.85em; color: #888; margin-top: 8px; font-family: monospace;'>{img_path.name}</span>"
+                        f"<img src='data:image/jpeg;base64,{b64_img}' loading='lazy' style='height: 130px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);'>"
+                        f"<span style='font-size: 0.85em; color: #888; margin-top: 3px; font-family: monospace;'>{img_path.name}</span>"
                         "</div>"
                     )
                     html_code += img_card

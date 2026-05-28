@@ -1,2 +1,7 @@
 migraphx_cache/
 .venv/
+model.onnx
+output/
+project_dump.md
+__pycache__/
+.vscode/

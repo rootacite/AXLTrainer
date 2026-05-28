@@ -1,19 +1,34 @@
 # models.py
 import logging
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import torch
 from accelerate import Accelerator
-from safetensors.torch import save_file
 from diffusers import StableDiffusionXLPipeline
 from diffusers.models.attention_processor import AttnProcessor2_0
+from safetensors.torch import save_file
 
 from config import TrainConfig
 from utils import parse_kv_args
 
 logger = logging.getLogger(__name__)
+
+SDXL_UNET_MAP = {
+    "down_blocks.1.attentions.0": "input_blocks.4.1",
+    "down_blocks.1.attentions.1": "input_blocks.5.1",
+    "down_blocks.2.attentions.0": "input_blocks.7.1",
+    "down_blocks.2.attentions.1": "input_blocks.8.1",
+    "mid_block.attentions.0": "middle_block.1",
+    "up_blocks.0.attentions.0": "output_blocks.0.1",
+    "up_blocks.0.attentions.1": "output_blocks.1.1",
+    "up_blocks.0.attentions.2": "output_blocks.2.1",
+    "up_blocks.1.attentions.0": "output_blocks.3.1",
+    "up_blocks.1.attentions.1": "output_blocks.4.1",
+    "up_blocks.1.attentions.2": "output_blocks.5.1",
+}
 
 
 def build_scheduler(
@@ -84,13 +99,110 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
     )
 
 
-def _merge_lora_state_dicts(*state_dicts: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Merge LoRA tensors into one flat safetensors payload."""
-    merged: dict[str, torch.Tensor] = {}
-    for state_dict in state_dicts:
-        for key, value in state_dict.items():
-            merged[key] = value.detach().cpu()
-    return merged
+def _remap_kohya_lora_core_path(raw_key: str, prefix: str) -> str:
+    key = raw_key.replace("base_model.model.", "")
+
+    if prefix == "unet":
+        key = key.replace("unet.", "")
+        for src, dst in SDXL_UNET_MAP.items():
+            key = key.replace(src, dst)
+
+    elif prefix in ("te1", "te2"):
+        key = key.replace("text_model.encoder.layers.", "text_model_encoder_layers_")
+        key = key.replace("text_model.embeddings.", "text_model_embeddings_")
+
+    return key.replace(".", "_")
+
+
+def _convert_peft_to_kohya_bf16(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    alpha: float,
+) -> dict[str, torch.Tensor]:
+    converted: dict[str, torch.Tensor] = {}
+
+    for k, v in state_dict.items():
+        key = k.replace("base_model.model.", "")
+
+        if ".lora_A" in key:
+            suffix = "lora_down.weight"
+            core_path = key.split(".lora_A")[0]
+        elif ".lora_B" in key:
+            suffix = "lora_up.weight"
+            core_path = key.split(".lora_B")[0]
+        else:
+            continue
+
+        core_path = _remap_kohya_lora_core_path(core_path, prefix)
+        final_key = f"lora_{prefix}_{core_path}.{suffix}"
+
+        converted[final_key] = v.detach().cpu().to(dtype=torch.bfloat16)
+
+        alpha_key = f"lora_{prefix}_{core_path}.alpha"
+        if alpha_key not in converted:
+            converted[alpha_key] = torch.tensor(alpha, dtype=torch.bfloat16)
+
+    return converted
+
+
+def _build_kohya_metadata(
+    cfg: TrainConfig,
+    global_step: int,
+    epoch: Optional[int],
+    final: bool,
+) -> dict[str, str]:
+    meta: dict[str, str] = {}
+
+    def put(key: str, value: Any) -> None:
+        if value is None:
+            return
+        meta[key] = str(value)
+
+    put("modelspec.sai_model_spec", cfg.modelspec_sai_model_spec)
+    put("modelspec.implementation", cfg.modelspec_implementation)
+    put("modelspec.architecture", cfg.modelspec_architecture)
+    put("modelspec.prediction_type", "epsilon")
+    put("modelspec.title", cfg.output_name)
+    put("modelspec.date", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    put("ss_network_module", "networks.lora")
+    put("ss_network_dim", cfg.network_dim)
+    put("ss_network_alpha", cfg.network_alpha)
+    put("ss_output_name", cfg.output_name)
+    put("ss_seed", cfg.seed)
+    put("ss_steps", global_step)
+    put("ss_epoch", 0 if epoch is None else epoch)
+    put("ss_final", int(bool(final)))
+
+    put("ss_learning_rate", cfg.learning_rate)
+    put("ss_unet_lr", cfg.unet_learning_rate)
+    put("ss_text_encoder_lr", cfg.te_learning_rate)
+    put("ss_lr_scheduler", cfg.lr_scheduler)
+    put("ss_lr_warmup_steps", cfg.lr_warmup_steps)
+    put("ss_mixed_precision", cfg.mixed_precision)
+    put("ss_max_grad_norm", cfg.max_grad_norm)
+    put("ss_clip_skip", cfg.clip_skip)
+    put("ss_network_dropout", cfg.network_dropout)
+    put("ss_enable_bucket", cfg.enable_bucket)
+    put("ss_bucket_no_upscale", cfg.bucket_no_upscale)
+    put("ss_min_bucket_reso", cfg.min_bucket_reso)
+    put("ss_max_bucket_reso", cfg.max_bucket_reso)
+    put("ss_resolution", cfg.train_resolution)
+    put("ss_max_token_length", cfg.max_token_length)
+    put("ss_keep_tokens", cfg.keep_tokens)
+    put("ss_noise_offset", cfg.noise_offset)
+    put("ss_shuffle_caption", cfg.shuffle_caption)
+    put("ss_train_data_dir", cfg.train_data_dir)
+    put("ss_pretrained_model_name_or_path", cfg.pretrained_model_name_or_path)
+
+    put("ss_session_id", cfg.ss_session_id)
+    put("ss_training_comment", cfg.ss_training_comment)
+    put("ss_sd_model_hash", cfg.ss_sd_model_hash)
+    put("ss_new_sd_model_hash", cfg.ss_new_sd_model_hash)
+    put("ss_dataset_dirs", cfg.ss_dataset_dirs)
+    put("ss_bucket_info", cfg.ss_bucket_info)
+
+    return meta
 
 
 def save_lora_checkpoint(
@@ -103,7 +215,6 @@ def save_lora_checkpoint(
     epoch: Optional[int] = None,
     final: bool = False,
 ) -> None:
-    """Export a ComfyUI-friendly LoRA safetensors file."""
     if not accelerator.is_main_process:
         return
 
@@ -113,9 +224,26 @@ def save_lora_checkpoint(
     unwrapped_te1 = accelerator.unwrap_model(text_encoder_1)
     unwrapped_te2 = accelerator.unwrap_model(text_encoder_2)
 
-    unet_lora_state = get_peft_model_state_dict(unwrapped_unet)
-    te1_lora_state = get_peft_model_state_dict(unwrapped_te1)
-    te2_lora_state = get_peft_model_state_dict(unwrapped_te2)
+    unet_lora_state = _convert_peft_to_kohya_bf16(
+        get_peft_model_state_dict(unwrapped_unet),
+        "unet",
+        cfg.network_alpha,
+    )
+    te1_lora_state = _convert_peft_to_kohya_bf16(
+        get_peft_model_state_dict(unwrapped_te1),
+        "te1",
+        cfg.network_alpha,
+    )
+    te2_lora_state = _convert_peft_to_kohya_bf16(
+        get_peft_model_state_dict(unwrapped_te2),
+        "te2",
+        cfg.network_alpha,
+    )
+
+    merged_state: dict[str, torch.Tensor] = {}
+    merged_state.update(unet_lora_state)
+    merged_state.update(te1_lora_state)
+    merged_state.update(te2_lora_state)
 
     if final:
         out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_final"
@@ -125,27 +253,13 @@ def save_lora_checkpoint(
         out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_s{global_step:06d}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
-
     out_file = out_dir / "pytorch_lora_weights.safetensors"
 
-    # Keep the export self-describing for downstream tools.
-    metadata = {
-        "format": "diffusers_lora",
-        "base_model": str(cfg.pretrained_model_name_or_path),
-        "architecture": "sdxl",
-        "trained_components": "unet,text_encoder,text_encoder_2",
-        "network_dim": str(cfg.network_dim),
-        "network_alpha": str(cfg.network_alpha),
-        "output_name": str(cfg.output_name),
-        "global_step": str(global_step),
-        "final": str(bool(final)),
-    }
-
-    merged_state = _merge_lora_state_dicts(
-        unet_lora_state,
-        te1_lora_state,
-        te2_lora_state,
-    )
-
+    metadata = _build_kohya_metadata(cfg, global_step, epoch, final)
     save_file(merged_state, str(out_file), metadata=metadata)
-    logger.info("Saved LoRA checkpoint to %s", out_file)
+
+    logger.info(
+        "Saved kohya-style LoRA checkpoint to %s (Total Keys: %d, dtype=bf16)",
+        out_file,
+        len(merged_state),
+    )
