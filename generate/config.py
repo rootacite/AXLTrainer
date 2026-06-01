@@ -7,7 +7,7 @@ TORCH_DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
 # Model Paths (Change to your local absolute paths or HuggingFace repo IDs)
 BASE_MODEL_PATH = "/home/acite/LLM/models/diffusers/waillu_170"
-LORA_PATH = "/home/acite/LLM/models/loras/miyako-1720.safetensors"
+LORA_PATH = "/home/acite/LLM/models/loras/alice.safetensors"
 LORA_SCALE = 0.9
 
 # Base Image Generation Parameters
@@ -19,9 +19,9 @@ SEED = 8576160563625674040
 
 # Prompts from ComfyUI workflow nodes
 # POSITIVE_PROMPT = "miyako_style, newest, soft shading, large breasts, solo, looking at viewer, white thighhighs, pajamas, panties, off-shoulder, kneel-sitting, sitting on bed, open collar, cleavage, one nipple, shy, blush"
-POSITIVE_PROMPT = "miyako_style, newest, soft shading, white thighhighs, large breasts, closed mouth, shy, blush, happy sex, lying on bed, breasts out, nipples, anal, sex, anus, doggystyle, panties around one leg, huge ass"
 
-NEGATIVE_PROMPT = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark"
+POSITIVE_PROMPT = "alice_style, rating_questionable, newest, soft_shading, artistic_nudity, elegant, aesthetic_illustration, source_anime, solo, looking at viewer, full body, shy, blush, aqua eyes, eyelashes, long blonde hair, straight hair, hair flower, white flower, sitting, tilted head, from above, indoors, bedroom, soft morning light, sunbeams, window, warm atmosphere, cozy, undressing, dress pulled up, breasts out, nipples, bare skin, cleavage, heavy cleavage, bare shoulders, green bow, green ribbon, waist bow, frills, partially nude"
+NEGATIVE_PROMPT = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, multi-person, group, gangbang, intercrural, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 
 # Multi-stage Detailer Configuration (Simulating FaceDetailer node subgraph)
 # Defines a list of refinement passes: (detector_model_path, denoise_strength, guide_size)
@@ -36,6 +36,8 @@ REFINEMENT_PASSES = [
 OUTPUT_FILENAME_PREFIX = "output/AXL"
 REALESRGAN_MODEL_PATH = "/home/acite/LLM/Trainer/generate/upscale_models/RealESRGAN_x4plus_anime_6B.pth"
 
+max_token_length: int = 225
+clip_skip: int = 1
 
 def resolve_seed(seed_override=None):
     """

@@ -23,6 +23,8 @@ def generate_feather_mask(size, border_pixels=12):
     return mask.filter(ImageFilter.GaussianBlur(border_pixels / 2))
 
 
+from prompt_utils import encode_prompt_batch
+
 def enhance_bounding_box(
     image,
     bounding_box,
@@ -58,10 +60,39 @@ def enhance_bounding_box(
 
     # Run targeted regional inpainting
     generator = torch.Generator(device=config.DEVICE).manual_seed(seed)
+
+    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.POSITIVE_PROMPT],
+        tokenizer_1=inpaint_pipe.tokenizer,
+        tokenizer_2=inpaint_pipe.tokenizer_2,
+        text_encoder_1=inpaint_pipe.text_encoder,
+        text_encoder_2=inpaint_pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+
+    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.NEGATIVE_PROMPT],
+        tokenizer_1=inpaint_pipe.tokenizer,
+        tokenizer_2=inpaint_pipe.tokenizer_2,
+        text_encoder_1=inpaint_pipe.text_encoder,
+        text_encoder_2=inpaint_pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+
     with torch.inference_mode():
         inpainted_patch = inpaint_pipe(
-            prompt=config.POSITIVE_PROMPT,
-            negative_prompt=config.NEGATIVE_PROMPT,
+            prompt=None,
+            negative_prompt=None,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             image=resized_patch,
             mask_image=full_inpaint_mask,
             strength=denoise_strength,

@@ -1,7 +1,7 @@
 # pipeline.py
 import torch
 import config
-
+from prompt_utils import encode_prompt_batch
 
 def generate_base_image(
     pipe,
@@ -17,12 +17,39 @@ def generate_base_image(
 
     generator = torch.Generator(device=config.DEVICE).manual_seed(actual_seed)
 
+    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.POSITIVE_PROMPT],
+        tokenizer_1=pipe.tokenizer,
+        tokenizer_2=pipe.tokenizer_2,
+        text_encoder_1=pipe.text_encoder,
+        text_encoder_2=pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.NEGATIVE_PROMPT],
+        tokenizer_1=pipe.tokenizer,
+        tokenizer_2=pipe.tokenizer_2,
+        text_encoder_1=pipe.text_encoder,
+        text_encoder_2=pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+
     print(f"Using seed: {actual_seed}")
 
     with torch.inference_mode():
         output = pipe(
-            prompt=config.POSITIVE_PROMPT,
-            negative_prompt=config.NEGATIVE_PROMPT,
+            prompt=None,
+            negative_prompt=None,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             width=config.WIDTH,
             height=config.HEIGHT,
             num_inference_steps=steps,
@@ -49,10 +76,38 @@ def generate_upscaled_image(
 
     generator = torch.Generator(device=config.DEVICE).manual_seed(actual_seed)
 
+    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.POSITIVE_PROMPT],
+        tokenizer_1=pipe.tokenizer,
+        tokenizer_2=pipe.tokenizer_2,
+        text_encoder_1=pipe.text_encoder,
+        text_encoder_2=pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+
+    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+        prompts=[config.NEGATIVE_PROMPT],
+        tokenizer_1=pipe.tokenizer,
+        tokenizer_2=pipe.tokenizer_2,
+        text_encoder_1=pipe.text_encoder,
+        text_encoder_2=pipe.text_encoder_2,
+        clip_skip=config.clip_skip,
+        max_token_length=config.max_token_length,
+        device=torch.device(config.DEVICE),
+        dtype=config.TORCH_DTYPE,
+    )
+
     with torch.inference_mode():
         upscaled_image = pipe(
-            prompt=config.POSITIVE_PROMPT,
-            negative_prompt=config.NEGATIVE_PROMPT,
+            prompt=None,
+            negative_prompt=None,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             image=image,
             num_inference_steps=steps,
             guidance_scale=cfg_scale,

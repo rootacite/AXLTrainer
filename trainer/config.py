@@ -4,9 +4,11 @@ from dataclasses import dataclass
 class TrainConfig:
     # Environment and Paths
     pretrained_model_name_or_path: str = "/home/acite/LLM/models/diffusers/waillu_170"
-    train_data_dir: str = "/home/acite/Pictures/05_babara"
-    output_name: str = "babara"
+    train_data_dir: str = "/home/acite/Pictures/alice"
+    output_name: str = "alice"
 
+    # train_data_dir: str = "/home/acite/Pictures/05_babara"
+    # output_name: str = "babara"
     # train_data_dir: str = "/home/acite/Pictures/05_miyako"
     # output_name: str = "miyako"
     output_dir: str = "/home/acite/LLM/axltrainer/outputs"
@@ -29,9 +31,9 @@ class TrainConfig:
     gradient_accumulation_steps: int = 1
     learning_rate: float = 1.0
     lr_scheduler: str = "cosine"
-    lr_warmup_steps: int = 240
+    lr_warmup_steps: int = 100
     max_grad_norm: float = 1.0
-    epoch: int = 48
+    epoch: int = 60
     save_every_n_epochs: int = 1
     save_every_n_steps: int = 40
 
@@ -61,15 +63,15 @@ class TrainConfig:
     noise_offset: float = 0.05
 
      # UNet optimizer (Schedule-Free AdamW)
-    unet_learning_rate: float = 2.5e-5
+    unet_learning_rate: float = 4.5e-5
     unet_weight_decay: float = 0.01
     unet_betas_1: float = 0.9
     unet_betas_2: float = 0.99
     unet_eps: float = 1e-8
-    unet_warmup_steps: int = 240
+    unet_warmup_steps: int = 100
 
     # TE optimizer (fixed AdamW)
-    te_learning_rate: float = 2.5e-6
+    te_learning_rate: float = 4.5e-6
     te_weight_decay: float = 0.01
     te_betas_1: float = 0.9
     te_betas_2: float = 0.99
@@ -80,7 +82,9 @@ class TrainConfig:
     persistent_workers: bool = True
 
     # Inference Validation Samples
-    sample_prompts: str = ("barbara_style, masterpiece, newest, soft_shading, source_anime, solo, looking at viewer, closeup, lying on bed, on back, unbuttoned, open clothes, sleepwear, unbuttoned shirt, bare shoulders, large breasts, cleavage, nipples, panties on one leg, pussy, masturbation, skin focus, blushing, shy, cute, indoors, bedroom, bed, soft lighting, warm atmosphere, peaceful,")
+    sample_prompts: str = (
+        "alice_style, newest, soft_shading, source_anime, solo, looking at viewer, from above, full body, lying on bed, on back, unbuttoned, open clothes, sleepwear, unbuttoned shirt, bare shoulders,  white thighhighs, "
+        "large breasts, cleavage, one nipple, panties on one leg, pussy, pussy juice, female masturbation, female ejaculation, fingering, blush, shy, cute, indoors, bedroom, bed, soft lighting, warm atmosphere,")
     sample_negative: str = "bad quality,worst quality,worst detail,sketch,censor, censorship, multi-person, group, gangbang, intercrural, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres"
     sample_width: int = 1280
     sample_height: int = 720
