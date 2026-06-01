@@ -1,9 +1,8 @@
-import os
 import shutil
 from pathlib import Path
 
 # Import the configuration from your project
-from config import TrainConfig
+from trainer.config import TrainConfig
 
 
 def clean_project():

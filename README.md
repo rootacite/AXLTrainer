@@ -60,7 +60,7 @@ Open `config.py` and modify the core parameters. Remember to set your own paths:
 You can launch the training using the provided helper shell script:
 
 ```bash
-bash start.sh
+bash start_train.sh
 ```
 
 *(Make sure to update any custom paths inside `start.sh` if needed!)*

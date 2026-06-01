@@ -20,5 +20,8 @@ def setup_migraphx_cache(cache_dir_name: str = "migraphx_cache") -> Path:
 def flush_memory(device: torch.device) -> None:
     """Release Python and GPU-side cached memory."""
     gc.collect()
-    if device.type == "cuda":
+
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    elif hasattr(torch, "hip") and torch.hip.is_available():
+        torch.hip.empty_cache()

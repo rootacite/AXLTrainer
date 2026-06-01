@@ -217,6 +217,9 @@ def ultimate_sd_upscale(
     tile_size=1024,
     overlap=128,
     denoise_strength=0.25,
+    seed_override=None,
+    steps_override=None,
+    cfg_scale_override=None,
 ):
     """
     Ultimate SD Upscale implementation.
@@ -228,6 +231,10 @@ def ultimate_sd_upscale(
     """
 
     print(f"Starting Ultimate SD Upscale ({upscale_factor}x)")
+
+    actual_seed = config.resolve_seed(seed_override)
+    steps = config.STEPS if steps_override is None else int(steps_override)
+    cfg_scale = config.CFG_SCALE if cfg_scale_override is None else float(cfg_scale_override)
 
     # --------------------------------------------------------
     # Step 1: Physical Upscale
@@ -263,7 +270,7 @@ def ultimate_sd_upscale(
 
     generator = torch.Generator(
         device=config.DEVICE
-    ).manual_seed(config.SEED)
+    ).manual_seed(actual_seed)
 
     # --------------------------------------------------------
     # Step 3: Tile Refinement
@@ -275,15 +282,16 @@ def ultimate_sd_upscale(
 
         tile = base_upscaled.crop((left, top, right, bottom))
 
-        refined = img2img_pipe(
-            prompt=config.POSITIVE_PROMPT,
-            negative_prompt=config.NEGATIVE_PROMPT,
-            image=tile,
-            strength=denoise_strength,
-            num_inference_steps=config.STEPS * 3,
-            guidance_scale=config.CFG_SCALE,
-            generator=generator,
-        ).images[0]
+        with torch.inference_mode():
+            refined = img2img_pipe(
+                prompt=config.POSITIVE_PROMPT,
+                negative_prompt=config.NEGATIVE_PROMPT,
+                image=tile,
+                strength=denoise_strength,
+                num_inference_steps=steps * 3,
+                guidance_scale=cfg_scale,
+                generator=generator,
+            ).images[0]
 
         refined_np = np.array(refined).astype(np.float32)
 

@@ -4,10 +4,13 @@ from dataclasses import dataclass
 class TrainConfig:
     # Environment and Paths
     pretrained_model_name_or_path: str = "/home/acite/LLM/models/diffusers/waillu_170"
-    train_data_dir: str = "/home/acite/Pictures/05_miyako"
+    train_data_dir: str = "/home/acite/Pictures/05_babara"
+    output_name: str = "babara"
+
+    # train_data_dir: str = "/home/acite/Pictures/05_miyako"
+    # output_name: str = "miyako"
     output_dir: str = "/home/acite/LLM/axltrainer/outputs"
     logging_dir: str = "/home/acite/LLM/axltrainer/logs"
-    output_name: str = "miyako"
 
     # Model / dataset spec
     base_model_version: str = "sdxl_base_v1-0"
@@ -22,19 +25,19 @@ class TrainConfig:
     # Core Hyperparameters
     seed: int = 1145141919
     mixed_precision: str = "bf16"
-    train_batch_size: int = 2
-    gradient_accumulation_steps: int = 2
+    train_batch_size: int = 3
+    gradient_accumulation_steps: int = 1
     learning_rate: float = 1.0
     lr_scheduler: str = "cosine"
     lr_warmup_steps: int = 240
     max_grad_norm: float = 1.0
-    epoch: int = 64
+    epoch: int = 48
     save_every_n_epochs: int = 1
     save_every_n_steps: int = 40
 
     # Network Dimensions
     network_dim: int = 64
-    network_alpha: int = 64
+    network_alpha: int = 32
     network_dropout: float = 0.20
     clip_skip: int = 1
     max_token_length: int = 225
@@ -43,7 +46,9 @@ class TrainConfig:
     enable_bucket: bool = True
     bucket_no_upscale: bool = True
     train_resolution: int = 1024
-    bucket_reso_steps: int = 64
+    bucket_reso_steps: int = 128 # Ref: Fix Log 1
+
+
     min_bucket_reso: int = 768
     max_bucket_reso: int = 1280
 
@@ -56,7 +61,7 @@ class TrainConfig:
     noise_offset: float = 0.05
 
      # UNet optimizer (Schedule-Free AdamW)
-    unet_learning_rate: float = 3e-5
+    unet_learning_rate: float = 2.5e-5
     unet_weight_decay: float = 0.01
     unet_betas_1: float = 0.9
     unet_betas_2: float = 0.99
@@ -64,7 +69,7 @@ class TrainConfig:
     unet_warmup_steps: int = 240
 
     # TE optimizer (fixed AdamW)
-    te_learning_rate: float = 3e-6
+    te_learning_rate: float = 2.5e-6
     te_weight_decay: float = 0.01
     te_betas_1: float = 0.9
     te_betas_2: float = 0.99
@@ -75,10 +80,8 @@ class TrainConfig:
     persistent_workers: bool = True
 
     # Inference Validation Samples
-    sample_prompts: str = (
-        "miyako_style, newest, soft shading, (large breasts:1.2), white thighhighs, large breasts, closed mouth, shy, lying on bed, breasts out, nipples, anal sex, anus, doggystyle, panties around one leg, cum in ass, huge ass, huge penis, spread ass, ass grab"
-    )
-    sample_negative: str = "lowres, bad anatomy, (mosaic censoring:1.3), (text:1.3)"
+    sample_prompts: str = ("barbara_style, masterpiece, newest, soft_shading, source_anime, solo, looking at viewer, closeup, lying on bed, on back, unbuttoned, open clothes, sleepwear, unbuttoned shirt, bare shoulders, large breasts, cleavage, nipples, panties on one leg, pussy, masturbation, skin focus, blushing, shy, cute, indoors, bedroom, bed, soft lighting, warm atmosphere, peaceful,")
+    sample_negative: str = "bad quality,worst quality,worst detail,sketch,censor, censorship, multi-person, group, gangbang, intercrural, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres"
     sample_width: int = 1280
     sample_height: int = 720
     sample_steps: int = 36
@@ -93,3 +96,5 @@ class TrainConfig:
     ss_new_sd_model_hash: str | None = None
     ss_dataset_dirs: str | None = None
     ss_bucket_info: str | None = None
+
+    _current_epoch = 0

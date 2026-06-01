@@ -10,7 +10,7 @@ from PIL import Image
 
 from config import TrainConfig
 from text_processing import encode_prompt_batch
-from trainer.env import flush_memory
+from env import flush_memory
 
 
 def _offload_module(module: torch.nn.Module) -> None:
@@ -126,8 +126,6 @@ def generate_sample_image(
             latents = latent_result.images.to(device=device, dtype=vae_dtype)
             latents = latents / pipe.vae.config.scaling_factor
 
-            flush_memory(device)
-
             _move_module_to_device(pipe.vae, device, vae_dtype)
             if hasattr(pipe.vae.config, "force_upcast"):
                 pipe.vae.config.force_upcast = False
@@ -144,7 +142,6 @@ def generate_sample_image(
             Image.fromarray(image).save(out_path)
 
             _offload_module(pipe.vae)
-            flush_memory(device)
 
     finally:
         _offload_module(pipe.vae)

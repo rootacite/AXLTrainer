@@ -11,8 +11,9 @@ from accelerate import Accelerator
 from config import TrainConfig
 from models import save_lora_checkpoint
 from text_processing import encode_prompt_batch
-from trainer.sampling import generate_sample_image
+from sampling import generate_sample_image
 from utils import build_time_ids
+from env import flush_memory
 
 
 def group_indices_by_bucket(batch: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
@@ -242,6 +243,8 @@ def train_one_epoch(
     text_encoder_2.train()
 
     for batch in dataloader:
+        # flush_memory(device)
+        
         with accelerator.accumulate(unet, text_encoder_1, text_encoder_2):
             groups = group_indices_by_bucket(batch)
 
@@ -275,7 +278,6 @@ def train_one_epoch(
 
                 scaled_loss = loss * (len(indices) / len(batch["caption"]))
                 accelerator.backward(scaled_loss)
-
                 batch_loss_sum += loss.item() * len(indices)
                 batch_item_count += len(indices)
 
@@ -288,12 +290,11 @@ def train_one_epoch(
 
                 accelerator.clip_grad_norm_(unet_clip_params, cfg.max_grad_norm)
                 accelerator.clip_grad_norm_(te_clip_params, cfg.te_max_grad_norm)
-
-            unet_optimizer.step()
-            te_optimizer.step()
-            te_scheduler.step()
-            unet_optimizer.zero_grad(set_to_none=True)
-            te_optimizer.zero_grad(set_to_none=True)
+                unet_optimizer.step()
+                te_optimizer.step()
+                te_scheduler.step()
+                unet_optimizer.zero_grad(set_to_none=True)
+                te_optimizer.zero_grad(set_to_none=True)
 
         if accelerator.sync_gradients:
             global_step += 1
@@ -318,5 +319,7 @@ def train_one_epoch(
                 weight_dtype=weight_dtype,
                 global_step=global_step,
             )
+
+        flush_memory(device)
 
     return global_step

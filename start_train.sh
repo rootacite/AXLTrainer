@@ -16,5 +16,7 @@ export MIOPEN_DEBUG_ENABLE_AI_IMMED_MODE_FALLBACK=0
 export MIOPEN_CUSTOM_CACHE_DIR="$HOME/.cache/miopen"
 export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
-exec python -u main.py \
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,garbage_collection_threshold:0.8"
+
+exec python -u trainer/main.py \
     1> >(grep -Ev "grid_desc|CandidateSelectionModel|metadata" >> /dev/null)

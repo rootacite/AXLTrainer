@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -7,7 +6,7 @@ import streamlit as st
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 # Import the configuration from your project
-from config import TrainConfig
+from trainer.config import TrainConfig
 
 import numpy as np
 import plotly.graph_objects as go
@@ -264,8 +263,7 @@ def main():
     grouped_images = get_sample_images(cfg_dict['output_dir'], cfg_dict['output_name'])
     
     if grouped_images:
-        # 优化 3：兜底机制，最多只渲染最近的 15 个 Step
-        MAX_STEPS_TO_SHOW = 15 
+        MAX_STEPS_TO_SHOW = 40
         
         with st.container(height=650):
             for i, (step, img_paths) in enumerate(grouped_images.items()):

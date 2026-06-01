@@ -19,7 +19,7 @@ from models import (
     enable_flash_attention,
     load_sdxl_pipeline,
 )
-from trainer.env import setup_migraphx_cache
+from env import setup_migraphx_cache
 
 
 @dataclass

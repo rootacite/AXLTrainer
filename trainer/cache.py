@@ -7,7 +7,7 @@ from tqdm.auto import tqdm
 
 from config import TrainConfig
 from dataset import SDXLLoraDataset
-from trainer.env import flush_memory
+from env import flush_memory
 
 
 @torch.no_grad()

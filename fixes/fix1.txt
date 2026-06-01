@@ -1,0 +1,43 @@
+### 📝 Training Stability Report: Fix for AMD GPU (ROCm) Hardware Page Faults
+
+#### 🔍 Problem Description
+
+During training on specific datasets (e.g., highly diverse resolution sets) using AMD GPUs under the ROCm environment, the training process randomly encountered a fatal hardware-level segmentation fault, resulting in a core dump (`IOT instruction (core dumped)`).
+
+The system kernel log (`dmesg`) captured the following critical error:
+
+```text
+amdgpu 0000:03:00.0: [gfxhub] page fault (src_id:0 ring:24 vmid:8 pasid:144)
+GCVM_L2_PROTECTION_FAULT_STATUS:0x00801031
+Faulty UTCL2 client ID: TCP (0x8)
+PERMISSION_FAULTS: 0x3
+RW: 0x0
+
+```
+
+The crash occurred unpredictably, sometimes as early as step 5 or 25, and sometimes after several hundred steps, but was highly dataset-specific.
+
+---
+
+#### 💡 Root Cause Analysis
+
+The issue is fundamentally caused by **hardware memory non-alignment** induced by the dynamic bucket resolution configuration combined with the fragility of the ROCm memory management driver.
+
+1. **The VAE Downsampling Trap**: In Stable Diffusion, images are compressed by the VAE by a factor of 8 ($f8$). When the Aspect Ratio Bucketing step (`bucket_step`) was set to `64`, certain odd image dimensions resulted in latent spaces with dimensions that were multiples of 8 but **not divisible by 16** (e.g., a bucket of $832 \times 448$ yields a latent size of $104 \times 56$).
+2. **ROCm Driver Strictness**: Unlike NVIDIA's CUDA ecosystem—which seamlessly handles non-aligned matrices via hardware padding or fallback kernels—AMD's ROCm (specifically MIOpen and Flash Attention kernels) is highly intolerant of non-16-byte-aligned dimensions.
+3. **Memory Access Fault**: When the GPU wavefront attempted vectorized memory loads on these non-aligned latent matrices, it miscalculated pointer offsets and performed an out-of-bounds memory access. The GPU Memory Management Unit (MMU) detected this as a security threat, threw a `GCVM_L2_PROTECTION_FAULT`, and immediately terminated the Python process via the KFD driver.
+4. **The "Luck" Factor (Why it was random)**: Because `shuffle=True` was enabled, the order of batches changed every epoch. If multiple "toxic/non-aligned" buckets were fed consecutively or when the caching allocator was heavily fragmented, it triggered an instant crash. If the buckets were well-diluted, the memory allocator managed to mask the misalignment temporarily.
+
+---
+
+#### 🛠️ Solution & Verification
+
+* **Action Taken**: The bucketing step size (`step` / `bucket_reso_steps`) was increased from **`64`** to **`128`**.
+* **Why it works**: Forcing a bucket step of `128` guarantees that after VAE compression ($128 \div 8 = 16$), the latent dimensions will **always be perfectly divisible by 16 and 32** (e.g., $112, 128, 144$). This ensures the tensors are shaped into perfect "building blocks" that match the hardware's vectorized alignment expectations.
+* **Result**: The training successfully passed all early bottlenecks (steps 5, 25, 40) where crashes previously clustered, smoothly completing a full run of **1200+ steps** along with intensive image sampling tasks without a single error.
+
+---
+
+#### 📌 Key Takeaway for AMD ROCm Users
+
+> **Golden Rule**: When training Stable Diffusion models on AMD GPUs via ROCm, always enforce a bucket resolution step of **`128`**. Sacrificing a tiny bit of resolution granularity saves you from fatal, uncatchable hardware page faults.

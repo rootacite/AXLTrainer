@@ -12,7 +12,6 @@ from diffusers.models.attention_processor import AttnProcessor2_0
 from safetensors.torch import save_file
 
 from config import TrainConfig
-from utils import parse_kv_args
 
 logger = logging.getLogger(__name__)
 
