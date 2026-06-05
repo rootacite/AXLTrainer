@@ -220,7 +220,7 @@ def build_tree_lines(entries: list[Entry]) -> list[str]:
     Example:
     .
     ├── src/
-    │   └── main.py [text, 1.2 KiB]
+    │   └── generate-cli.py [text, 1.2 KiB]
     └── README.md [text, 2.0 KiB]
     """
     dir_set: set[str] = set()

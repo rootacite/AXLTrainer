@@ -7,7 +7,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler
 )
 
-import config
+import generate.config as config
 
 
 def configure_rocm_optimizations():
@@ -16,7 +16,7 @@ def configure_rocm_optimizations():
             torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def load_base_pipeline(keep_in_vram: bool = False):
+def load_base_pipeline():
     configure_rocm_optimizations()
 
     # Optional but highly recommended: Load the community-fixed fp16 VAE for SDXL
@@ -45,13 +45,7 @@ def load_base_pipeline(keep_in_vram: bool = False):
         pipe.fuse_lora(lora_scale=config.LORA_SCALE)
 
     # Quick mode wants the model to stay resident instead of being offloaded.
-    if keep_in_vram:
-        pipe.to(config.DEVICE)
-    else:
-        # VRAM OPTIMIZATION 1: Unload UNet/Text Encoder to CPU RAM when VAE is working
-        # IMPORTANT: Do not use pipe.to(config.DEVICE) when using cpu_offload!
-        pipe.enable_model_cpu_offload()
-
+    pipe.enable_model_cpu_offload()
     # VRAM OPTIMIZATION 2: Decode the image in smaller tiles (massive VRAM savings)
     pipe.vae.enable_tiling()
 
@@ -74,7 +68,6 @@ def load_inpaint_pipeline_from_base(base_pipe):
     )
 
     # Apply the same VRAM memory management techniques to the detailer pipeline
-    inpaint_pipe.enable_model_cpu_offload()
     inpaint_pipe.vae.enable_tiling()
 
     if config.DEVICE == "cuda":
@@ -95,7 +88,6 @@ def load_img2img_pipeline_from_base(base_pipe):
         feature_extractor=None
     )
 
-    img2img_pipe.enable_model_cpu_offload()
     img2img_pipe.vae.enable_tiling()
 
     if config.DEVICE == "cuda":

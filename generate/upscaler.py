@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 import torch
 
-import config
+import generate.config as config
 
 try:
     from basicsr.archs.rrdbnet_arch import RRDBNet
@@ -210,7 +210,7 @@ def generate_tile_coordinates(width, height, tile_size, overlap):
 # Ultimate SD Upscale
 # ============================================================
 
-from prompt_utils import encode_prompt_batch
+from generate.prompt_utils import encode_prompt_batch
 
 def ultimate_sd_upscale(
     image,

@@ -2,7 +2,7 @@
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFilter
-import config
+import generate.config as config
 
 try:
     from ultralytics import YOLO
@@ -23,7 +23,7 @@ def generate_feather_mask(size, border_pixels=12):
     return mask.filter(ImageFilter.GaussianBlur(border_pixels / 2))
 
 
-from prompt_utils import encode_prompt_batch
+from generate.prompt_utils import encode_prompt_batch
 
 def enhance_bounding_box(
     image,

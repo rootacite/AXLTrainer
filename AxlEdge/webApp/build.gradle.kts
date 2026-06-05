@@ -1,0 +1,29 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+
+plugins {
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.compose.multiplatform)
+    alias(libs.plugins.kotlinx.serialization)
+    alias(libs.plugins.metro)
+}
+
+kotlin {
+    js {
+        browser()
+        binaries.executable()
+    }
+
+    wasmJs {
+        browser()
+        binaries.executable()
+    }
+
+    sourceSets {
+        commonMain.dependencies {
+            implementation(project(":sharedUI"))
+        }
+    }
+}

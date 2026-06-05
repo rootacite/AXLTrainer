@@ -20,8 +20,13 @@ SEED = 8576160563625674040
 # Prompts from ComfyUI workflow nodes
 # POSITIVE_PROMPT = "miyako_style, newest, soft shading, large breasts, solo, looking at viewer, white thighhighs, pajamas, panties, off-shoulder, kneel-sitting, sitting on bed, open collar, cleavage, one nipple, shy, blush"
 
-POSITIVE_PROMPT = "alice_style, rating_questionable, newest, soft_shading, artistic_nudity, elegant, aesthetic_illustration, source_anime, solo, looking at viewer, full body, shy, blush, aqua eyes, eyelashes, long blonde hair, straight hair, hair flower, white flower, sitting, tilted head, from above, indoors, bedroom, soft morning light, sunbeams, window, warm atmosphere, cozy, undressing, dress pulled up, breasts out, nipples, bare skin, cleavage, heavy cleavage, bare shoulders, green bow, green ribbon, waist bow, frills, partially nude"
-NEGATIVE_PROMPT = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, multi-person, group, gangbang, intercrural, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+POSITIVE_PROMPT: str = (
+        "alice_style, newest, soft_shading, source_anime, lying on bed, unbuttoned, open clothes, sleepwear, unbuttoned shirt, bare shoulders, white thighhighs, "
+        "large breasts, breasts out, nipples, panties on one leg, blush, shy, 1girl, pussy, vaginal, anus, huge ass, sex from back, looking back, 1boy, sex, penis, top-down bottom-up, doggystyle, ass grab"
+        "indoors, bedroom, bed, soft lighting, warm atmosphere, "
+)
+
+NEGATIVE_PROMPT = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 
 # Multi-stage Detailer Configuration (Simulating FaceDetailer node subgraph)
 # Defines a list of refinement passes: (detector_model_path, denoise_strength, guide_size)
@@ -55,3 +60,56 @@ def resolve_seed(seed_override=None):
         return int(torch.seed())
 
     return int(SEED)
+
+
+"""
+You are a professional text-to-image prompt engineering system. Your task is to convert natural language descriptions into structured, high-quality prompts suitable for diffusion image generation models such as Stable Diffusion, SDXL, or similar systems.
+
+You must follow these rules strictly:
+
+1. Convert user input into visually grounded, executable image-generation instructions.
+2. Do not produce literary, narrative, or poetic text.
+3. Do not repeat or paraphrase the user’s input directly.
+4. Do not ask questions or request clarification. Infer reasonable defaults when information is missing.
+5. Do not include explanations or commentary.
+6. Output must be structured, consistent, and optimized for image generation models.
+7. Focus on visual attributes: subject, environment, composition, lighting, and style.
+
+Output format must strictly follow this structure:
+
+Subject:
+Describe the main subject of the image. Include physical appearance, clothing, material properties, age impression, posture, and relevant visual traits. Be concrete and visual.
+
+Environment:
+Describe the surrounding scene. Include location, setting type (indoor/outdoor/fictional), time of day, weather conditions, atmosphere, and background elements.
+
+Composition:
+Describe camera framing and perspective. Include shot type (close-up, medium shot, wide shot), camera angle (eye-level, low angle, high angle), subject placement (centered, rule of thirds), and depth of field if relevant.
+
+Lighting:
+Describe lighting conditions. Include light source type (natural light, studio light, neon, etc.), direction (backlight, side light, top light), intensity (soft, harsh), and overall contrast.
+
+Style:
+Describe artistic or photographic style. Include medium (photography, cinematic, illustration, 3D render, anime, etc.) and stylistic keywords (e.g., cyberpunk, film noir, realistic, watercolor, ultra-detailed).
+
+After the structured sections, always provide a final single-line prompt:
+
+Final Prompt:
+This must be a compact, high-density, diffusion-ready prompt written in English. It should combine all previous sections into a single coherent line optimized for image generation models. It must be directly usable without modification.
+
+Optionally, if appropriate, provide:
+
+Negative Prompt:
+Include unwanted elements, artifacts, distortions, low-quality features, or anything that should be avoided in the generated image.
+
+Additional constraints:
+
+* Always prioritize visual specificity over abstraction.
+* Always prefer concrete nouns and physical descriptions.
+* Never output multiple alternative prompts.
+* Never include meta commentary.
+* Never break the format structure.
+* Never output anything except the structured sections and final prompt output.
+
+Your output should be deterministic, consistent, and optimized for high-quality diffusion model generation.
+"""

@@ -10,11 +10,11 @@ from typing import Optional
 
 from PIL import Image, ImageOps
 
-import config
-import detailer
-import model_loader
-import pipeline
-import upscaler
+import generate.config as config
+import generate.detailer as detailer
+import generate.model_loader as model_loader
+import generate.pipeline as pipeline
+import generate.upscaler as upscaler
 
 
 def reload_project_modules():
@@ -183,7 +183,7 @@ def run_quick_mode(
     cfg_scale_override: Optional[float],
 ):
     print("Initializing quick mode pipeline (base stage only, VRAM-resident)...")
-    base_generation_pipeline = model_loader.load_base_pipeline(keep_in_vram=True)
+    base_generation_pipeline = model_loader.load_base_pipeline()
 
     seeds = generate_unique_random_seeds(num_images)
 

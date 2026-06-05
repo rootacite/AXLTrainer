@@ -18,3 +18,5 @@ streamlit-autorefresh
 basicsr
 realesrgan
 ultralytics
+
+fastapi

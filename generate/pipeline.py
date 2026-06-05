@@ -1,7 +1,7 @@
 # pipeline.py
 import torch
-import config
-from prompt_utils import encode_prompt_batch
+import generate.config as config
+from generate.prompt_utils import encode_prompt_batch
 
 def generate_base_image(
     pipe,
