@@ -64,7 +64,7 @@ class DashBoardViewModel(
                 fetchSamples()
 
                 if (autoRefresh) {
-                    delay(1_000L.milliseconds) // 10s auto-refresh
+                    delay(3_000L.milliseconds)
                 } else {
                     break
                 }

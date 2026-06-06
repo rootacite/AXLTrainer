@@ -19,6 +19,7 @@ import axledge.sharedui.generated.resources.*
 import dashBoard.DashBoard
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
+import generateBoard.GenerateBoard
 import org.acitelight.axledge.theme.AppTheme
 import org.acitelight.axledge.theme.LocalThemeIsDark
 import kotlinx.coroutines.isActive
@@ -139,7 +140,7 @@ fun App(
 fun MainContent(currentTab: AppTab) {
     when (currentTab) {
         AppTab.Dashboard -> DashBoard()
-        AppTab.Generator -> GeneratorScreen()
+        AppTab.Generator -> GenerateBoard()
         AppTab.Library -> LibraryScreen()
     }
 }
@@ -197,18 +198,6 @@ fun NavigationItem(
     }
 }
 
-@Composable
-fun GeneratorScreen() {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Generator Screen", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("Content for generating templates goes here.", style = MaterialTheme.typography.bodyLarge)
-    }
-}
 
 @Composable
 fun LibraryScreen() {

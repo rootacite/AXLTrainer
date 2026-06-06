@@ -16,9 +16,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -30,6 +33,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import components.dashBoard.CompactMetric
 import components.dashBoard.ControlPanelSection
@@ -51,105 +55,110 @@ import kotlin.math.roundToInt
 // ─────────────────────────────────────────────
 // Design tokens
 // ─────────────────────────────────────────────
-private val PanelMaxHeight = 80.dp
-private val PanelMinHeight = 0.dp
-private val PanelCollapseThreshold = 8.dp  // dp above minHeight where alpha hits 0
+private val PanelMaxHeight = 85.dp
 
 @Composable
 fun DashBoard(
     viewModel: DashBoardViewModel = metroViewModel()
 ) {
     val density = LocalDensity.current
+    val panelMaxHeightPx = with(density) { PanelMaxHeight.toPx() }
 
-    // Height of the collapsible panel in dp
-    var panelHeight by remember { mutableStateOf(PanelMaxHeight) }
-
-    // Alpha: 1f when fully open, 0f when fully collapsed
-    val panelAlpha by animateFloatAsState(
-        targetValue = run {
-            val dh = panelHeight - PanelMinHeight
-            if (dh > PanelCollapseThreshold) 1f
-            else (dh.value / PanelCollapseThreshold.value).coerceIn(0f, 1f)
-        },
-        animationSpec = tween(durationMillis = 80),
-        label = "panelAlpha"
-    )
+    var contentOffsetY by remember { mutableStateOf(panelMaxHeightPx) }
 
     val nestedScrollConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val deltaY = available.y
-                val deltaDp = with(density) { deltaY.toDp() }
 
-                return if (deltaY < 0 && panelHeight > PanelMinHeight) {
-                    // scrolling up → collapse
-                    val newHeight = (panelHeight + deltaDp).coerceIn(PanelMinHeight, PanelMaxHeight)
-                    val consumedDp = newHeight - panelHeight
-                    panelHeight = newHeight
-                    Offset(0f, with(density) { consumedDp.toPx() })
-                } else if (deltaY > 0 && panelHeight < PanelMaxHeight) {
-                    // scrolling down → expand
-                    val newHeight = (panelHeight + deltaDp).coerceIn(PanelMinHeight, PanelMaxHeight)
-                    val consumedDp = newHeight - panelHeight
-                    panelHeight = newHeight
-                    Offset(0f, with(density) { consumedDp.toPx() })
-                } else {
-                    Offset.Zero
-                }
+                val newOffset = (contentOffsetY + deltaY).coerceIn(0f, panelMaxHeightPx)
+                val consumedY = newOffset - contentOffsetY
+                contentOffsetY = newOffset
+
+                return if (consumedY != 0f) Offset(0f, consumedY) else Offset.Zero
             }
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
             .nestedScroll(nestedScrollConnection)
     ) {
-        // ── Top Control Panel (collapsible) ──
+        // ── Top Control Panel (Fixed Height & Positioned Behind) ──
         CollapsibleControlPanel(
             viewModel = viewModel,
-            panelHeight = panelHeight,
-            panelAlpha = panelAlpha
-        )
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-        // ── Scrollable main content ──
-        MainContent(
-            viewModel = viewModel,
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
+                .height(PanelMaxHeight)
+                .align(Alignment.TopCenter)
         )
+
+        // ── Scrollable main content (Overlays the panel) ──
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(0, contentOffsetY.roundToInt()) }
+                .drawWithCache {
+                    val shadowHeight = 20.dp.toPx()
+                    val topGradient = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.15f)
+                        ),
+                        startY = -shadowHeight,
+                        endY = 0f
+                    )
+                    val dividerColor = Color.Gray.copy(alpha = 0.3f)
+
+                    onDrawWithContent {
+                        drawRect(
+                            brush = topGradient,
+                            topLeft = Offset(0f, -shadowHeight),
+                            size = Size(size.width, shadowHeight)
+                        )
+
+                        drawLine(
+                            color = dividerColor,
+                            start = Offset(0f, 0f),
+                            end = Offset(size.width, 0f),
+                            strokeWidth = 1.dp.toPx()
+                        )
+                        drawContent()
+                    }
+                }
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            MainContent(
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
 // ─────────────────────────────────────────────
-// Collapsible top panel
+// Collapsible top panel (Now acts as a fixed background layer)
 // ─────────────────────────────────────────────
 @Composable
 private fun CollapsibleControlPanel(
     viewModel: DashBoardViewModel,
-    panelHeight: Dp,
-    panelAlpha: Float
+    modifier: Modifier = Modifier
 ) {
     val config = viewModel.configData
     val scrollState = rememberScrollState()
 
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(panelHeight)
+        modifier = modifier
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.0f)
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0f)
                     )
                 )
             )
-            .alpha(panelAlpha)
             .padding(horizontal = 12.dp)
     ) {
         Row(
@@ -157,7 +166,7 @@ private fun CollapsibleControlPanel(
                 .fillMaxHeight()
                 .wrapContentWidth()
                 .horizontalScroll(scrollState)
-                .padding(vertical = 4.dp),
+                .padding(top = 4.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -168,7 +177,7 @@ private fun CollapsibleControlPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = if (viewModel.autoRefresh) "1s  ON" else "OFF",
+                        text = if (viewModel.autoRefresh) "3s  ON" else "OFF",
                         style = MaterialTheme.typography.labelLarge,
                         color = if (viewModel.autoRefresh)
                             MaterialTheme.colorScheme.primary
@@ -229,12 +238,40 @@ private fun CollapsibleControlPanel(
                 }
             }
         }
+        val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+        val thumbColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+
+        Canvas(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 6.dp)
+                .width(100.dp)
+                .height(4.dp)
+        ) {
+            drawRoundRect(
+                color = trackColor,
+                size = size,
+                cornerRadius = CornerRadius(size.height / 2f)
+            )
+
+            if (scrollState.maxValue > 0) {
+                val progress = scrollState.value.toFloat() / scrollState.maxValue.toFloat()
+                val thumbWidth = size.width * 0.3f
+                val availableWidth = size.width - thumbWidth
+                val thumbOffset = progress * availableWidth
+
+                drawRoundRect(
+                    color = thumbColor,
+                    topLeft = Offset(thumbOffset, 0f),
+                    size = Size(thumbWidth, size.height),
+                    cornerRadius = CornerRadius(size.height / 2f)
+                )
+            }
+        }
     }
 }
 
-// ---------------------------------------------------------
-// Main scrollable content
-// ---------------------------------------------------------
+
 @Composable
 private fun MainContent(
     viewModel: DashBoardViewModel,

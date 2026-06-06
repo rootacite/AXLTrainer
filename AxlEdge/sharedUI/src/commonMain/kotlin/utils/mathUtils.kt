@@ -29,3 +29,18 @@ fun formatScientificTwoDecimals(value: Float): String {
 
     return "${formattedMantissa}e$sign$formattedExponent"
 }
+
+fun Float.toFixed(decimals: Int): String {
+    val factor = when (decimals) {
+        0 -> 1; 1 -> 10; 2 -> 100; 3 -> 1000; else -> 10000
+    }
+    val rounded = (this * factor).roundToInt()
+    val intPart = rounded / factor
+    return if (decimals == 0) {
+        "$intPart"
+    } else {
+        val fracPart = (rounded % factor).let { if (it < 0) -it else it }
+        val fracStr = fracPart.toString().padStart(decimals, '0')
+        "$intPart.$fracStr"
+    }
+}
