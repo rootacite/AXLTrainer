@@ -2,6 +2,7 @@ package components.generateBoard
 
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -10,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,7 +54,6 @@ import coil3.size.Size as CoilSize
 
 private val FluentPrimary = Color(0xFF0067C0)
 private val FluentPrimaryLight = Color(0xFF60CDFF)
-private val CardShape = RoundedCornerShape(12.dp)
 
 // ---------------------------------------------------------------------
 // Top Panel - Preview with Pager
@@ -59,29 +61,54 @@ private val CardShape = RoundedCornerShape(12.dp)
 @Composable
 fun PreviewPanel(
     state: dataModel.GenerateUiState,
+    isFullscreen: Boolean,
     onToggleLock: () -> Unit,
+    onDoubleTap: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val padding by animateDpAsState(
+        targetValue = if (isFullscreen) 0.dp else 20.dp,
+        label = "paddingAnim"
+    )
+    val bottomPadding by animateDpAsState(
+        targetValue = if (isFullscreen) 0.dp else 8.dp,
+        label = "bottomPaddingAnim"
+    )
+    val cornerRadius by animateDpAsState(
+        targetValue = if (isFullscreen) 0.dp else 12.dp,
+        label = "cornerAnim"
+    )
+
+    val dynamicShape = RoundedCornerShape(cornerRadius)
+
     Column(
-        modifier = modifier.padding(top = 20.dp, start = 20.dp, end = 20.dp, bottom = 8.dp)
+        modifier = modifier.padding(
+            top = padding,
+            start = padding,
+            end = padding,
+            bottom = bottomPadding
+        )
     ) {
         // Main Image Display
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .clip(CardShape)
+                .clip(dynamicShape)
                 .background(Color.Black.copy(alpha = 0.3f))
-                .border(1.dp, Color.White.copy(alpha = 0.1f), CardShape),
+                .border(1.dp, Color.White.copy(alpha = 0.1f), dynamicShape)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { onDoubleTap() }
+                    )
+                },
             contentAlignment = Alignment.Center
-        )
-        {
+        ) {
             val pageCount = state.historyImages.size + if (state.isGenerating) 1 else 0
 
             if (pageCount == 0) {
                 EmptyPreview()
             } else {
-                val pageCount = state.historyImages.size + if (state.isGenerating) 1 else 0
                 val pagerState = rememberPagerState(
                     pageCount = { pageCount }
                 )
@@ -122,7 +149,6 @@ fun PreviewPanel(
         }
     }
 }
-
 
 // ---------------------------------------------------------------------
 // Image Result

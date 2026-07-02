@@ -8,6 +8,11 @@ import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 
+import os
+import sys
+base_dir = os.getcwd()
+sys.path.append(base_dir)
+
 from config import TrainConfig
 from models import save_lora_checkpoint
 from text_processing import encode_prompt_batch
@@ -114,7 +119,7 @@ def compute_bucket_loss(
     weight_dtype: torch.dtype,
 ) -> torch.Tensor:
     """Run the forward pass for one bucket group and return the loss."""
-    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+    prompt_embeds, pooled_prompt_embeds, _ = encode_prompt_batch(
         prompts=prompts,
         tokenizer_1=tokenizer_1,
         tokenizer_2=tokenizer_2,

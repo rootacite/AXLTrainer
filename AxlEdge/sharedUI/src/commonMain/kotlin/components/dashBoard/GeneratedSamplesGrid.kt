@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,10 +36,12 @@ import dashBoard.DashBoardViewModel
 import kotlin.collections.component1
 import kotlin.collections.component2
 
-
 @Composable
 fun GeneratedSamplesGrid(viewModel: DashBoardViewModel) {
-    val groupedImages = viewModel.samplesData
+    val groupedImages = remember(viewModel.samplesData) {
+        viewModel.samplesData.entries
+            .sortedBy { it.key.toIntOrNull() ?: Int.MAX_VALUE }
+    }
 
     if (groupedImages.isEmpty()) {
         Card(
@@ -55,8 +58,14 @@ fun GeneratedSamplesGrid(viewModel: DashBoardViewModel) {
         return
     }
 
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        groupedImages.entries.take(40).forEach { (stepStr, items) ->
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        items(
+            items = groupedImages,
+            key = { it.key }
+        ) { (stepStr, samples) ->
             val stepLabel = if (stepStr == "-1") "Other / Unknown Step" else "Step $stepStr"
 
             Column {
@@ -72,7 +81,7 @@ fun GeneratedSamplesGrid(viewModel: DashBoardViewModel) {
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = "(${items.size} images)",
+                        text = "(${samples.size} images)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -82,7 +91,10 @@ fun GeneratedSamplesGrid(viewModel: DashBoardViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    items(items) { sample ->
+                    items(
+                        items = samples,
+                        key = { it.filename }
+                    ) { sample ->
                         AsyncSampleImageCard(sample.filename, viewModel)
                     }
                 }
@@ -92,7 +104,7 @@ fun GeneratedSamplesGrid(viewModel: DashBoardViewModel) {
 }
 
 @Composable
-private fun AsyncSampleImageCard(filename: String, viewModel: DashBoardViewModel) {
+fun AsyncSampleImageCard(filename: String, viewModel: DashBoardViewModel) {
     var imageBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
 
     LaunchedEffect(filename) {

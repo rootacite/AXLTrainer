@@ -1,4 +1,4 @@
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Tuple, Optional
 
 import torch
 from transformers import (
@@ -11,9 +11,9 @@ import math
 
 
 def _chunk_ids(
-    token_ids: List[int],
-    chunk_size: int,
-    max_token_length: int,
+        token_ids: List[int],
+        chunk_size: int,
+        max_token_length: int,
 ) -> List[List[int]]:
     token_ids = token_ids[:max_token_length]
 
@@ -21,15 +21,17 @@ def _chunk_ids(
         return [[]]
 
     return [
-        token_ids[i : i + chunk_size]
+        token_ids[i: i + chunk_size]
         for i in range(0, len(token_ids), chunk_size)
     ]
 
+
 def tokenize_long_prompt(
-    text: str,
-    tokenizer: CLIPTokenizer,
-    max_token_length: int,
-) -> torch.Tensor:
+        text: str,
+        tokenizer: CLIPTokenizer,
+        max_token_length: int,
+        target_num_chunks: Optional[int] = None,
+) -> Tuple[torch.Tensor, int]:
     chunk_size = tokenizer.model_max_length - 2
 
     token_ids = tokenizer(
@@ -45,22 +47,31 @@ def tokenize_long_prompt(
         max_token_length,
     )
 
-    max_chunks = max(1, math.ceil(max_token_length / chunk_size))
+    if target_num_chunks is not None:
+        max_chunks = target_num_chunks
+    else:
+        max_chunks = max(1, math.ceil(max_token_length / chunk_size))
+
     while len(chunks) < max_chunks:
         chunks.append([])
 
+    if len(chunks) > max_chunks:
+        chunks = chunks[:max_chunks]
+
     seqs = []
+
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     for chunk in chunks:
         ids = (
-            [tokenizer.bos_token_id]
-            + chunk
-            + [tokenizer.eos_token_id]
+                [tokenizer.bos_token_id]
+                + chunk
+                + [tokenizer.eos_token_id]
         )
 
         if len(ids) < tokenizer.model_max_length:
-            ids = ids + [tokenizer.pad_token_id] * (
-                tokenizer.model_max_length - len(ids)
+            ids = ids + [pad_id] * (
+                    tokenizer.model_max_length - len(ids)
             )
         else:
             ids = ids[: tokenizer.model_max_length]
@@ -68,7 +79,7 @@ def tokenize_long_prompt(
 
         seqs.append(torch.tensor(ids, dtype=torch.long))
 
-    return torch.stack(seqs, dim=0)
+    return torch.stack(seqs, dim=0), max_chunks
 
 
 def _get_pooled_output(output) -> torch.Tensor:
@@ -82,33 +93,42 @@ def _get_pooled_output(output) -> torch.Tensor:
 
 
 def encode_prompt_batch(
-    prompts: Sequence[str],
-    tokenizer_1: CLIPTokenizer,
-    tokenizer_2: CLIPTokenizer,
-    text_encoder_1: CLIPTextModel,
-    text_encoder_2: CLIPTextModelWithProjection,
-    clip_skip: int,
-    max_token_length: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-
+        prompts: Sequence[str],
+        tokenizer_1: CLIPTokenizer,
+        tokenizer_2: CLIPTokenizer,
+        text_encoder_1: CLIPTextModel,
+        text_encoder_2: CLIPTextModelWithProjection,
+        clip_skip: int,
+        max_token_length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        target_num_chunks: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
     prompt_embeds_out: List[torch.Tensor] = []
     pooled_out: List[torch.Tensor] = []
 
+    used_num_chunks = target_num_chunks
+
     for prompt in prompts:
 
-        ids_1 = tokenize_long_prompt(
+        ids_1, chunks_1 = tokenize_long_prompt(
             prompt,
             tokenizer_1,
             max_token_length,
-        ).to(device)
+            target_num_chunks,
+        )
+        ids_1 = ids_1.to(device)
 
-        ids_2 = tokenize_long_prompt(
+        ids_2, chunks_2 = tokenize_long_prompt(
             prompt,
             tokenizer_2,
             max_token_length,
-        ).to(device)
+            target_num_chunks,
+        )
+        ids_2 = ids_2.to(device)
+
+        if used_num_chunks is None:
+            used_num_chunks = chunks_1
 
         if len(ids_1) != len(ids_2):
             raise RuntimeError(
@@ -171,4 +191,5 @@ def encode_prompt_batch(
     return (
         torch.stack(prompt_embeds_out, dim=0),
         torch.stack(pooled_out, dim=0),
+        used_num_chunks if used_num_chunks is not None else 0
     )

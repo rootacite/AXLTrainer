@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 project_dump.py
@@ -24,7 +23,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
 
 DEFAULT_MAX_BYTES = 1 * 1024 * 1024  # 1 MiB
 SAMPLE_CHUNK = 4096
@@ -110,6 +108,9 @@ def read_dumpignore(root_path: Path) -> set[str]:
 
 
 def is_ignored_path(norm_rel: str, ignore_paths: set[str]) -> bool:
+    if "build" in norm_rel:
+        return True
+
     for ip in ignore_paths:
         if norm_rel == ip or norm_rel.startswith(ip + os.sep):
             return True
@@ -123,10 +124,10 @@ def should_skip_hidden(rel_parts: tuple[str, ...], name: str, include_hidden: bo
 
 
 def gather_entries(
-    root_path: str,
-    follow_symlinks: bool = False,
-    include_hidden: bool = False,
-    ignore_paths: Optional[set[str]] = None,
+        root_path: str,
+        follow_symlinks: bool = False,
+        include_hidden: bool = False,
+        ignore_paths: Optional[set[str]] = None,
 ) -> list[Entry]:
     root = Path(root_path).resolve()
     ignore_paths = ignore_paths or set()
@@ -142,7 +143,6 @@ def gather_entries(
         rel_dir_norm = "." if rel_dir == "." else os.path.normpath(rel_dir)
         rel_parts = () if rel_dir_norm in ("", ".") else tuple(Path(rel_dir_norm).parts)
 
-        # Prevent descent into hidden directories unless explicitly enabled.
         filtered_dirnames: list[str] = []
         for d in dirnames:
             if should_skip_hidden(rel_parts, d, include_hidden):
@@ -150,9 +150,9 @@ def gather_entries(
             filtered_dirnames.append(d)
         dirnames[:] = filtered_dirnames
 
-        # Record visible directories so they can appear in the tree section.
         if rel_dir_norm not in ("", ".") and rel_dir_norm not in seen_dirs:
             seen_dirs.add(rel_dir_norm)
+            dir_ignored = is_ignored_path(rel_dir_norm, ignore_paths)
             try:
                 stat = current_dir.stat()
                 entries.append(
@@ -162,6 +162,7 @@ def gather_entries(
                         is_dir=True,
                         size=stat.st_size,
                         mtime=stat.st_mtime,
+                        ignored=dir_ignored,
                     )
                 )
             except Exception:
@@ -171,6 +172,7 @@ def gather_entries(
                         full_path=current_dir,
                         is_dir=True,
                         unreadable=True,
+                        ignored=dir_ignored,
                     )
                 )
 
@@ -192,6 +194,7 @@ def gather_entries(
                         full_path=full_path,
                         is_dir=False,
                         unreadable=True,
+                        ignored=ignored,
                     )
                 )
                 continue
@@ -209,22 +212,33 @@ def gather_entries(
                 )
             )
 
-    # Deterministic ordering: directories first, then files, both lexicographically.
     entries.sort(key=lambda e: (Path(e.rel_path).parts, 0 if e.is_dir else 1))
     return entries
 
 
 def build_tree_lines(entries: list[Entry]) -> list[str]:
-    """
-    Build a tree view rooted at '.'.
-    Example:
-    .
-    ├── src/
-    │   └── generate-cli.py [text, 1.2 KiB]
-    └── README.md [text, 2.0 KiB]
-    """
     dir_set: set[str] = set()
     file_map: dict[str, Entry] = {}
+    entry_map: dict[str, Entry] = {}
+
+    for e in entries:
+        entry_map[e.rel_path] = e
+
+    # Filter out entries where the entry itself or any parent folder is ignored
+    non_ignored_entries = []
+    for e in entries:
+        parts = Path(e.rel_path).parts
+        is_any_parent_ignored = False
+        acc: list[str] = []
+        for part in parts:
+            acc.append(part)
+            current_check_path = os.path.normpath(os.path.join(*acc))
+            if current_check_path in entry_map and entry_map[current_check_path].ignored:
+                is_any_parent_ignored = True
+                break
+
+        if not e.ignored and not is_any_parent_ignored:
+            non_ignored_entries.append(e)
 
     def add_dir(path: str) -> None:
         if path in ("", "."):
@@ -236,7 +250,7 @@ def build_tree_lines(entries: list[Entry]) -> list[str]:
             acc.append(part)
             dir_set.add(os.path.normpath(os.path.join(*acc)))
 
-    for e in entries:
+    for e in non_ignored_entries:
         parts = list(Path(e.rel_path).parts)
         if e.is_dir:
             add_dir(e.rel_path)
@@ -310,11 +324,11 @@ def read_text_file(path: Path, max_bytes: int) -> tuple[str, bool]:
 
 
 def build_output(
-    entries: list[Entry],
-    root_path: Path,
-    output_file: Path,
-    max_bytes: int,
-    verbose: bool,
+        entries: list[Entry],
+        root_path: Path,
+        output_file: Path,
+        max_bytes: int,
+        verbose: bool,
 ) -> str:
     root_path = root_path.resolve()
     generated = dt.datetime.now().isoformat(sep=" ", timespec="seconds")
@@ -430,8 +444,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        required=True,
-        help="Output dump file name or path.",
+    required = True,
+    help = "Output dump file name or path.",
     )
     parser.add_argument(
         "--max-bytes",

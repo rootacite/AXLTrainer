@@ -1,0 +1,91 @@
+[environment]
+pretrained_model_name_or_path = "/home/acite/LLM/models/diffusers/waillu_170"
+train_data_dir = "/home/acite/LLM/Character/kanae"
+output_name = "kanae"
+output_dir = "/home/acite/LLM/axltrainer/outputs"
+logging_dir = "/home/acite/LLM/axltrainer/logs"
+
+# Alternatives:
+# train_data_dir = "/home/acite/LLM/Character/Towa/"
+# output_name = "towa"
+# train_data_dir = "/home/acite/Pictures/05_babara"
+# output_name = "babara"
+# train_data_dir = "/home/acite/Pictures/05_miyako"
+# output_name = "miyako"
+
+[model_spec]
+base_model_version = "sdxl_base_v1-0"
+modelspec_architecture = "stable-diffusion-xl-v1-base/lora"
+modelspec_implementation = "https://github.com/Stability-AI/generative-models"
+modelspec_sai_model_spec = "1.0.0"
+
+[training]
+is_vpred = false
+min_snr_gamma = 5.0
+seed = 1145141919
+mixed_precision = "bf16"
+train_batch_size = 3
+gradient_accumulation_steps = 1
+learning_rate = 1.0
+lr_scheduler = "cosine"
+lr_warmup_steps = 100
+max_grad_norm = 1.0
+epoch = 60
+save_every_n_epochs = 1
+save_every_n_steps = 100
+
+[network]
+network_dim = 48
+network_alpha = 24
+network_dropout = 0.15
+clip_skip = 1
+max_token_length = 225
+
+[bucketing]
+enable_bucket = true
+bucket_no_upscale = true
+train_resolution = 1024
+bucket_reso_steps = 128
+min_bucket_reso = 768
+max_bucket_reso = 1280
+
+[optimization]
+cache_latents = true
+cache_latents_to_disk = true
+shuffle_caption = true
+keep_tokens = 2
+caption_extension = ".txt"
+noise_offset = 0.05
+
+[unet_optimizer]
+unet_learning_rate = 6e-5
+unet_weight_decay = 0.01
+unet_betas_1 = 0.9
+unet_betas_2 = 0.99
+unet_eps = 1e-8
+unet_warmup_steps = 100
+
+[te_optimizer]
+te_learning_rate = 6e-6
+te_weight_decay = 0.01
+te_betas_1 = 0.9
+te_betas_2 = 0.99
+te_max_grad_norm = 0.3
+
+[infrastructure]
+max_data_loader_n_workers = 20
+persistent_workers = true
+
+[validation]
+sample_prompts = "(kanae_style:1.2), masterpiece, best quality, amazing quality, newest, soft_shading, source_anime, solo, white thighhighs, 1girl, full body, from above, cinematic composition, looking at viewer, sweet smile, blushing, cleavage, magnificent white wedding dress, strapless dress, white bridal veil, translucent veil, flowing veil, hair ornament, indoors, bedroom, bed, lying on bed, lying, soft lighting, warm atmosphere, nipples, bra pull, white bra，panties, mattress springs visible, loving atmosphere, open eyes"
+sample_negative = "bad quality, worst quality, worst detail, sketch, multi-person, group, gangbang, intercrural, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres"
+sample_width = 1280
+sample_height = 720
+sample_steps = 55
+sample_seed = 0
+sample_repeat = 3
+guidance_scale = 6.0
+
+[bookkeeping]
+# TOML doesn't support Null directly in standard key-value pairs without specific schema handling,
+# so we omit them here. The Python script will fallback to None.

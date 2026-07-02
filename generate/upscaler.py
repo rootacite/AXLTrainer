@@ -210,7 +210,7 @@ def generate_tile_coordinates(width, height, tile_size, overlap):
 # Ultimate SD Upscale
 # ============================================================
 
-from generate.prompt_utils import encode_prompt_batch
+from text_processing import encode_prompt_batch
 
 def ultimate_sd_upscale(
     image,
@@ -274,7 +274,7 @@ def ultimate_sd_upscale(
         device=config.DEVICE
     ).manual_seed(actual_seed)
 
-    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+    prompt_embeds, pooled_prompt_embeds, npu = encode_prompt_batch(
         prompts=[config.POSITIVE_PROMPT],
         tokenizer_1=img2img_pipe.tokenizer,
         tokenizer_2=img2img_pipe.tokenizer_2,
@@ -286,7 +286,7 @@ def ultimate_sd_upscale(
         dtype=config.TORCH_DTYPE,
     )
 
-    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+    negative_prompt_embeds, negative_pooled_prompt_embeds, _ = encode_prompt_batch(
         prompts=[config.NEGATIVE_PROMPT],
         tokenizer_1=img2img_pipe.tokenizer,
         tokenizer_2=img2img_pipe.tokenizer_2,
@@ -296,6 +296,7 @@ def ultimate_sd_upscale(
         max_token_length=config.max_token_length,
         device=torch.device(config.DEVICE),
         dtype=config.TORCH_DTYPE,
+        target_num_chunks=npu
     )
 
     # --------------------------------------------------------

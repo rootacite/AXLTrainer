@@ -8,6 +8,11 @@ from accelerate import Accelerator
 from diffusers import EulerAncestralDiscreteScheduler
 from PIL import Image
 
+import os
+import sys
+base_dir = os.getcwd()
+sys.path.append(base_dir)
+
 from config import TrainConfig
 from text_processing import encode_prompt_batch
 from env import flush_memory
@@ -68,7 +73,7 @@ def generate_sample_image(
     pipe.scheduler.sigmas = torch.from_numpy(sigmas).to(device)
     pipe.scheduler.num_inference_steps = num_inference_steps
 
-    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+    prompt_embeds, pooled_prompt_embeds, npu = encode_prompt_batch(
         prompts=[cfg.sample_prompts],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -79,7 +84,7 @@ def generate_sample_image(
         device=device,
         dtype=dtype,
     )
-    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+    negative_prompt_embeds, negative_pooled_prompt_embeds, _ = encode_prompt_batch(
         prompts=[cfg.sample_negative],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -89,6 +94,7 @@ def generate_sample_image(
         max_token_length=cfg.max_token_length,
         device=device,
         dtype=dtype,
+        target_num_chunks=npu
     )
 
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"

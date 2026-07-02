@@ -6,3 +6,6 @@ model.onnx
 selected_tags.csv
 translated_output.csv
 output/
+AxlEdge/build/
+AxlEdge/kotlin-js-store/
+config.py

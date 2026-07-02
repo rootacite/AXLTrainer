@@ -14,6 +14,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -37,6 +40,7 @@ fun GenerateBoard(
     viewModel: GenerateBoardViewModel = metroViewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    var isFullscreen by remember { mutableStateOf(false) }
 
     AnimatedVisibility(
         visible = state.isLoadingConfig,
@@ -65,15 +69,23 @@ fun GenerateBoard(
                 .background(Color(0xFF121212))
         ) {
             val totalHeight = maxHeight
-            val previewHeight = totalHeight * 0.3f
+            val defaultPreviewHeight = totalHeight * 0.3f
+
+            val animatedPreviewHeight by animateDpAsState(
+                targetValue = if (isFullscreen) totalHeight else defaultPreviewHeight,
+                animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                label = "previewHeightAnimation"
+            )
 
             Column(Modifier.fillMaxSize()) {
                 PreviewPanel(
                     state = state,
+                    isFullscreen = isFullscreen,
                     onToggleLock = {  },
+                    onDoubleTap = { isFullscreen = !isFullscreen },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(previewHeight)
+                        .height(animatedPreviewHeight)
                 )
 
                 // Top glowing boundary line
@@ -109,7 +121,6 @@ fun GenerateBoard(
         }
     }
 }
-
 
 @Composable
 private fun FluentProgressRing(

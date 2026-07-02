@@ -7,23 +7,18 @@ TORCH_DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
 # Model Paths (Change to your local absolute paths or HuggingFace repo IDs)
 BASE_MODEL_PATH = "/home/acite/LLM/models/diffusers/waillu_170"
-LORA_PATH = "/home/acite/LLM/models/loras/alice.safetensors"
-LORA_SCALE = 0.9
+LORA_PATH = "/home/acite/LLM/models/loras/towa1.safetensors"
+LORA_SCALE = 0.93
 
 # Base Image Generation Parameters
 WIDTH = 1280
 HEIGHT = 720
 STEPS = 60
-CFG_SCALE = 5.5
-SEED = 8576160563625674040
-
-# Prompts from ComfyUI workflow nodes
-# POSITIVE_PROMPT = "miyako_style, newest, soft shading, large breasts, solo, looking at viewer, white thighhighs, pajamas, panties, off-shoulder, kneel-sitting, sitting on bed, open collar, cleavage, one nipple, shy, blush"
+CFG_SCALE = 6.0
+SEED = 16493136562447
 
 POSITIVE_PROMPT: str = (
-        "alice_style, newest, soft_shading, source_anime, lying on bed, unbuttoned, open clothes, sleepwear, unbuttoned shirt, bare shoulders, white thighhighs, "
-        "large breasts, breasts out, nipples, panties on one leg, blush, shy, 1girl, pussy, vaginal, anus, huge ass, sex from back, looking back, 1boy, sex, penis, top-down bottom-up, doggystyle, ass grab"
-        "indoors, bedroom, bed, soft lighting, warm atmosphere, "
+        "(towa_style:1.2), masterpiece, best quality, amazing quality, newest, soft_shading, source_anime, solo, white thighhighs, 1girl, full body, from above, cinematic composition, looking at viewer, sweet smile, "
 )
 
 NEGATIVE_PROMPT = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
@@ -113,3 +108,4 @@ Additional constraints:
 
 Your output should be deterministic, consistent, and optimized for high-quality diffusion model generation.
 """
+

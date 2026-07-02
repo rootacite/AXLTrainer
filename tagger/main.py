@@ -8,7 +8,7 @@ from PIL import Image
 import pandas as pd
 
 # Set environment variables for MIGraphX (AMD GPU) optimization
-cache_dir = os.path.join(os.getcwd(), "migraphx_cache")
+cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migraphx_cache")
 if not os.path.exists(cache_dir):
     os.makedirs(cache_dir)
 

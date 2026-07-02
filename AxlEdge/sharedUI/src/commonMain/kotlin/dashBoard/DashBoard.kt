@@ -6,6 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import components.dashBoard.AsyncSampleImageCard
 import components.dashBoard.CompactMetric
 import components.dashBoard.ControlPanelSection
 import components.dashBoard.GeneratedSamplesGrid
@@ -271,7 +273,6 @@ private fun CollapsibleControlPanel(
     }
 }
 
-
 @Composable
 private fun MainContent(
     viewModel: DashBoardViewModel,
@@ -282,125 +283,239 @@ private fun MainContent(
 
     BoxWithConstraints(modifier = modifier) {
         val isWideScreen = maxWidth > maxHeight
+        val groupedImages = viewModel.samplesData.entries
+            .sortedByDescending { it.key.toIntOrNull() ?: Int.MIN_VALUE }
 
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            // -- Header --
-            val loggingDir = config?.get("logging_dir")?.jsonPrimitive?.content ?: "N/A"
-            val outputName = config?.get("output_name")?.jsonPrimitive?.content ?: "N/A"
-            val outputDir = config?.get("output_dir")?.jsonPrimitive?.content ?: "N/A"
-
-            if (isWideScreen) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    HeaderTitle()
-                    Column(horizontalAlignment = Alignment.End) {
-                        PathBadge("Logs", "$loggingDir/$outputName")
-                        Spacer(Modifier.height(4.dp))
-                        PathBadge("Output", outputDir)
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalAlignment = Alignment.Start
-                ) {
-                    HeaderTitle()
-                    Column(horizontalAlignment = Alignment.Start) {
-                        PathBadge("Logs", "$loggingDir/$outputName")
-                        Spacer(Modifier.height(4.dp))
-                        PathBadge("Output", outputDir)
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(32.dp))
-
-            if (latestStats != null) {
-                // -- Real-time metric cards --
-                SectionHeader("Real-time Metrics")
-                Spacer(Modifier.height(12.dp))
-
-                val currentStep = latestStats["current_step"]?.jsonPrimitive?.intOrNull?.toString() ?: "-"
-                val latestLoss = latestStats["Train/Loss"]?.jsonPrimitive?.floatOrNull?.let { formatFourDecimals(it) } ?: "-"
-                val unetLr = latestStats["UNet/LR/Effective_Actual_LR"]?.jsonPrimitive?.floatOrNull?.let { formatScientificTwoDecimals(it) } ?: "-"
-                val teLr = latestStats["TE/LR/Effective_Actual_LR"]?.jsonPrimitive?.floatOrNull?.let { formatScientificTwoDecimals(it) } ?: "-"
+            item {
+                val loggingDir = config?.get("logging_dir")?.jsonPrimitive?.content ?: "N/A"
+                val outputName = config?.get("output_name")?.jsonPrimitive?.content ?: "N/A"
+                val outputDir = config?.get("output_dir")?.jsonPrimitive?.content ?: "N/A"
 
                 if (isWideScreen) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        MetricCard("Current Step", currentStep, accentColor = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                        MetricCard("Latest Loss", latestLoss, accentColor = Color(0xFFFF4B4B), modifier = Modifier.weight(1f))
-                        MetricCard("UNet LR", unetLr, accentColor = Color(0xFF0068C9), modifier = Modifier.weight(1f))
-                        MetricCard("TE Effective LR", teLr, accentColor = Color(0xFF7B61FF), modifier = Modifier.weight(1f))
+                        HeaderTitle()
+                        Column(horizontalAlignment = Alignment.End) {
+                            PathBadge("Logs", "$loggingDir/$outputName")
+                            Spacer(Modifier.height(4.dp))
+                            PathBadge("Output", outputDir)
+                        }
                     }
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            MetricCard("Current Step", currentStep, accentColor = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                            MetricCard("Latest Loss", latestLoss, accentColor = Color(0xFFFF4B4B), modifier = Modifier.weight(1f))
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            MetricCard("UNet LR", unetLr, accentColor = Color(0xFF0068C9), modifier = Modifier.weight(1f))
-                            MetricCard("TE Effective LR", teLr, accentColor = Color(0xFF7B61FF), modifier = Modifier.weight(1f))
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalAlignment = Alignment.Start
+                    ) {
+                        HeaderTitle()
+                        Column(horizontalAlignment = Alignment.Start) {
+                            PathBadge("Logs", "$loggingDir/$outputName")
+                            Spacer(Modifier.height(4.dp))
+                            PathBadge("Output", outputDir)
                         }
                     }
                 }
 
-                Spacer(Modifier.height(36.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(32.dp))
+            }
 
-                // -- Charts --
-                SectionHeader("Training Charts")
-                Spacer(Modifier.height(12.dp))
-                ChartsGrid(viewModel, isWideScreen)
+            if (latestStats != null) {
+                item {
+                    SectionHeader("Real-time Metrics")
+                    Spacer(Modifier.height(12.dp))
+                }
 
+                item {
+                    val currentStep = latestStats["current_step"]?.jsonPrimitive?.intOrNull?.toString() ?: "-"
+                    val latestLoss = latestStats["Train/Loss"]?.jsonPrimitive?.floatOrNull?.let { formatFourDecimals(it) } ?: "-"
+                    val unetLr = latestStats["UNet/LR/Effective_Actual_LR"]?.jsonPrimitive?.floatOrNull?.let { formatScientificTwoDecimals(it) } ?: "-"
+                    val teLr = latestStats["TE/LR/Effective_Actual_LR"]?.jsonPrimitive?.floatOrNull?.let { formatScientificTwoDecimals(it) } ?: "-"
+
+                    if (isWideScreen) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            MetricCard(
+                                "Current Step",
+                                currentStep,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                "Latest Loss",
+                                latestLoss,
+                                accentColor = Color(0xFFFF4B4B),
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                "UNet LR",
+                                unetLr,
+                                accentColor = Color(0xFF0068C9),
+                                modifier = Modifier.weight(1f)
+                            )
+                            MetricCard(
+                                "TE Effective LR",
+                                teLr,
+                                accentColor = Color(0xFF7B61FF),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                MetricCard(
+                                    "Current Step",
+                                    currentStep,
+                                    accentColor = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MetricCard(
+                                    "Latest Loss",
+                                    latestLoss,
+                                    accentColor = Color(0xFFFF4B4B),
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                MetricCard(
+                                    "UNet LR",
+                                    unetLr,
+                                    accentColor = Color(0xFF0068C9),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MetricCard(
+                                    "TE Effective LR",
+                                    teLr,
+                                    accentColor = Color(0xFF7B61FF),
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(36.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    Spacer(Modifier.height(28.dp))
+                }
+
+                item {
+                    SectionHeader("Training Charts")
+                    Spacer(Modifier.height(12.dp))
+                    ChartsGrid(viewModel, isWideScreen)
+                }
             } else {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(20.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Row(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = "No TensorBoard logs found yet. Waiting for training to start...",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(36.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    Spacer(Modifier.height(28.dp))
+                }
+            }
+
+            item {
+                SectionHeader("Generated Samples")
+                Spacer(Modifier.height(12.dp))
+            }
+
+            if (groupedImages.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
                         Text(
-                            text = "No TensorBoard logs found yet. Waiting for training to start...",
+                            "No sample images generated yet.",
+                            modifier = Modifier.padding(20.dp),
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
+            } else {
+                items(
+                    items = groupedImages,
+                    key = { it.key }
+                ) { (stepStr, samples) ->
+                    val stepLabel = if (stepStr == "-1") "Other / Unknown Step" else "Step $stepStr"
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 10.dp)
+                        ) {
+                            Text(
+                                text = stepLabel,
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                text = "(${samples.size} images)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(
+                                items = samples,
+                                key = { it.filename }
+                            ) { sample ->
+                                AsyncSampleImageCard(sample.filename, viewModel)
+                            }
+                        }
+                    }
+                }
             }
 
-            Spacer(Modifier.height(36.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-            Spacer(Modifier.height(28.dp))
-
-            // -- Generated samples --
-            SectionHeader("Generated Samples")
-            Spacer(Modifier.height(12.dp))
-            GeneratedSamplesGrid(viewModel)
-
-            Spacer(Modifier.height(48.dp))
+            item {
+                Spacer(Modifier.height(48.dp))
+            }
         }
     }
 }
-
 @Composable
 private fun HeaderTitle() {
     Column {

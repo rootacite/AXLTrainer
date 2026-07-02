@@ -1,7 +1,7 @@
 # pipeline.py
 import torch
 import generate.config as config
-from generate.prompt_utils import encode_prompt_batch
+from text_processing import encode_prompt_batch
 
 def generate_base_image(
     pipe,
@@ -17,7 +17,7 @@ def generate_base_image(
 
     generator = torch.Generator(device=config.DEVICE).manual_seed(actual_seed)
 
-    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+    prompt_embeds, pooled_prompt_embeds, npu = encode_prompt_batch(
         prompts=[config.POSITIVE_PROMPT],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -28,7 +28,7 @@ def generate_base_image(
         device=torch.device(config.DEVICE),
         dtype=config.TORCH_DTYPE,
     )
-    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+    negative_prompt_embeds, negative_pooled_prompt_embeds, _ = encode_prompt_batch(
         prompts=[config.NEGATIVE_PROMPT],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -38,6 +38,7 @@ def generate_base_image(
         max_token_length=config.max_token_length,
         device=torch.device(config.DEVICE),
         dtype=config.TORCH_DTYPE,
+        target_num_chunks=npu
     )
 
     print(f"Using seed: {actual_seed}")
@@ -76,7 +77,7 @@ def generate_upscaled_image(
 
     generator = torch.Generator(device=config.DEVICE).manual_seed(actual_seed)
 
-    prompt_embeds, pooled_prompt_embeds = encode_prompt_batch(
+    prompt_embeds, pooled_prompt_embeds, npu = encode_prompt_batch(
         prompts=[config.POSITIVE_PROMPT],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -88,7 +89,7 @@ def generate_upscaled_image(
         dtype=config.TORCH_DTYPE,
     )
 
-    negative_prompt_embeds, negative_pooled_prompt_embeds = encode_prompt_batch(
+    negative_prompt_embeds, negative_pooled_prompt_embeds, _ = encode_prompt_batch(
         prompts=[config.NEGATIVE_PROMPT],
         tokenizer_1=pipe.tokenizer,
         tokenizer_2=pipe.tokenizer_2,
@@ -98,6 +99,7 @@ def generate_upscaled_image(
         max_token_length=config.max_token_length,
         device=torch.device(config.DEVICE),
         dtype=config.TORCH_DTYPE,
+        target_num_chunks=npu
     )
 
     with torch.inference_mode():

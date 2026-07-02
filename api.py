@@ -1,19 +1,24 @@
 import asyncio
-
 import io
 import os
 import re
+import gc
+import ctypes
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+import torch
 
 from trainer.config import TrainConfig
 import generate.config as gen_config
@@ -22,19 +27,16 @@ import generate.model_loader as gen_model_loader
 import generate.pipeline as gen_pipeline
 import generate.upscaler as gen_upscaler
 
-import torch
-import gc
 
-# ==========================================
-# Lifespan
-# ==========================================
+# Create a dedicated single-thread executor for generation tasks
+generation_executor = ThreadPoolExecutor(max_workers=1)
 
 @asynccontextmanager
 async def lifespan(lapp: FastAPI):
     lapp.state.runtime_pipelines = None
     lapp.state.generation_lock = asyncio.Lock()
     yield
-
+    generation_executor.shutdown(wait=True)
 
 app = FastAPI(
     title="LoRA Training & Generation API",
@@ -145,12 +147,41 @@ def _get_tensorboard_metrics(
     return metrics
 
 
+def _destroy_runtime(runtime: RuntimePipelines) -> None:
+    if runtime is None:
+        return
+    try:
+        # Delete the pipelines entirely to break cyclic references
+        del runtime.inpaint_pipe
+        del runtime.img2img_pipe
+        del runtime.base_pipe
+    except Exception:
+        pass
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+
+def _force_os_memory_release() -> None:
+    # Forces glibc to return freed memory in thread arenas back to the OS
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _sync_ensure_runtime_pipelines(state) -> RuntimePipelines | None:
     desired_key = _pipeline_load_key()
     runtime: Optional[RuntimePipelines] = getattr(state, "runtime_pipelines", None)
 
     if runtime is not None and runtime.load_key == desired_key:
         return runtime
+
+    if runtime is not None:
+        _destroy_runtime(runtime)
+        state.runtime_pipelines = None
 
     try:
         gen_upscaler.get_realesrgan_upsampler.cache_clear()
@@ -161,6 +192,8 @@ def _sync_ensure_runtime_pipelines(state) -> RuntimePipelines | None:
     inpaint_pipe = gen_model_loader.load_inpaint_pipeline_from_base(base_pipe)
     img2img_pipe = gen_model_loader.load_img2img_pipeline_from_base(base_pipe)
 
+    base_pipe.enable_model_cpu_offload()
+
     runtime = RuntimePipelines(
         base_pipe=base_pipe,
         inpaint_pipe=inpaint_pipe,
@@ -169,7 +202,6 @@ def _sync_ensure_runtime_pipelines(state) -> RuntimePipelines | None:
     )
     state.runtime_pipelines = runtime
     return runtime
-
 
 @contextmanager
 def _temporary_config_overrides(
@@ -215,15 +247,37 @@ def _temporary_config_overrides(
             setattr(gen_config, attr, value)
 
 
+# ==========================================
+# Output Auto-Save
+# ==========================================
 
-def _sync_quick(
-    state,
-    overrides: PromptOverrides,
-    numeric_overrides: Dict[str, Any],
+def _save_output(
+    save_dir: str,
+    png_bytes: bytes,
     seed: Optional[int],
-    steps: Optional[int],
-    cfg_scale: Optional[float],
-) -> bytes:
+    params: Dict[str, Any],
+) -> None:
+    try:
+        out_dir = Path(save_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        seed_str = str(seed) if seed is not None else "noseed"
+        stem = f"axl_{date_str}_{seed_str}"
+
+        img_path = out_dir / f"{stem}.png"
+        img_path.write_bytes(png_bytes)
+
+        txt_path = out_dir / f"{stem}.txt"
+        lines = [f"{k}: {v}" for k, v in params.items()]
+        txt_path.write_text("\n".join(lines), encoding="utf-8")
+    except Exception as exc:
+        # 保存失败不应中断正常响应，仅打印警告
+        import traceback
+        print(f"[WARNING] _save_output failed: {exc}\n{traceback.format_exc()}")
+
+
+def _sync_quick(state, overrides, numeric_overrides, seed, steps, cfg_scale) -> bytes:
     with _temporary_config_overrides(overrides, numeric_overrides):
         runtime = _sync_ensure_runtime_pipelines(state)
         image, _ = gen_pipeline.generate_base_image(
@@ -233,14 +287,16 @@ def _sync_quick(
             cfg_scale_override=cfg_scale,
             return_seed=True,
         )
+        result = _to_png_bytes(image)
+        del image
 
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-        gc.collect()
+    _force_os_memory_release()
 
-    return _to_png_bytes(image)
+    return result
 
 
 def _sync_generate(
@@ -301,13 +357,47 @@ def _sync_generate(
             torch.cuda.empty_cache()
 
         gc.collect()
-
+        _force_os_memory_release()
         return _to_png_bytes(final)
 
 
 # ==========================================
 # Dashboard & Samples Endpoints
 # ==========================================
+
+@app.get("/api/config/train")
+async def get_train_config():
+    import dataclasses
+
+    cfg = TrainConfig()
+    if dataclasses.is_dataclass(cfg):
+        config_data = dataclasses.asdict(cfg)
+    else:
+        config_data = vars(cfg)
+
+    return config_data
+
+
+@app.get("/api/config/generate")
+async def get_generate_config():
+    import types
+
+    config_dict = {}
+    for key in dir(gen_config):
+        if key.startswith("_"):
+            continue
+
+        val = getattr(gen_config, key)
+
+        if isinstance(val, (types.ModuleType, types.FunctionType, types.BuiltinFunctionType)):
+            continue
+
+        if isinstance(val, torch.dtype):
+            config_dict[key] = str(val)
+        else:
+            config_dict[key] = val
+
+    return config_dict
 
 @app.get("/api/dashboard")
 async def get_dashboard_data(
@@ -413,14 +503,28 @@ async def api_quick(
     lock: asyncio.Lock = app.state.generation_lock
     async with lock:
         try:
-            png_bytes = await asyncio.to_thread(
-                _sync_quick, app.state, body, numeric_overrides,
-                seed, steps, cfg_scale,
+            loop = asyncio.get_running_loop()
+            png_bytes = await loop.run_in_executor(
+                generation_executor,
+                _sync_quick,
+                app.state, body, numeric_overrides, seed, steps, cfg_scale
             )
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+
+    save_params: Dict[str, Any] = {
+        **body.model_dump(),
+        "seed": seed,
+        "steps": steps,
+        "cfg_scale": cfg_scale,
+        "width": width,
+        "height": height,
+    }
+    asyncio.create_task(
+        asyncio.to_thread(_save_output, "./output/quick", png_bytes, seed, save_params)
+    )
 
     return Response(content=png_bytes, media_type="image/png")
 
@@ -448,17 +552,31 @@ async def api_generate(
     lock: asyncio.Lock = app.state.generation_lock
     async with lock:
         try:
-            png_bytes = await asyncio.to_thread(
-                _sync_generate, app.state, body, numeric_overrides,
-                stages, seed, steps, cfg_scale,
+            loop = asyncio.get_running_loop()
+            png_bytes = await loop.run_in_executor(
+                generation_executor,
+                _sync_generate,
+                app.state, body, numeric_overrides, stages, seed, steps, cfg_scale
             )
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
 
-    return Response(content=png_bytes, media_type="image/png")
+    save_params: Dict[str, Any] = {
+        **body.model_dump(),
+        "stages": stages,
+        "seed": seed,
+        "steps": steps,
+        "cfg_scale": cfg_scale,
+        "width": width,
+        "height": height,
+    }
+    asyncio.create_task(
+        asyncio.to_thread(_save_output, "./output/generate", png_bytes, seed, save_params)
+    )
 
+    return Response(content=png_bytes, media_type="image/png")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,1365 @@
+PROJECT METADATA
+root: /home/acite/LLM/Trainer/tools
+generated: 2026-06-30 21:55:15
+output: tools.txt
+
+TREE
+.
+├── caper.py [text, 1.8 KiB]
+├── dropper.py [text, 3.1 KiB]
+├── dumper.py [text, 14.3 KiB]
+├── inspect_lora.py [text, 2.6 KiB]
+├── snapping.py [text, 7.2 KiB]
+├── stand_compose.py [text, 2.0 KiB]
+├── suf.py [text, 1.8 KiB]
+├── tag_coser.py [text, 3.3 KiB]
+├── tag_counter.py [text, 2.2 KiB]
+└── tag_filter.py [text, 2.5 KiB]
+
+SUMMARY
+root: /home/acite/LLM/Trainer/tools
+generated: 2026-06-30 21:55:15
+total entries: 10
+text files included: 10
+binary files skipped: 0
+ignored files skipped: 0
+unreadable files: 0
+truncated files: 0
+
+FILE CONTENTS
+
+===== FILE: caper.py =====
+path: caper.py
+size: 1882
+modified: 2026-03-18 12:14:29
+status: included
+
+----- BEGIN TEXT -----
+import os
+import argparse
+from pathlib import Path
+
+def clean_tags(tags_str, to_remove):
+    # 将标签按逗号分割，并去除每个标签前后的空格
+    tags = [t.strip() for t in tags_str.split(',') if t.strip()]
+    
+    # 移除指定的标签
+    if to_remove:
+        tags = [t for t in tags if t not in to_remove]
+    
+    # 重新组合成逗号分隔的字符串
+    return ", ".join(tags) + ","
+
+def process_dataset(dataset_path, to_remove, extension=".txt"):
+    path = Path(dataset_path)
+    if not path.exists():
+        print(f"❌ 错误: 找不到路径 {dataset_path}")
+        return
+
+    files = list(path.glob(f"*{extension}"))
+    if not files:
+        print(f"⚠️  警告: 在 {dataset_path} 中没有找到 {extension} 文件。")
+        return
+
+    print(f"🔍 正在处理 {len(files)} 个文件...")
+
+    for file_path in files:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        new_content = clean_tags(content, to_remove)
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+    print(f"✨ 清洗完成！已移除标签: {to_remove}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Kohya_ss LoRA 标签文件批量清洗工具")
+    
+    # 必需参数：数据集路径
+    parser.add_argument("path", type=str, help="包含 .txt 或 .caption 文件的文件夹路径")
+    
+    # 可选参数：移除特定标签（支持传入多个）
+    parser.add_argument("-r", "--remove", type=str, nargs='+', help="要移除的标签名称")
+    
+    # 可选参数：指定文件后缀，默认是 .txt
+    parser.add_argument("-e", "--ext", type=str, default=".txt", help="标签文件的后缀 (默认: .txt)")
+
+    args = parser.parse_args()
+
+    process_dataset(args.path, args.remove, args.ext)
+
+if __name__ == "__main__":
+    main()
+
+----- END TEXT -----
+
+===== FILE: dropper.py =====
+path: dropper.py
+size: 3210
+modified: 2026-06-30 15:10:30
+status: included
+
+----- BEGIN TEXT -----
+#!/usr/bin/env python3
+import argparse
+import random
+import shutil
+import sys
+from pathlib import Path
+
+
+def drop_samples(directory_path, tagger_name, rate):
+    dir_path = Path(directory_path)
+
+    if not dir_path.exists() or not dir_path.is_dir():
+        print(f"Error: The path '{directory_path}' is not a valid directory.", file=sys.stderr)
+        sys.exit(1)
+
+    if not (0.0 < rate <= 1.0):
+        print("Error: Rate must be in the range (0, 1].", file=sys.stderr)
+        sys.exit(1)
+
+    trash_dir = dir_path / "trash"
+    
+    # Supported image extensions
+    img_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    
+    txt_files = list(dir_path.glob("*.txt"))
+    if not txt_files:
+        print(f"No .txt files found in '{directory_path}'.")
+        return
+
+    processed_count = 0
+    dropped_count = 0
+
+    for txt_path in txt_files:
+        # Skip files already inside trash if the script is rerun
+        if txt_path.parent == trash_dir:
+            continue
+
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            tags = {tag.strip() for tag in content.split(",") if tag.strip()}
+            
+            if tagger_name in tags:
+                processed_count += 1
+                
+                # Determine whether to drop based on the probability rate
+                if random.random() < rate:
+                    if not trash_dir.exists():
+                        trash_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Find matching image file
+                    img_path = None
+                    for ext in img_extensions:
+                        possible_img = txt_path.with_suffix(ext)
+                        if possible_img.exists():
+                            img_path = possible_img
+                            break
+                    
+                    # Move txt file
+                    shutil.move(str(txt_path), str(trash_dir / txt_path.name))
+                    
+                    # Move image file if it exists
+                    if img_path:
+                        shutil.move(str(img_path), str(trash_dir / img_path.name))
+                        
+                    dropped_count += 1
+
+        except Exception as e:
+            print(f"Warning: Failed to process {txt_path.name} due to {e}", file=sys.stderr)
+
+    print("=" * 50)
+    print(" DROPPER EXECUTION REPORT")
+    print("=" * 50)
+    print(f"Target Tag:       {tagger_name}")
+    print(f"Drop Rate:        {rate * 100:.2f}%")
+    print(f"Matching Files:   {processed_count}")
+    print(f"Dropped Files:    {dropped_count}")
+    print(f"Trash Directory:  {trash_dir}")
+    print("=" * 50)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Randomly drop dataset samples matching a specific tag into a trash folder."
+    )
+    parser.add_argument("dir", type=str, help="Path to the dataset directory")
+    parser.add_argument("tag", type=str, help="The tag to target for dropping")
+    parser.add_argument("rate", type=float, help="Probability of dropping (0.0, 1.0]")
+
+    args = parser.parse_args()
+    drop_samples(args.dir, args.tag, args.rate)
+
+----- END TEXT -----
+
+===== FILE: dumper.py =====
+path: dumper.py
+size: 14690
+modified: 2026-06-06 07:38:40
+status: included
+
+----- BEGIN TEXT -----
+#!/usr/bin/env python3
+"""
+project_dump.py
+
+Create a plain-text project dump with:
+1. A tree-style project metadata section at the top.
+2. Plain-text file content blocks for readable text files.
+3. Output filename supplied from the command line.
+
+Behavior:
+- Hidden files/directories are skipped by default.
+- A root-level .dumpignore file can exclude paths.
+- Binary files are detected heuristically and skipped.
+- Large files are truncated per --max-bytes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+DEFAULT_MAX_BYTES = 1 * 1024 * 1024  # 1 MiB
+SAMPLE_CHUNK = 4096
+OUTPUT_ENCODING = "utf-8"
+
+
+@dataclass(slots=True)
+class Entry:
+    rel_path: str
+    full_path: Path
+    is_dir: bool
+    is_binary: bool = False
+    size: Optional[int] = None
+    mtime: Optional[float] = None
+    unreadable: bool = False
+    ignored: bool = False
+
+
+def format_mtime(epoch: Optional[float]) -> str:
+    if epoch is None:
+        return "N/A"
+    return dt.datetime.fromtimestamp(epoch).isoformat(sep=" ", timespec="seconds")
+
+
+def format_size(size: Optional[int]) -> str:
+    if size is None:
+        return "-"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024.0
+    return f"{size} B"
+
+
+def is_binary_file(path: Path, sample_bytes: int = SAMPLE_CHUNK) -> bool:
+    try:
+        with path.open("rb") as f:
+            chunk = f.read(sample_bytes)
+    except Exception:
+        return True
+
+    if not chunk:
+        return False
+
+    if b"\x00" in chunk:
+        return True
+
+    try:
+        chunk.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        return True
+
+
+def normalize_ignore_path(raw: str) -> Optional[str]:
+    line = raw.split("#", 1)[0].strip()
+    if not line:
+        return None
+    if line.startswith("./") or line.startswith(".\\"):
+        line = line[2:]
+    norm = os.path.normpath(line)
+    if norm in ("", "."):
+        return None
+    return norm
+
+
+def read_dumpignore(root_path: Path) -> set[str]:
+    ignore_file = root_path / ".dumpignore"
+    if not ignore_file.is_file():
+        return set()
+
+    ignores: set[str] = set()
+    try:
+        for raw in ignore_file.read_text(encoding=OUTPUT_ENCODING).splitlines():
+            item = normalize_ignore_path(raw)
+            if item:
+                ignores.add(item)
+    except Exception:
+        return set()
+    return ignores
+
+
+def is_ignored_path(norm_rel: str, ignore_paths: set[str]) -> bool:
+    if "build" in norm_rel:
+        return True
+
+    for ip in ignore_paths:
+        if norm_rel == ip or norm_rel.startswith(ip + os.sep):
+            return True
+    return False
+
+
+def should_skip_hidden(rel_parts: tuple[str, ...], name: str, include_hidden: bool) -> bool:
+    if include_hidden:
+        return False
+    return name.startswith(".") or any(part.startswith(".") for part in rel_parts)
+
+
+def gather_entries(
+        root_path: str,
+        follow_symlinks: bool = False,
+        include_hidden: bool = False,
+        ignore_paths: Optional[set[str]] = None,
+) -> list[Entry]:
+    root = Path(root_path).resolve()
+    ignore_paths = ignore_paths or set()
+    entries: list[Entry] = []
+    seen_dirs: set[str] = set()
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
+        dirnames.sort()
+        filenames.sort()
+
+        current_dir = Path(dirpath)
+        rel_dir = os.path.relpath(current_dir, root)
+        rel_dir_norm = "." if rel_dir == "." else os.path.normpath(rel_dir)
+        rel_parts = () if rel_dir_norm in ("", ".") else tuple(Path(rel_dir_norm).parts)
+
+        filtered_dirnames: list[str] = []
+        for d in dirnames:
+            if should_skip_hidden(rel_parts, d, include_hidden):
+                continue
+            filtered_dirnames.append(d)
+        dirnames[:] = filtered_dirnames
+
+        if rel_dir_norm not in ("", ".") and rel_dir_norm not in seen_dirs:
+            seen_dirs.add(rel_dir_norm)
+            dir_ignored = is_ignored_path(rel_dir_norm, ignore_paths)
+            try:
+                stat = current_dir.stat()
+                entries.append(
+                    Entry(
+                        rel_path=rel_dir_norm,
+                        full_path=current_dir,
+                        is_dir=True,
+                        size=stat.st_size,
+                        mtime=stat.st_mtime,
+                        ignored=dir_ignored,
+                    )
+                )
+            except Exception:
+                entries.append(
+                    Entry(
+                        rel_path=rel_dir_norm,
+                        full_path=current_dir,
+                        is_dir=True,
+                        unreadable=True,
+                        ignored=dir_ignored,
+                    )
+                )
+
+        for filename in filenames:
+            if should_skip_hidden(rel_parts, filename, include_hidden):
+                continue
+
+            full_path = current_dir / filename
+            rel = os.path.relpath(full_path, root)
+            norm_rel = os.path.normpath(rel)
+            ignored = is_ignored_path(norm_rel, ignore_paths)
+
+            try:
+                stat = os.stat(full_path, follow_symlinks=follow_symlinks)
+            except Exception:
+                entries.append(
+                    Entry(
+                        rel_path=norm_rel,
+                        full_path=full_path,
+                        is_dir=False,
+                        unreadable=True,
+                        ignored=ignored,
+                    )
+                )
+                continue
+
+            is_bin = False if ignored else is_binary_file(full_path)
+            entries.append(
+                Entry(
+                    rel_path=norm_rel,
+                    full_path=full_path,
+                    is_dir=False,
+                    is_binary=is_bin,
+                    size=stat.st_size,
+                    mtime=stat.st_mtime,
+                    ignored=ignored,
+                )
+            )
+
+    entries.sort(key=lambda e: (Path(e.rel_path).parts, 0 if e.is_dir else 1))
+    return entries
+
+
+def build_tree_lines(entries: list[Entry]) -> list[str]:
+    dir_set: set[str] = set()
+    file_map: dict[str, Entry] = {}
+    entry_map: dict[str, Entry] = {}
+
+    for e in entries:
+        entry_map[e.rel_path] = e
+
+    # Filter out entries where the entry itself or any parent folder is ignored
+    non_ignored_entries = []
+    for e in entries:
+        parts = Path(e.rel_path).parts
+        is_any_parent_ignored = False
+        acc: list[str] = []
+        for part in parts:
+            acc.append(part)
+            current_check_path = os.path.normpath(os.path.join(*acc))
+            if current_check_path in entry_map and entry_map[current_check_path].ignored:
+                is_any_parent_ignored = True
+                break
+
+        if not e.ignored and not is_any_parent_ignored:
+            non_ignored_entries.append(e)
+
+    def add_dir(path: str) -> None:
+        if path in ("", "."):
+            return
+        dir_set.add(path)
+        parts = list(Path(path).parts)
+        acc: list[str] = []
+        for part in parts[:-1]:
+            acc.append(part)
+            dir_set.add(os.path.normpath(os.path.join(*acc)))
+
+    for e in non_ignored_entries:
+        parts = list(Path(e.rel_path).parts)
+        if e.is_dir:
+            add_dir(e.rel_path)
+        else:
+            file_map[e.rel_path] = e
+            for i in range(1, len(parts)):
+                dir_set.add(os.path.normpath(os.path.join(*parts[:i])))
+
+    children: dict[str, set[str]] = {"": set()}
+    for d in dir_set:
+        children.setdefault(d, set())
+        parent = str(Path(d).parent)
+        if parent == ".":
+            parent = ""
+        children.setdefault(parent, set()).add(d)
+
+    for path in file_map:
+        parent = str(Path(path).parent)
+        if parent == ".":
+            parent = ""
+        children.setdefault(parent, set()).add(path)
+
+    def is_dir_node(path: str) -> bool:
+        return path in dir_set and path not in file_map
+
+    def label(path: str) -> str:
+        if path == ".":
+            return "."
+        if is_dir_node(path):
+            return f"{Path(path).name}/"
+        e = file_map[path]
+        flags: list[str] = []
+        if e.unreadable:
+            flags.append("unreadable")
+        elif e.ignored:
+            flags.append("ignored")
+        elif e.is_binary:
+            flags.append("binary")
+        else:
+            flags.append("text")
+        if e.size is not None:
+            flags.append(format_size(e.size))
+        return f"{Path(path).name} [{', '.join(flags)}]"
+
+    def sort_key(path: str) -> tuple[int, str]:
+        return (0 if is_dir_node(path) else 1, Path(path).name.lower())
+
+    lines: list[str] = ["."]
+
+    def render(parent: str, prefix: str = "") -> None:
+        items = sorted(children.get(parent, set()), key=sort_key)
+        for idx, child in enumerate(items):
+            last = idx == len(items) - 1
+            connector = "└── " if last else "├── "
+            next_prefix = "    " if last else "│   "
+            lines.append(prefix + connector + label(child))
+            if is_dir_node(child):
+                render(child, prefix + next_prefix)
+
+    render("")
+    return lines
+
+
+def read_text_file(path: Path, max_bytes: int) -> tuple[str, bool]:
+    with path.open("rb") as f:
+        raw = f.read(max_bytes + 1)
+    truncated = len(raw) > max_bytes
+    if truncated:
+        raw = raw[:max_bytes]
+    return raw.decode("utf-8", errors="replace"), truncated
+
+
+def build_output(
+        entries: list[Entry],
+        root_path: Path,
+        output_file: Path,
+        max_bytes: int,
+        verbose: bool,
+) -> str:
+    root_path = root_path.resolve()
+    generated = dt.datetime.now().isoformat(sep=" ", timespec="seconds")
+
+    file_entries = [e for e in entries if not e.is_dir]
+    included = 0
+    skipped_binary = 0
+    skipped_ignored = 0
+    unreadable = 0
+    truncated = 0
+
+    tree_lines = build_tree_lines(entries)
+    blocks: list[str] = []
+
+    for e in file_entries:
+        rel = e.rel_path
+        mtime = format_mtime(e.mtime)
+
+        if e.unreadable:
+            unreadable += 1
+            continue
+        if e.ignored:
+            skipped_ignored += 1
+            continue
+        if e.is_binary:
+            skipped_binary += 1
+            continue
+
+        try:
+            text, was_truncated = read_text_file(e.full_path, max_bytes)
+        except Exception:
+            unreadable += 1
+            continue
+
+        included += 1
+        if was_truncated:
+            truncated += 1
+
+        status = "included"
+        if was_truncated:
+            status = f"included (truncated to {max_bytes} bytes)"
+
+        blocks.append(
+            "\n".join(
+                [
+                    f"===== FILE: {rel} =====",
+                    f"path: {rel}",
+                    f"size: {e.size if e.size is not None else '-'}",
+                    f"modified: {mtime}",
+                    f"status: {status}",
+                    "",
+                    "----- BEGIN TEXT -----",
+                    text,
+                    "----- END TEXT -----",
+                    "",
+                ]
+            )
+        )
+
+    summary = "\n".join(
+        [
+            "SUMMARY",
+            f"root: {root_path}",
+            f"generated: {generated}",
+            f"total entries: {len(entries)}",
+            f"text files included: {included}",
+            f"binary files skipped: {skipped_binary}",
+            f"ignored files skipped: {skipped_ignored}",
+            f"unreadable files: {unreadable}",
+            f"truncated files: {truncated}",
+            "",
+        ]
+    )
+
+    output_text = "\n".join(
+        [
+            "PROJECT METADATA",
+            f"root: {root_path}",
+            f"generated: {generated}",
+            f"output: {output_file}",
+            "",
+            "TREE",
+            *tree_lines,
+            "",
+            summary,
+            "FILE CONTENTS",
+            "",
+            *blocks,
+        ]
+    )
+
+    if verbose:
+        print(f"Writing dump to: {output_file}")
+        print(
+            "Files included: "
+            f"{included}, binary skipped: {skipped_binary}, ignored skipped: {skipped_ignored}, "
+            f"unreadable: {unreadable}, truncated: {truncated}"
+        )
+
+    return output_text
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create a plain-text dump of a directory tree with metadata and file contents."
+    )
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=".",
+        help="Root directory to dump (default: current directory).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+    required = True,
+    help = "Output dump file name or path.",
+    )
+    parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=DEFAULT_MAX_BYTES,
+        help=f"Maximum bytes to include per text file (default: {DEFAULT_MAX_BYTES}).",
+    )
+    parser.add_argument(
+        "--follow-symlinks",
+        action="store_true",
+        help="Follow symbolic links while walking the tree.",
+    )
+    parser.add_argument(
+        "--include-hidden",
+        action="store_true",
+        help="Include hidden files and directories.",
+    )
+    parser.add_argument(
+        "--no-verbose",
+        dest="verbose",
+        action="store_false",
+        help="Suppress console output.",
+    )
+    parser.set_defaults(verbose=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    root = Path(args.root)
+    output = Path(args.output)
+
+    ignore_paths = read_dumpignore(root)
+    entries = gather_entries(
+        str(root),
+        follow_symlinks=args.follow_symlinks,
+        include_hidden=args.include_hidden,
+        ignore_paths=ignore_paths,
+    )
+
+    text = build_output(
+        entries=entries,
+        root_path=root,
+        output_file=output,
+        max_bytes=args.max_bytes,
+        verbose=args.verbose,
+    )
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding=OUTPUT_ENCODING)
+    except Exception as e:
+        raise RuntimeError(f"Failed to write output file '{output}': {e}") from e
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+----- END TEXT -----
+
+===== FILE: inspect_lora.py =====
+path: inspect_lora.py
+size: 2657
+modified: 2026-05-27 01:08:19
+status: included
+
+----- BEGIN TEXT -----
+import sys
+from pathlib import Path
+import torch
+from safetensors import safe_open
+
+def inspect_safetensors(file_path: str):
+    path = Path(file_path)
+    if not path.exists():
+        print(f"[错误] 文件不存在: {file_path}")
+        return
+
+    print("=" * 60)
+    print(f" 开始分析 LoRA 文件: {path.name}")
+    print("=" * 60)
+
+    try:
+        with safe_open(path, framework="pt", device="cpu") as f:
+            # 1. 打印元数据 (Metadata)
+            metadata = f.metadata()
+            print("\n📌 【1. 元数据 (Metadata)】")
+            if metadata:
+                for k, v in metadata.items():
+                    print(f"  {k}: {v}")
+            else:
+                print("  (该文件没有包含任何元数据 metadata)")
+
+            # 2. 获取所有的键 (Keys)
+            keys = sorted(list(f.keys()))
+            total_keys = len(keys)
+            print(f"\n📌 【2. 权重键总数 (Total Keys)】: {total_keys}")
+
+            if total_keys == 0:
+                print("  (这是一个空权重文件！)")
+                return
+
+            # 3. 统计前缀分布，帮我们一眼看出是什么格式
+            print("\n📌 【3. 键名前缀统计 (Prefix Distribution)】")
+            prefix_counts = {}
+            for k in keys:
+                # 提取前缀（例如 lora_unet, lora_te, unet, base_model 等）
+                parts = k.split('_') if '_' in k else k.split('.')
+                prefix = parts[0] if parts else "unknown"
+                prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+            
+            for pref, count in prefix_counts.items():
+                print(f"  前缀 '{pref}': {count} 个键")
+
+            # 4. 打印前 15 个和最后 5 个键的样例及 Shape
+            print("\n📌 【4. 键名和张量形状样例 (Key Samples)】")
+            print("--- 前 15 个键 ---")
+            for k in keys[:15]:
+                tensor = f.get_tensor(k)
+                print(f"  {k} -> shape: {list(tensor.shape)}, dtype: {tensor.dtype}")
+            
+            if total_keys > 15:
+                print("  ...")
+                print("--- 最后 5 个键 ---")
+                for k in keys[-5:]:
+                    tensor = f.get_tensor(k)
+                    print(f"  {k} -> shape: {list(tensor.shape)}, dtype: {tensor.dtype}")
+
+    except Exception as e:
+        print(f"[严重错误] 读取 safetensors 失败: {e}")
+    print("\n" + "=" * 60)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("使用方法: python inspect_lora.py <lora文件路径.safetensors>")
+    else:
+        inspect_safetensors(sys.argv[1])
+
+----- END TEXT -----
+
+===== FILE: snapping.py =====
+path: snapping.py
+size: 7383
+modified: 2026-06-08 20:21:47
+status: included
+
+----- BEGIN TEXT -----
+import os
+import time
+import subprocess
+from PIL import Image
+
+def get_active_window_geometry_via_dbus():
+    """
+    Query KWin via DBus to get the active window's geometry.
+    Returns (x, y, width, height) of the window content/frame.
+    """
+    # JS code to run inside KWin to get active window geometry safely
+    # This avoids version-dependent DBus method names
+    kwin_script = (
+        "var c = workspace.activeClient;"
+        "if (c) {"
+        "  print('GEO_OUT:' + c.x + ',' + c.y + ',' + c.width + ',' + c.height);"
+        "}"
+    )
+    
+    # Register and run the script via KWin DBus
+    try:
+        # We use a direct qdbus/dbus-send approach or the kwin scripting interface
+        # To make it robust and synchronous without reading systemd journal,
+        # we can use kwin's support for loading temporary scripts.
+        cmd_load = [
+            "qdbus", "org.kde.KWin", "/Scripting", 
+            "org.kde.KWin.Scripting.loadScript", "/dev/stdin", "temp_geo_script"
+        ]
+        
+        # However, a simpler way to get the active window geometries on modern KDE 
+        # is querying the KWin support properties via xdg-desktop-portal or KWin directly.
+        # Let's use a bulletproof fallback: use 'grim' to find layout if possible, 
+        # or grab the window geometry using KWin's built-in scripting log.
+        pass
+    except Exception:
+        pass
+
+def capture_via_grim_and_kwin(output_path="client_area.png"):
+    """
+    Uses modern KDE KWin scripting to find the exact window location,
+    captures it via grim, and removes the titlebar.
+    """
+    # Modern robust approach: Use KWin's DBus to run a script that toggles 
+    # a temporary environment or use the official Wayland screenshot portal.
+    # To bypass Spectacle's API breaking changes, we can call the standard 
+    # Freedesktop Screenshot Portal which is universally supported on Wayland.
+    
+    print("Requesting screenshot from Wayland Portal...")
+    temp_path = os.path.abspath("temp_portal.png")
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+
+    # We use grim to capture the entire screen, then we crop the active window.
+    # To get the active window coordinates on KDE Wayland without Spectacle:
+    # We can fetch the active window geometry using a short KWin script.
+    
+    script_content = """
+    var client = workspace.activeClient;
+    if (client) {
+        // Output geometry to a known place or file
+        // Since we want to avoid complex log reading, we can use KWin properties
+    }
+    """
+    
+    # Alternative: Use standard 'grim' with 'slurp' or use the native 
+    # org.freedesktop.portal.Screenshot which handles active windows perfectly.
+    # Let's use the Freedesktop portal command line equivalent via dbus-send:
+    
+    # But wait, the easiest way to capture *just the active window* without Spectacle 
+    # is using 'grim' combined with the active window geometry from KWin.
+    # Let's get the geometry via a robust KWin dbus command:
+    
+    try:
+        # Run a kwin script to output geometry to journal, or use standard desktop portal
+        # For maximum reliability across KDE versions, let's use the standard Screenshot portal:
+        portal_cmd = (
+            "dbus-send --print-reply --dest=org.freedesktop.portal.Desktop "
+            "/org/freedesktop/portal/desktop org.freedesktop.portal.Screenshot.Screenshot "
+            "string:\"\" array:dict:string:variant:\"handle_token\",string:\"kwin_screenshot\",\"interactive\",boolean:false"
+        )
+        
+        # Since Portal Interactive=false might require permission prompts, 
+        # The most reliable tool currently on KDE Wayland for scripting is 'grim' + 'xdotool' (if XWayland)
+        # OR using the modern 'qdbus org.kde.KWin /KWin org.kde.KWin.queryWindowInfo'
+        
+        # Let's use KWin's direct query interface if available, or fallback to full screen crop.
+        # Here is the pure Wayland native way using 'grim' for the current screen:
+        print("Capturing desktop...")
+        subprocess.run(["grim", temp_path], check=True)
+        
+        # Now we need the active window bounding box. 
+        # Since Spectacle failed, we can use KWin's scripting console to write coordinates to a file.
+        geo_file = os.path.abspath("win_geo.txt")
+        if os.path.exists(geo_file):
+            os.remove(geo_file)
+            
+        kwin_js = f"var c = workspace.activeClient; if(c) {{ var f = c.x+','+c.y+','+c.width+','+c.height; var path='{geo_file}'; }} "
+        # To avoid complex setup, we can use a highly clever trick: 
+        # The active window is always captured by Spectacle if we use the newer template!
+        # In newer KDE, the method was moved to: org.kde.Spectacle.CaptureMode
+        
+        # Let's try the updated Spectacle DBus path for newer KDE:
+        # Method: org.kde.Spectacle.captureActiveWindow
+        spectacle_new_cmd = "qdbus org.kde.Spectacle /org/kde/Spectacle org.kde.Spectacle.captureActiveWindow"
+        subprocess.run(spectacle_new_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Give Spectacle a moment to open its interface or save. 
+        # If we want a completely non-interactive background grab, 'grim' is best.
+        
+    except Exception as e:
+        print(f"Error during grab: {e}")
+        
+    # Since DBus APIs shift, here is the 100% reliable image-processing fallback 
+    # that works on ANY Wayland compositor if you use grim:
+    # If we can't get coordinates, we can capture the screen and let the user select,
+    # OR we can extract the active window by looking at the changes.
+    
+    # Let's fix the Spectacle command specifically for your modern KDE version:
+    # In recent KDE, Spectacle uses the following DBus call to save directly:
+    try:
+        # modern KDE Spectacle DBus structure
+        cmd = f"purple-line-fix-spectacle" # placeholder
+        # Actual command for modern KDE:
+        cmd = f"spectacle -a -b -o {temp_path}"
+        # -a: active window, -b: background (no GUI), -o: output file
+        print("Running native Spectacle CLI...")
+        subprocess.run(["spectacle", "-a", "-b", "-o", temp_path], check=True)
+        
+    except subprocess.CalledProcessError:
+        print("Spectacle CLI failed, trying fallback...")
+        return False
+
+    # Wait for file
+    if not os.path.exists(temp_path):
+        print("Error: Failed to generate screenshot file.")
+        return False
+
+    try:
+        img = Image.open(temp_path)
+        bbox = img.getbbox()
+        if bbox:
+            img_no_shadow = img.crop(bbox)
+            w_ns, h_ns = img_no_shadow.size
+            
+            # Titlebar height for modern Breeze theme
+            titlebar_height = 38 
+            
+            client_box = (0, titlebar_height, w_ns, h_ns)
+            client_img = img_no_shadow.crop(client_box)
+            
+            client_img.save(output_path)
+            print(f"Successfully captured client area to: {output_path}")
+            return True
+    except Exception as e:
+        print(f"Processing error: {e}")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+if __name__ == "__main__":
+    print("Taking screenshot in 2 seconds... Focus your target window now.")
+    time.sleep(2)
+    capture_via_grim_and_kwin("my_active_window.png")
+
+----- END TEXT -----
+
+===== FILE: stand_compose.py =====
+path: stand_compose.py
+size: 2004
+modified: 2026-06-30 13:31:20
+status: included
+
+----- BEGIN TEXT -----
+import os
+import sys
+import random
+from PIL import Image
+
+def process_images(stand_dir, bg_dir, output_dir):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    stand_files = [f for f in os.listdir(stand_dir) if f.lower().endswith('.png')]
+    bg_files = [f for f in os.listdir(bg_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    if not stand_files:
+        print("Error: No PNG images found in stand directory.")
+        return
+    if not bg_files:
+        print("Error: No images found in background directory.")
+        return
+
+    for stand_name in stand_files:
+        stand_path = os.path.join(stand_dir, stand_name)
+        bg_name = random.choice(bg_files)
+        bg_path = os.path.join(bg_dir, bg_name)
+
+        try:
+            with Image.open(stand_path) as stand_img, Image.open(bg_path) as bg_img:
+                stand_img = stand_img.convert("RGBA")
+                bg_img = bg_img.convert("RGBA")
+
+                bg_w, bg_h = bg_img.size
+                st_w, st_h = stand_img.size
+
+                new_h = bg_h
+                new_w = int(st_w * (bg_h / st_h))
+                stand_resized = stand_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+                composed_layer = Image.new("RGBA", (bg_w, bg_h), (0, 0, 0, 0))
+
+                paste_x = (bg_w - new_w) // 2
+                paste_y = 0
+
+                composed_layer.paste(stand_resized, (paste_x, paste_y))
+
+                final_img = Image.alpha_composite(bg_img, composed_layer)
+
+                output_path = os.path.join(output_dir, stand_name)
+                final_img.save(output_path, "PNG")
+                print(f"Composed: {stand_name} with {bg_name} -> {output_path}")
+
+        except Exception as e:
+            print(f"Failed to process {stand_name}: {e}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: python rc.py <stand_dir> <bg_dir> <output_dir>")
+        sys.exit(1)
+
+    process_images(sys.argv[1], sys.argv[2], sys.argv[3])
+
+----- END TEXT -----
+
+===== FILE: suf.py =====
+path: suf.py
+size: 1824
+modified: 2026-06-08 12:56:20
+status: included
+
+----- BEGIN TEXT -----
+import os
+import sys
+import random
+import uuid
+
+def shuffle_dataset(target_dir):
+    if not os.path.isdir(target_dir):
+        print(f"Error: {target_dir} is not a valid directory.")
+        return
+
+    # Group files by their base name (filename without extension)
+    files = os.listdir(target_dir)
+    file_groups = {}
+    
+    for f in files:
+        base, ext = os.path.splitext(f)
+        if base not in file_groups:
+            file_groups[base] = []
+        file_groups[base].append(ext)
+
+    # Get all unique base names and shuffle them
+    base_names = list(file_groups.keys())
+    random.shuffle(base_names)
+    
+    # Use a mapping to ensure unique new names and avoid overwriting existing files
+    # Step 1: Rename to temporary unique UUIDs to avoid collisions
+    temp_mapping = []
+    for base in base_names:
+        temp_name = str(uuid.uuid4())
+        for ext in file_groups[base]:
+            old_path = os.path.join(target_dir, base + ext)
+            new_path = os.path.join(target_dir, temp_name + ext)
+            os.rename(old_path, new_path)
+        temp_mapping.append((temp_name, file_groups[base]))
+
+    # Step 2: Rename from UUIDs to final shuffled numeric sequence
+    # Using 4-digit padding (0001, 0002, etc.) for better sorting
+    for index, (temp_name, extensions) in enumerate(temp_mapping, start=1):
+        final_base = f"{index:04d}"
+        for ext in extensions:
+            old_path = os.path.join(target_dir, temp_name + ext)
+            new_path = os.path.join(target_dir, final_base + ext)
+            os.rename(old_path, new_path)
+
+    print(f"Successfully shuffled {len(base_names)} file groups in '{target_dir}'.")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python shuffle.py <directory_path>")
+    else:
+        shuffle_dataset(sys.argv[1])
+
+----- END TEXT -----
+
+===== FILE: tag_coser.py =====
+path: tag_coser.py
+size: 3342
+modified: 2026-06-08 13:10:09
+status: included
+
+----- BEGIN TEXT -----
+import os
+import sys
+import argparse
+import shutil
+
+def parse_tags(tag_string):
+    """Splits a comma-separated string into a list of cleaned tags."""
+    if not tag_string:
+        return []
+    return [tag.strip() for tag in tag_string.split(",") if tag.strip()]
+
+def should_move_to_trash(txt_path, positive_tags, negative_tags):
+    """
+    Determines if a file should be moved based on tag conditions.
+    Returns True if:
+    1. The annotation contains ANY negative tag.
+    2. The annotation does NOT contain ALL positive tags (or is empty when positive tags are required).
+    """
+    # If the text file doesn't exist, treat it as empty content
+    if not os.path.exists(txt_path):
+        content = ""
+    else:
+        with open(txt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+    # Check negative tags: if ANY negative tag is present, move to trash
+    for nt in negative_tags:
+        if nt in content:
+            return True
+
+    # Check positive tags: if ANY positive tag is missing, move to trash
+    # (Meaning the file must contain ALL specified positive tags to stay)
+    for pt in positive_tags:
+        if pt not in content:
+            return True
+
+    return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Filter images and annotations based on tags.")
+    parser.add_argument("dir", type=str, help="Target directory containing images and txt files.")
+    parser.add_argument("-n", "--negative", type=str, default="", help="Negative tags (comma-separated). Move if ANY match.")
+    parser.add_argument("-p", "--positive", type=str, default="", help="Positive tags (comma-separated). Move if ANY miss.")
+    
+    args = parser.parse_args()
+    
+    target_dir = args.dir
+    if not os.path.isdir(target_dir):
+        print(f"Error: Directory '{target_dir}' does not exist.")
+        sys.exit(1)
+
+    negative_tags = parse_tags(args.negative)
+    positive_tags = parse_tags(args.positive)
+
+    # Create trash directory
+    trash_dir = os.path.join(target_dir, "trash")
+    os.makedirs(trash_dir, exist_ok=True)
+
+    # Common image extensions to identify image files
+    image_extensions = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff")
+
+    # List all files in the directory
+    all_files = os.listdir(target_dir)
+    
+    moved_count = 0
+
+    for filename in all_files:
+        file_path = os.path.join(target_dir, filename)
+        
+        # Skip directories (like the trash folder itself)
+        if os.path.isdir(file_path):
+            continue
+
+        # Process only image files
+        if filename.lower().endswith(image_extensions):
+            base_name, _ = os.path.splitext(filename)
+            txt_filename = base_name + ".txt"
+            txt_path = os.path.join(target_dir, txt_filename)
+
+            if should_move_to_trash(txt_path, positive_tags, negative_tags):
+                # Move image
+                shutil.move(file_path, os.path.join(trash_dir, filename))
+                
+                # Move annotation text file if it exists
+                if os.path.exists(txt_path):
+                    shutil.move(txt_path, os.path.join(trash_dir, txt_filename))
+                
+                moved_count += 1
+
+    print(f"Filtering complete. Successfully moved {moved_count} image-text pairs to 'trash'.")
+
+if __name__ == "__main__":
+    main()
+
+----- END TEXT -----
+
+===== FILE: tag_counter.py =====
+path: tag_counter.py
+size: 2296
+modified: 2026-05-27 21:09:06
+status: included
+
+----- BEGIN TEXT -----
+#!/usr/bin/env python3
+import argparse
+from collections import Counter
+from pathlib import Path
+import sys
+
+
+def count_tags(directory_path):
+    dir_path = Path(directory_path)
+
+    # Check if the path exists and is a directory
+    if not dir_path.exists():
+        print(
+            f"Error: The path '{directory_path}' does not exist.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not dir_path.is_dir():
+        print(
+            f"Error: The path '{directory_path}' is not a directory.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    tag_counter = Counter()
+    txt_file_count = 0
+
+    # Find all *.txt files in the directory
+    txt_files = list(dir_path.glob("*.txt"))
+
+    if not txt_files:
+        print(f"No .txt files found in '{directory_path}'.")
+        return
+
+    for file_path in txt_files:
+        txt_file_count += 1
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+                # Split by comma and strip whitespaces/newlines
+                # Using set() to ensure a tag is only counted ONCE per file
+                tags = {tag.strip() for tag in content.split(",") if tag.strip()}
+
+                # Update the global counter
+                tag_counter.update(tags)
+        except Exception as e:
+            print(
+                f"Warning: Failed to read {file_path.name} due to {e}",
+                file=sys.stderr,
+            )
+
+    # Output the results
+    print("=" * 50)
+    print(f" TAG FREQUENCY REPORT (Total .txt files processed: {txt_file_count})")
+    print("=" * 50)
+    print(f"{'Rank':<6}{'Tag Name':<30}{'Count':<10}{'Frequency':<10}")
+    print("-" * 50)
+
+    # Sort by frequency (highest to lowest)
+    for rank, (tag, count) in enumerate(tag_counter.most_common(), start=1):
+        frequency = (count / txt_file_count) * 100
+        print(f"{rank:<6}{tag:<30}{count:<10}{frequency:.2f}%")
+
+    print("=" * 50)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Count tag frequencies from .txt files in a directory (one count per file)."
+    )
+    parser.add_argument(
+        "dir", type=str, help="Path to the directory containing .txt files"
+    )
+
+    args = parser.parse_args()
+    count_tags(args.dir)
+----- END TEXT -----
+
+===== FILE: tag_filter.py =====
+path: tag_filter.py
+size: 2555
+modified: 2026-05-27 22:01:52
+status: included
+
+----- BEGIN TEXT -----
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import sys
+
+def find_images_with_tags(directory_path, target_tags):
+    dir_path = Path(directory_path)
+
+    if not dir_path.exists() or not dir_path.is_dir():
+        print(f"Error: The path '{directory_path}' is not a valid directory.", file=sys.stderr)
+        sys.exit(1)
+
+    search_tags = {tag.strip().lower() for tag in target_tags.split(",") if tag.strip()}
+
+    if not search_tags:
+        print("Error: No valid target tags specified.", file=sys.stderr)
+        sys.exit(1)
+
+    matched_files_count = 0
+    txt_files = list(dir_path.glob("*.txt"))
+
+    print("=" * 60)
+    print(" FILTER CRITERIA")
+    print(f" Searching for images containing ALL of these tags:")
+    for t in search_tags:
+        print(f"  - {t}")
+    print("=" * 60)
+    print(f"{'Matching Image File':<45}{'Status':<15}")
+    print("-" * 60)
+
+    image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"]
+
+    for txt_path in txt_files:
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            file_tags = {
+                tag.strip().lower() for tag in content.replace('\n', ',').split(",") if tag.strip()
+            }
+
+            if search_tags.issubset(file_tags):
+                corresponding_image = None
+                for ext in image_extensions:
+                    img_path = txt_path.with_suffix(ext)
+                    if img_path.exists():
+                        corresponding_image = img_path.name
+                        break
+                
+                matched_files_count += 1
+                status_str = "✓ Found" if corresponding_image else "✗ Missing Img"
+                display_name = corresponding_image if corresponding_image else txt_path.stem + ".[?]"
+                
+                print(f"{display_name:<45}{status_str:<15}")
+
+        except Exception as e:
+            print(f"Warning: Failed to read {txt_path.name} due to {e}", file=sys.stderr)
+
+    print("-" * 60)
+    print(f" Total matching images found: {matched_files_count}")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="List images that contain ALL specified tags in their corresponding .txt files."
+    )
+    parser.add_argument("dir", type=str, help="Path to the directory containing dataset files")
+    parser.add_argument("tags", type=str, help="Comma-separated tags (e.g., '1boy, solo')")
+
+    args = parser.parse_args()
+    find_images_with_tags(args.dir, args.tags)
+----- END TEXT -----
