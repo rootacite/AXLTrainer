@@ -32,6 +32,53 @@ class ImageScreenViewModel : ViewModel() {
         loadData()
     }
 
+    fun reloadFromDiskSafely() {
+        val currentDir = _uiState.value.dataDir
+        if (currentDir.isEmpty()) return
+
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val folder = File(currentDir)
+                if (!folder.exists() || !folder.isDirectory) return@withContext
+
+                val validExtensions = listOf("jpg", "jpeg", "png", "webp", "bmp")
+
+                val currentItemsMap = _uiState.value.imageItems.associateBy { it.imagePath }
+                val currentSelectedPath = _uiState.value.selectedItem?.imagePath
+
+                val updatedItems = folder.listFiles()
+                    ?.filter { it.isFile && validExtensions.contains(it.extension.lowercase()) }
+                    ?.map { imgFile ->
+                        val txtFile = File(folder, "${imgFile.nameWithoutExtension}.txt")
+                        val diskTags = if (txtFile.exists()) txtFile.readText() else ""
+
+                        val existingItem = currentItemsMap[imgFile.absolutePath]
+
+                        if (existingItem != null) {
+                            existingItem.copy(tags = diskTags)
+                        } else {
+                            ImageItem(
+                                imagePath = imgFile.absolutePath,
+                                txtPath = txtFile.absolutePath,
+                                tags = diskTags,
+                                draftTags = null
+                            )
+                        }
+                    } ?: emptyList()
+
+                _uiState.update { state ->
+                    val newSelectedItem = updatedItems.find { it.imagePath == currentSelectedPath }
+
+                    state.copy(
+                        imageItems = updatedItems,
+                        selectedItem = newSelectedItem,
+                        editorText = newSelectedItem?.currentTags ?: ""
+                    )
+                }
+            }
+        }
+    }
+
     private fun loadData() {
         viewModelScope.launch {
             try {

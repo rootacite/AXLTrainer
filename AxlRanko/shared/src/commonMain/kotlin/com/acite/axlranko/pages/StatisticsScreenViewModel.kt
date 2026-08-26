@@ -138,6 +138,14 @@ class StatisticsScreenViewModel : ViewModel() {
         _uiState.update { it.copy(isAndMode = isAnd) }
     }
 
+    fun updateNotMode(isNot: Boolean) {
+        _uiState.update { it.copy(isNotMode = isNot) }
+    }
+
+    fun updateTagSearchQuery(text: String) {
+        _uiState.update { it.copy(tagSearchQuery = text) }
+    }
+
     fun updateLeftWeight(weight: Float) {
         _uiState.update { it.copy(leftWeight = weight.coerceIn(0.2f, 0.8f)) }
     }

@@ -2,7 +2,7 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Optional
 
-def _load_toml_config(file_path: str = "config.toml") -> dict:
+def _load_toml_config(file_path: str = "trainer/config.toml") -> dict:
     try:
         with open(file_path, "rb") as f:
             raw_toml = tomllib.load(f)

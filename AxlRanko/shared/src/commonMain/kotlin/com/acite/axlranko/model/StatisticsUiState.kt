@@ -9,6 +9,8 @@ data class StatisticsUiState(
     val tagStats: List<TagStat> = emptyList(),
     val selectedTags: Set<String> = emptySet(),
     val isAndMode: Boolean = true, // true: Intersection (AND), false: Union (OR)
+    val isNotMode: Boolean = false, // true: Negate the AND/OR result (outer NOT)
+    val tagSearchQuery: String = "",
     val leftWeight: Float = 0.4f,
     val topWeight: Float = 0.6f,
     val dropRateText: String = "0.5",
@@ -21,11 +23,12 @@ data class StatisticsUiState(
         get() {
             if (selectedTags.isEmpty()) return emptyList()
             return datasetItems.filter { item ->
-                if (isAndMode) {
+                val matches = if (isAndMode) {
                     selectedTags.all { it in item.tags }
                 } else {
                     selectedTags.any { it in item.tags }
                 }
+                if (isNotMode) !matches else matches
             }
         }
 }

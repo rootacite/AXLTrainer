@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.pages.ImageScreenViewModel
 import com.acite.axlranko.pages.ImagesScreen
 import com.acite.axlranko.pages.StatisticsScreen
 import com.acite.axlranko.pages.StatisticsScreenViewModel
@@ -42,6 +43,7 @@ fun UtilsScreen() {
 public fun Stage(
     viewModel: StageViewModel = metroViewModel(),
     ssViewModel: StatisticsScreenViewModel = metroViewModel(),
+    imViewModel: ImageScreenViewModel = metroViewModel(),
 )
 {
     Box(
@@ -90,7 +92,10 @@ public fun Stage(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                IconButton(onClick = { viewModel.currentScreen = Screen.Images }) {
+                IconButton(onClick = {
+                    viewModel.currentScreen = Screen.Images
+                    imViewModel.reloadFromDiskSafely()
+                }) {
                     Icon(
                         imageVector = Icons.Default.Image,
                         contentDescription = "Images",

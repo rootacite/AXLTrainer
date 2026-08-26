@@ -72,12 +72,6 @@ def is_binary_file(path: Path, sample_bytes: int = SAMPLE_CHUNK) -> bool:
     if b"\x00" in chunk:
         return True
 
-    try:
-        chunk.decode("utf-8")
-        return False
-    except UnicodeDecodeError:
-        return True
-
 
 def normalize_ignore_path(raw: str) -> Optional[str]:
     line = raw.split("#", 1)[0].strip()

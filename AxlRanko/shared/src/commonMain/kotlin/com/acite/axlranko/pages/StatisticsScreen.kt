@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -121,8 +122,24 @@ fun StatisticsScreen(
                         modifier = Modifier.padding(16.dp)
                     )
 
+                    OutlinedTextField(
+                        value = uiState.tagSearchQuery,
+                        onValueChange = viewModel::updateTagSearchQuery,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                        placeholder = { Text("Search tags...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                        singleLine = true
+                    )
+
                     val listState = rememberLazyListState()
-                    val totalItems = uiState.tagStats.size
+                    val displayedTagStats = remember(uiState.tagStats, uiState.tagSearchQuery) {
+                        val q = uiState.tagSearchQuery.trim()
+                        if (q.isEmpty()) uiState.tagStats
+                        else uiState.tagStats.filter { it.tag.contains(q, ignoreCase = true) }
+                    }
+                    val totalItems = displayedTagStats.size
 
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         LazyColumn(
@@ -131,7 +148,7 @@ fun StatisticsScreen(
                             contentPadding = PaddingValues(start = 16.dp, end = 24.dp, top = 8.dp, bottom = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(uiState.tagStats, key = { it.tag }) { stat ->
+                            items(displayedTagStats, key = { it.tag }) { stat ->
                                 val isSelected = uiState.selectedTags.contains(stat.tag)
                                 val offsetX by animateDpAsState(
                                     targetValue = if (isSelected) 16.dp else 0.dp,
@@ -178,6 +195,15 @@ fun StatisticsScreen(
                                         )
                                     }
                                 }
+                            }
+                        }
+
+                        if (totalItems == 0 && uiState.tagSearchQuery.isNotBlank()) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "No tags match \"${uiState.tagSearchQuery.trim()}\"",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
 
@@ -331,6 +357,18 @@ fun ControlPanel(
                         shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp)
                     ) { Text("Union (OR)") }
                 }
+
+                Spacer(Modifier.width(12.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { viewModel.updateNotMode(!uiState.isNotMode) }
+                ) {
+                    Checkbox(
+                        checked = uiState.isNotMode,
+                        onCheckedChange = { viewModel.updateNotMode(it) }
+                    )
+                    Text("Not")
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -342,7 +380,7 @@ fun ControlPanel(
                 }
                 Button(
                     onClick = { viewModel.removeSelectedTags() },
-                    enabled = hasSelection && !uiState.isRefreshing,
+                    enabled = hasSelection && !uiState.isRefreshing && !uiState.isNotMode,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 ) {
                     Text("Remove Selected")
@@ -367,7 +405,7 @@ fun ControlPanel(
             )
             Button(
                 onClick = { viewModel.dropSamples() },
-                enabled = hasSelection && !uiState.isRefreshing && (uiState.dropRateText.toFloatOrNull() ?: 0f) in 0.001f..1f,
+                enabled = hasSelection && !uiState.isRefreshing && !uiState.isNotMode && (uiState.dropRateText.toFloatOrNull() ?: 0f) in 0.001f..1f,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
             ) {
                 Text("Drop Selected Samples")
