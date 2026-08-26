@@ -33,3 +33,22 @@ actual fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
         null
     }
 }
+
+actual fun saveTrainerConfigPatched(
+    tomlPath: Path,
+    sectionValues: Map<String, Map<String, String>>
+): Result<Unit> {
+    return try {
+        val file = File(tomlPath.toString())
+        if (!file.exists()) {
+            return Result.failure(IllegalStateException("Config file does not exist: $tomlPath"))
+        }
+        val original = file.readText()
+        val patched = TomlDocumentPatcher.apply(original, sectionValues)
+        file.writeText(patched)
+        Result.success(Unit)
+    } catch (e: Exception) {
+        e.printStackTrace()
+        Result.failure(e)
+    }
+}

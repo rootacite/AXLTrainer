@@ -33,10 +33,15 @@ class ImageScreenViewModel : ViewModel() {
     }
 
     fun reloadFromDiskSafely() {
-        val currentDir = _uiState.value.dataDir
-        if (currentDir.isEmpty()) return
-
         viewModelScope.launch {
+            val currentDir = try {
+                ConfigImporter.getConfig().environment.trainDataDir
+            } catch (_: Exception) {
+                _uiState.value.dataDir
+            }
+            if (currentDir.isEmpty()) return@launch
+            _uiState.update { it.copy(dataDir = currentDir) }
+
             withContext(Dispatchers.IO) {
                 val folder = File(currentDir)
                 if (!folder.exists() || !folder.isDirectory) return@withContext

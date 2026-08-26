@@ -78,7 +78,7 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "(rein_style:1.1), masterpiece, best quality, newest, solo, 1girl, long hair, blonde hair, white thighhighs, from above, looking back, shy, blushing, cleavage, magnificent white wedding dress, white bridal veil, translucent veil, flowing veil, hair ornament, indoors, bedroom, bed, doggystyle, warm atmosphere, (large breasts:1.3), breasts out, white bra, panties around one leg, huge ass, anus, pussy, opened eyes"
+sample_prompts = "(rein_character:1.1), masterpiece, best quality, newest, solo, 1girl, long hair, blonde hair, white thighhighs, from above, looking back, shy, blushing, cleavage, magnificent white wedding dress, white bridal veil, translucent veil, flowing veil, hair ornament, indoors, bedroom, bed, doggystyle, warm atmosphere, (large breasts:1.3), breasts out, white bra, panties around one leg, huge ass, anus, pussy, opened eyes"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1280
 sample_height = 720

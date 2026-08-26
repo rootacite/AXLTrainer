@@ -21,6 +21,8 @@ import com.acite.axlranko.pages.ImageScreenViewModel
 import com.acite.axlranko.pages.ImagesScreen
 import com.acite.axlranko.pages.StatisticsScreen
 import com.acite.axlranko.pages.StatisticsScreenViewModel
+import com.acite.axlranko.pages.UtilsScreen
+import com.acite.axlranko.pages.UtilsScreenViewModel
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import kotlin.math.roundToInt
 
@@ -29,21 +31,11 @@ enum class Screen {
 }
 
 @Composable
-fun UtilsScreen() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("Utils 页面", style = MaterialTheme.typography.headlineLarge)
-    }
-}
-
-
-@Composable
 public fun Stage(
     viewModel: StageViewModel = metroViewModel(),
     ssViewModel: StatisticsScreenViewModel = metroViewModel(),
     imViewModel: ImageScreenViewModel = metroViewModel(),
+    usViewModel: UtilsScreenViewModel = metroViewModel(),
 )
 {
     Box(
@@ -114,7 +106,10 @@ public fun Stage(
                     )
                 }
 
-                IconButton(onClick = { viewModel.currentScreen = Screen.Utils }) {
+                IconButton(onClick = {
+                    viewModel.currentScreen = Screen.Utils
+                    usViewModel.reloadFromDiskSafely()
+                }) {
                     Icon(
                         imageVector = Icons.Default.Build,
                         contentDescription = "Utils",
