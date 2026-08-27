@@ -98,6 +98,28 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 
 Full setup instructions, dataset preparation, and verification steps: [Installation](doc/installation.md).
 
+### Reference: the author's development / test machine
+
+This is the environment the project is developed and verified on, provided as a reference point — readers do not need to match it exactly. It is also the machine on which the [ROCm bucket-step fix](doc/troubleshooting.md) was validated (a full 1200+ step run with sampling).
+
+| Component | Details |
+| --- | --- |
+| OS | Arch Linux (rolling), kernel `7.1.9-zen1-2-zen` |
+| CPU | Intel Core i7-14700F (20 cores / 28 threads) |
+| RAM | 32 GB |
+| GPU | AMD Radeon RX 9070 XT 16 GB GDDR6 (Navi 48 / RDNA4, PowerColor) |
+| ROCm stack | ROCm 7.2.4 (HIP 7.2.53211, MIOpen 3.5.1) |
+| Java | OpenJDK 26.0.2.1 (system JVM; the Ranko Gradle daemon uses the auto-provisioned JDK 21 toolchain) |
+| Python | 3.12.13 (conda env `axl`) |
+| torch / torchvision / torchaudio | `2.12.0+rocm7.2` / `0.27.0+rocm7.2` / `2.11.0+rocm7.2` |
+| diffusers / transformers / peft / accelerate | `0.38.0` / `4.57.6` / `0.19.1` / `1.13.0` |
+| schedulefree / safetensors | `1.4.1` / `0.8.0rc1` |
+| tensorboard / streamlit | `2.20.0` / `1.58.0` |
+| onnxruntime-migraphx / triton-rocm | `1.23.2` / `3.7.0` |
+| kornia / opencv-python / numpy / pillow | `0.8.3` / `4.13.0.92` / `2.4.4` / `12.2.0` |
+
+> The versions above are what is installed in the `axl` environment at the time of writing and may drift slightly from the manifest; `environment.yml` is the pinned, reproducible record.
+
 ---
 
 ## Quick start
