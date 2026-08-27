@@ -1,14 +1,8 @@
 package com.acite.axlranko.pages.components
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +22,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,9 +32,11 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -51,18 +46,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.acite.axlranko.model.MetricPoint
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.time.Duration.Companion.milliseconds
 
 private data class ChartPoint(val step: Float, val value: Float)
 
@@ -75,15 +64,24 @@ private data class Viewport(
     val xRange get() = (xMax - xMin).coerceAtLeast(1e-6f)
     val yRange get() = (yMax - yMin).coerceAtLeast(1e-6f)
 
-    fun clamp(bounds: Viewport, overshoot: Float = 0.2f): Viewport {
-        val xPad = bounds.xRange * overshoot
-        val yPad = bounds.yRange * overshoot
-        val w = xRange
-        val h = yRange
-        val x0 = xMin.coerceIn(bounds.xMin - xPad, (bounds.xMax + xPad - w))
-        val y0 = yMin.coerceIn(bounds.yMin - yPad, (bounds.yMax + yPad - h))
+    fun clampToBounds(bounds: Viewport): Viewport {
+        val w = xRange.coerceAtMost(bounds.xRange)
+        val h = yRange.coerceAtMost(bounds.yRange)
+        val x0 = if (w >= bounds.xRange) bounds.xMin else xMin.coerceIn(bounds.xMin, bounds.xMax - w)
+        val y0 = if (h >= bounds.yRange) bounds.yMin else yMin.coerceIn(bounds.yMin, bounds.yMax - h)
         return copy(xMin = x0, xMax = x0 + w, yMin = y0, yMax = y0 + h)
     }
+}
+
+// Compose Desktop reports ~1.0 per mouse-wheel notch (preciseWheelRotation), not pixels.
+private const val WHEEL_ZOOM_STEP = 1.15f
+private const val WHEEL_ZOOM_INTENSITY = 2.5f
+private const val JUMP_REJECT_FRACTION = 0.5f
+
+private fun zoomRange(current: Float, factor: Float, minRange: Float, fullRange: Float): Float {
+    if (fullRange <= 1e-9f) return 0f
+    val lo = minOf(minRange, fullRange)
+    return (current * factor).coerceIn(lo, fullRange)
 }
 
 private fun List<Float>.percentile(p: Float): Float {
@@ -284,6 +282,19 @@ private fun InteractiveLineChart(
 
     var viewport by remember(initialViewport) { mutableStateOf(initialViewport) }
 
+    val avgStepGap = remember(rawPoints) {
+        if (rawPoints.size < 2) 0f
+        else (rawPoints.last().step - rawPoints.first().step) / (rawPoints.size - 1).toFloat()
+    }
+    val minXRange = remember(fullBounds, avgStepGap) {
+        maxOf(fullBounds.xRange * 0.01f, avgStepGap * 4f)
+            .coerceIn(0f, fullBounds.xRange)
+            .coerceAtLeast(1e-6f)
+    }
+    val minYRange = remember(fullBounds) {
+        if (fullBounds.yRange <= 1e-9f) 0f else maxOf(fullBounds.yRange * 0.02f, 1e-6f)
+    }
+
     fun visibleSlice(all: List<ChartPoint>, vp: Viewport): List<ChartPoint> {
         val lo = vp.xMin - vp.xRange * 0.05f
         val hi = vp.xMax + vp.xRange * 0.05f
@@ -308,122 +319,94 @@ private fun InteractiveLineChart(
         }
     }
 
-    val scope = rememberCoroutineScope()
-    val flingAnimX = remember { Animatable(0f) }
-    val flingAnimY = remember { Animatable(0f) }
-    var flingJob by remember { mutableStateOf<Job?>(null) }
-
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = TextStyle(fontSize = 9.sp, color = Color.Gray.copy(alpha = 0.7f))
     val gridColor = Color.Gray.copy(alpha = 0.12f)
     val axisColor = Color.Gray.copy(alpha = 0.3f)
 
-    val gestureModifier = modifier.pointerInput(fullBounds) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            flingJob?.cancel()
-
-            val velTracker = VelocityTracker()
-            velTracker.addPosition(down.uptimeMillis, down.position)
-
-            var pointerCount = 1
-
-            do {
-                val event = awaitPointerEvent()
-                val pressed = event.changes.filter { it.pressed }
-                if (pressed.isEmpty()) break
-
-                pointerCount = pressed.size
-                val centroid = event.calculateCentroid(useCurrent = true)
-                val pan = event.calculatePan()
-                val zoom = event.calculateZoom()
-                pressed.forEach { c -> if (c.positionChanged()) c.consume() }
-
-                if (pointerCount == 1) {
-                    velTracker.addPosition(pressed.first().uptimeMillis, centroid)
-                }
-
-                val vp = viewport
-                val canvasW = size.width.toFloat()
-                val canvasH = size.height.toFloat()
-                val leftPad = 52f
-                val bottomPad = 28f
-                val plotW = canvasW - leftPad
-                val plotH = canvasH - bottomPad
-                if (plotW <= 0f || plotH <= 0f) continue
-
-                val zoomSafe = zoom.coerceIn(0.5f, 2f)
-                val dataX = vp.xMin + ((centroid.x - leftPad) / plotW) * vp.xRange
-                val dataY = vp.yMax - (centroid.y / plotH) * vp.yRange
-                val newXRange = (vp.xRange / zoomSafe)
-                    .coerceIn(vp.xRange * 0.001f, fullBounds.xRange * 20f)
-                val newYRange = (vp.yRange / zoomSafe)
-                    .coerceIn(vp.yRange * 0.001f, fullBounds.yRange * 20f)
-                val dxData = -(pan.x / plotW) * newXRange
-                val dyData = (pan.y / plotH) * newYRange
-                val xFrac = ((centroid.x - leftPad) / plotW).coerceIn(0f, 1f)
-                val yFrac = (centroid.y / plotH).coerceIn(0f, 1f)
-                val newXMin = dataX - xFrac * newXRange + dxData
-                val newYMin = dataY - (1f - yFrac) * newYRange + dyData
-
-                viewport = Viewport(
-                    xMin = newXMin,
-                    xMax = newXMin + newXRange,
-                    yMin = newYMin,
-                    yMax = newYMin + newYRange,
-                ).clamp(fullBounds)
-            } while (pressed.any { it.pressed })
-
-            if (pointerCount == 1) {
-                val velocity = velTracker.calculateVelocity()
-                val vp = viewport
-                val plotW = size.width.toFloat() - 52f
-                val plotH = size.height.toFloat() - 28f
-                val dataVx = -(velocity.x / plotW) * vp.xRange
-                val dataVy = (velocity.y / plotH) * vp.yRange
-
-                flingJob = scope.launch {
-                    coroutineScope {
-                        launch {
-                            flingAnimX.snapTo(0f)
-                            flingAnimX.animateDecay(
-                                initialVelocity = dataVx,
-                                animationSpec = exponentialDecay(frictionMultiplier = 2.5f),
-                            )
-                        }
-                        launch {
-                            flingAnimY.snapTo(0f)
-                            flingAnimY.animateDecay(
-                                initialVelocity = dataVy,
-                                animationSpec = exponentialDecay(frictionMultiplier = 2.5f),
-                            )
-                        }
+    val gestureModifier = modifier
+        .pointerInput(fullBounds) {
+            detectDragGestures(
+                onDrag = { change, dragAmount ->
+                    val plotW = (size.width.toFloat() - 52f).coerceAtLeast(1f)
+                    val plotH = (size.height.toFloat() - 28f).coerceAtLeast(1f)
+                    val dx = dragAmount.x
+                    val dy = dragAmount.y
+                    if (!dx.isFinite() || !dy.isFinite()) return@detectDragGestures
+                    if (abs(dx) > plotW * JUMP_REJECT_FRACTION ||
+                        abs(dy) > plotH * JUMP_REJECT_FRACTION
+                    ) {
+                        return@detectDragGestures
                     }
-                }
+                    change.consume()
+                    val vp = viewport
+                    val moveX = -(dx / plotW) * vp.xRange
+                    val moveY = (dy / plotH) * vp.yRange
+                    viewport = Viewport(
+                        xMin = vp.xMin + moveX,
+                        xMax = vp.xMax + moveX,
+                        yMin = vp.yMin + moveY,
+                        yMax = vp.yMax + moveY,
+                    ).clampToBounds(fullBounds)
+                },
+            )
+        }
+        .pointerInput(fullBounds, minXRange, minYRange) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { c ->
+                        c.type == PointerType.Mouse &&
+                            (event.type == PointerEventType.Scroll ||
+                                c.scrollDelta.x != 0f ||
+                                c.scrollDelta.y != 0f)
+                    } ?: continue
 
-                scope.launch {
-                    var prevX = 0f
-                    var prevY = 0f
-                    while (isActive) {
-                        val dx = flingAnimX.value - prevX
-                        val dy = flingAnimY.value - prevY
-                        prevX = flingAnimX.value
-                        prevY = flingAnimY.value
-                        if (abs(dx) < 1e-5f && abs(dy) < 1e-5f) break
-                        viewport = viewport.let { v ->
-                            Viewport(
-                                xMin = v.xMin + dx,
-                                xMax = v.xMax + dx,
-                                yMin = v.yMin + dy,
-                                yMax = v.yMax + dy,
-                            ).clamp(fullBounds)
-                        }
-                        delay(16L.milliseconds)
+                    val mods = event.keyboardModifiers
+                    val zoomX = mods.isCtrlPressed
+                    val zoomY = mods.isShiftPressed
+                    if (!zoomX && !zoomY) continue
+
+                    // Desktop remaps Shift+wheel to horizontal delta (y == 0, x != 0).
+                    val amount = if (change.scrollDelta.y != 0f) {
+                        change.scrollDelta.y
+                    } else {
+                        change.scrollDelta.x
                     }
+                    if (amount == 0f || !amount.isFinite()) continue
+
+                    val plotW = (size.width.toFloat() - 52f).coerceAtLeast(1f)
+                    val plotH = (size.height.toFloat() - 28f).coerceAtLeast(1f)
+                    val factor = WHEEL_ZOOM_STEP.pow(-amount * WHEEL_ZOOM_INTENSITY)
+                    val vp = viewport
+                    val newXRange = if (zoomX) {
+                        zoomRange(vp.xRange, factor, minXRange, fullBounds.xRange)
+                    } else {
+                        vp.xRange
+                    }
+                    val newYRange = if (zoomY && fullBounds.yRange > 1e-9f) {
+                        zoomRange(vp.yRange, factor, minYRange, fullBounds.yRange)
+                    } else {
+                        vp.yRange
+                    }
+
+                    val xFrac = ((change.position.x - 52f) / plotW).coerceIn(0f, 1f)
+                    val yFrac = (change.position.y / plotH).coerceIn(0f, 1f)
+                    val dataX = vp.xMin + xFrac * vp.xRange
+                    val dataY = vp.yMax - yFrac * vp.yRange
+                    val newXMin = dataX - xFrac * newXRange
+                    val newYMin = dataY - (1f - yFrac) * newYRange
+
+                    change.consume()
+                    viewport = Viewport(
+                        xMin = newXMin,
+                        xMax = newXMin + newXRange,
+                        yMin = newYMin,
+                        yMax = newYMin + newYRange,
+                    ).clampToBounds(fullBounds)
                 }
             }
         }
-    }
 
     Canvas(modifier = gestureModifier) {
         val vp = viewport
