@@ -22,6 +22,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.acite.axlranko.pages.components.AspectLockedAsyncImage
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 import java.io.File
@@ -65,9 +66,8 @@ public fun ImagesScreen(
                                 else MaterialTheme.colorScheme.surfaceVariant
                             )
                         ) {
-                            AsyncImage(
-                                model = File(item.imagePath),
-                                contentDescription = null,
+                            AspectLockedAsyncImage(
+                                file = File(item.imagePath),
                                 contentScale = ContentScale.FillWidth,
                                 filterQuality = FilterQuality.High,
                                 modifier = Modifier.fillMaxWidth()

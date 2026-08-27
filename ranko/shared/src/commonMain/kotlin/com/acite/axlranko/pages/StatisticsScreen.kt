@@ -34,7 +34,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
+import com.acite.axlranko.pages.components.AspectLockedAsyncImage
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 
@@ -272,12 +272,11 @@ fun StatisticsScreen(
                                             iviewModel.selectItemByTxtPath(item.txtFile.absolutePath)
                                         }
                                     ) {
-                                        AsyncImage(
-                                            model = item.imageFile,
-                                            contentDescription = null,
-                                            contentScale = ContentScale.FillWidth, // Preserves ratio
+                                        AspectLockedAsyncImage(
+                                            file = item.imageFile,
+                                            contentScale = ContentScale.FillWidth,
                                             filterQuality = FilterQuality.High,
-                                            modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+                                            modifier = Modifier.fillMaxWidth(),
                                         )
                                     }
                                 }
