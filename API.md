@@ -126,6 +126,49 @@ Result:
 
 Filename pattern `_(\d+)_(\d+)\.png$` → `(step, repeat_idx)`. Unmatched files use step `"-1"`. `path` is absolute so the UI can load the file from disk.
 
+### `train_status`
+
+Reads `$AXL_RUNTIME_DIR` or `$XDG_RUNTIME_DIR/axltrainer/` or `/tmp/axltrainer-$UID/` (`state.json`). Reconciles a dead PID into `error`.
+
+Params: `{}`
+
+Result: the on-disk state plus `alive` (PID is running) and `log_path`.
+
+`status` is one of: `idle`, `starting`, `encoding`, `training`, `sampling`, `pausing`, `paused`, `resuming`, `stopping`, `finished`, `error`.
+
+Pause/resume is a GPU swap process. While `pausing` or `resuming`, `swap` is `{stage, detail, current, total}`.
+
+### `train_start`
+
+Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does not stop training. Stdout/stderr append to `train.log` in the runtime dir.
+
+Params: `{}`
+
+Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet.
+
+### `train_pause` / `train_resume` / `train_stop`
+
+Writes `command.json` (`pause` | `resume` | `stop`). The trainer consumes it at the next swap-safe point.
+
+Params: `{}`
+
+Fails if no live training PID.
+
+Pause offloads UNet / text encoders / optimizer state / VAE to CPU and `empty_cache`s. Resume reloads what the paused phase needs. Early-stop during encoding does not save a LoRA; during training it saves `{output_name}.safetensors` if that step has no checkpoint yet; during sampling it skips leftover repeats (the step checkpoint already exists).
+
+### `train_reset`
+
+Clears the on-disk trainer state back to `idle` and deletes this run's sample images and TensorBoard logs (same targets as `clean.py`). Optional weight deletion.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string \| null | No | Overrides `output_name`. |
+| `delete_weights` | bool | No | If true, also remove `{output_dir}/{output_name}_*` checkpoint dirs. Default false. |
+
+Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper.
+
 ## Example
 
 ```bash

@@ -20,8 +20,10 @@ It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training dat
 
 ### Training dashboard (Dashboard)
 - Ranko starts `api.py` as a local helper (stdin/stdout JSON IPC) and polls TensorBoard metrics plus training sample images
+- Start / pause / resume / early-stop / reset controls. Pause offloads GPU weights to CPU; the trainer process is detached so closing Ranko does not stop it. Reset clears Finished state and deletes this run's samples + TensorBoard logs (optional checkpoint wipe), same targets as `clean.py`
+- Progress bars for latent encoding, training steps, and sample generation
 - Live step / loss / LR cards, interactive training charts, and sample previews grouped by step
-- Auto-refresh every 3s, with a curve-smoothing slider
+- Auto-refresh every 3s (1s while a run is live), with a curve-smoothing slider
 - Optional `AXL_PYTHON` to point at the trainer interpreter (otherwise `python3` on PATH)
 
 ### Bulk cleanup tools

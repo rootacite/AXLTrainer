@@ -80,6 +80,7 @@ import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
 import com.acite.axlranko.pages.components.MetricCard
 import com.acite.axlranko.pages.components.PathChip
+import com.acite.axlranko.pages.components.TrainControlCard
 import com.acite.axlranko.util.formatFourDecimals
 import com.acite.axlranko.util.formatScientificTwoDecimals
 import dev.zacsweers.metrox.viewmodel.metroViewModel
@@ -154,6 +155,23 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    item {
+                        DashboardSectionHeader("Training Control")
+                        Spacer(Modifier.height(4.dp))
+                        TrainControlCard(
+                            status = uiState.trainStatus,
+                            commandInFlight = uiState.commandInFlight,
+                            pendingCommand = uiState.pendingCommand,
+                            outputDir = uiState.config.string("output_dir"),
+                            loggingDir = uiState.config.string("logging_dir"),
+                            onStart = viewModel::startTraining,
+                            onPause = viewModel::pauseTraining,
+                            onResume = viewModel::resumeTraining,
+                            onStop = viewModel::stopTraining,
+                            onReset = viewModel::resetTraining,
+                        )
+                    }
+
                     item {
                         PathRow(uiState.config)
                     }

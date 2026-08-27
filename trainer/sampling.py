@@ -17,6 +17,13 @@ from config import TrainConfig
 from text_processing import encode_prompt_batch
 from env import flush_memory
 
+try:
+    import control
+    from device_swap import SwapContext, at_safe_point
+except ImportError:
+    from trainer import control
+    from trainer.device_swap import SwapContext, at_safe_point
+
 
 def _offload_module(module: torch.nn.Module) -> None:
     """Move a module back to CPU to release GPU memory."""
@@ -41,6 +48,7 @@ def generate_sample_image(
     dtype: torch.dtype,
     global_step: int,
     output_dir_base: Path,
+    swap_ctx: SwapContext | None = None,
 ) -> None:
     """Generate and save sample images with aggressive module offloading."""
     if not accelerator.is_main_process:
@@ -101,10 +109,39 @@ def generate_sample_image(
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     vae_dtype = torch.bfloat16
+    repeats = max(1, cfg.sample_repeat)
 
     try:
-        for repeat_idx in range(max(1, cfg.sample_repeat)):
-            # Use a CPU generator to match diffusers' latent preparation path.
+        control.set_sampling(
+            active=True,
+            repeat=0,
+            repeats=repeats,
+            denoise_step=0,
+            denoise_steps=cfg.sample_steps,
+            global_step=global_step,
+        )
+        repeat_idx = 0
+        while repeat_idx < repeats:
+            if not at_safe_point("sampling", swap_ctx):
+                return
+
+            interrupted = {"value": False}
+
+            def _on_step_end(pipeline, step_index, _timestep, callback_kwargs):
+                control.set_sampling(
+                    active=True,
+                    repeat=repeat_idx,
+                    repeats=repeats,
+                    denoise_step=int(step_index) + 1,
+                    denoise_steps=cfg.sample_steps,
+                    global_step=global_step,
+                )
+                pending = control.peek_command()
+                if pending in ("pause", "stop"):
+                    pipeline._interrupt = True
+                    interrupted["value"] = True
+                return callback_kwargs
+
             generator = torch.Generator(device="cpu")
             if cfg.sample_seed == 0:
                 current_seed = int(torch.randint(0, 2**32, (1,)).item())
@@ -127,7 +164,14 @@ def generate_sample_image(
                 guidance_scale=cfg.guidance_scale,
                 generator=generator,
                 output_type="latent",
+                callback_on_step_end=_on_step_end,
             )
+
+            if interrupted["value"] or getattr(pipe, "_interrupt", False):
+                pipe._interrupt = False
+                if not at_safe_point("sampling", swap_ctx):
+                    return
+                continue
 
             latents = latent_result.images.to(device=device, dtype=vae_dtype)
             latents = latents / pipe.vae.config.scaling_factor
@@ -148,6 +192,7 @@ def generate_sample_image(
             Image.fromarray(image).save(out_path)
 
             _offload_module(pipe.vae)
+            repeat_idx += 1
 
     finally:
         _offload_module(pipe.vae)
@@ -167,4 +212,12 @@ def generate_sample_image(
         else:
             trained_te2.eval()
 
+        control.set_sampling(
+            active=False,
+            repeat=repeats,
+            repeats=repeats,
+            denoise_step=0,
+            denoise_steps=cfg.sample_steps,
+            global_step=global_step,
+        )
         flush_memory(device)

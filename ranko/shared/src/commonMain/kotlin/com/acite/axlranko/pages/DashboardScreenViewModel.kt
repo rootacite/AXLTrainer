@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.SampleItem
+import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -84,6 +85,48 @@ class DashboardScreenViewModel(
         viewModelScope.launch { fetchOnce() }
     }
 
+    fun startTraining() = runTrainCommand { ipc.trainStart() }
+
+    fun pauseTraining() = runTrainCommand(pending = "pause") { ipc.trainPause() }
+
+    fun resumeTraining() = runTrainCommand(pending = "resume") { ipc.trainResume() }
+
+    fun stopTraining() = runTrainCommand(pending = "stop") { ipc.trainStop() }
+
+    fun resetTraining(deleteWeights: Boolean) = runTrainCommand(refreshAll = true) {
+        ipc.trainReset(deleteWeights = deleteWeights)
+    }
+
+    private fun runTrainCommand(
+        pending: String? = null,
+        refreshAll: Boolean = false,
+        block: suspend () -> TrainStatus,
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(commandInFlight = true, pendingCommand = pending ?: it.pendingCommand) }
+            try {
+                val status = withContext(Dispatchers.IO) { block() }
+                _uiState.update {
+                    it.copy(
+                        commandInFlight = false,
+                        trainStatus = status,
+                        errorMessage = null,
+                        pendingCommand = resolvedPending(pending ?: it.pendingCommand, status.status),
+                    )
+                }
+                if (refreshAll) fetchOnce()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        commandInFlight = false,
+                        pendingCommand = null,
+                        errorMessage = e.message ?: e.toString(),
+                    )
+                }
+            }
+        }
+    }
+
     fun retry() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -105,7 +148,8 @@ class DashboardScreenViewModel(
             while (isActive) {
                 fetchOnce()
                 if (_uiState.value.autoRefresh) {
-                    delay(3_000L.milliseconds)
+                    val live = _uiState.value.trainStatus.status in LIVE_TRAIN_STATUSES
+                    delay(if (live) 1_000L.milliseconds else 3_000L.milliseconds)
                 } else {
                     break
                 }
@@ -121,6 +165,7 @@ class DashboardScreenViewModel(
         try {
             val dashboard = withContext(Dispatchers.IO) { ipc.getDashboard() }
             val samples = withContext(Dispatchers.IO) { ipc.listSamples() }
+            val trainStatus = withContext(Dispatchers.IO) { ipc.trainStatus() }
             _uiState.update { state ->
                 val previewPath = state.previewIndex
                     ?.let { flattenSamples(state.samples).getOrNull(it)?.path }
@@ -137,6 +182,8 @@ class DashboardScreenViewModel(
                     metrics = dashboard.metrics,
                     samples = samples.samples,
                     previewIndex = newPreview,
+                    trainStatus = trainStatus,
+                    pendingCommand = resolvedPending(state.pendingCommand, trainStatus.status),
                 )
             }
         } catch (e: Exception) {
@@ -161,6 +208,27 @@ class DashboardScreenViewModel(
         _uiState.update { it.copy(previewIndex = next) }
     }
 }
+
+internal fun resolvedPending(pending: String?, status: String): String? {
+    if (status in setOf("idle", "finished", "error")) return null
+    return when (pending) {
+        "pause" -> if (status == "pausing" || status == "paused") null else pending
+        "resume" -> if (status in setOf("resuming", "encoding", "training", "sampling")) null else pending
+        "stop" -> if (status == "stopping") null else pending
+        else -> pending
+    }
+}
+
+internal val LIVE_TRAIN_STATUSES = setOf(
+    "starting",
+    "encoding",
+    "training",
+    "sampling",
+    "pausing",
+    "paused",
+    "resuming",
+    "stopping",
+)
 
 internal fun flattenSamples(samples: Map<String, List<SampleItem>>): List<SampleItem> {
     return samples.entries

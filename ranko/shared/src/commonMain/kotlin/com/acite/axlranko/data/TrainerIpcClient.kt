@@ -2,6 +2,7 @@ package com.acite.axlranko.data
 
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.SamplesResponse
+import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
@@ -77,6 +78,42 @@ class TrainerIpcClient {
                 name?.let { put("name", it) }
                 startStep?.let { put("start_step", it) }
                 endStep?.let { put("end_step", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainStatus(): TrainStatus {
+        val result = call("train_status", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainStart(): TrainStatus {
+        val result = call("train_start", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainPause(): TrainStatus {
+        val result = call("train_pause", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainResume(): TrainStatus {
+        val result = call("train_resume", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainStop(): TrainStatus {
+        val result = call("train_stop", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun trainReset(deleteWeights: Boolean = false, name: String? = null): TrainStatus {
+        val result = call(
+            "train_reset",
+            buildJsonObject {
+                put("delete_weights", deleteWeights)
+                name?.let { put("name", it) }
             },
         )
         return json.decodeFromJsonElement(result)

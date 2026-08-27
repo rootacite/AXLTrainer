@@ -14,6 +14,13 @@ from config import TrainConfig
 from dataset import SDXLLoraDataset
 from env import flush_memory
 
+try:
+    import control
+    from device_swap import SwapContext, at_safe_point
+except ImportError:
+    from trainer import control
+    from trainer.device_swap import SwapContext, at_safe_point
+
 _DEFAULT_PREFETCH_WORKERS = max(2, min(8, os.cpu_count() or 4))
 _DEFAULT_ENCODE_BATCH_SIZE = 8
 
@@ -27,7 +34,8 @@ def warm_latent_cache(
     dtype: torch.dtype,
     prefetch_workers: Optional[int] = None,
     encode_batch_size: Optional[int] = None,
-) -> None:
+    swap_ctx: Optional[SwapContext] = None,
+) -> bool:
     """Pre-encode image latents to disk when disk caching is enabled.
 
     The serial decode -> encode -> save loop is pipelined into three stages:
@@ -40,7 +48,7 @@ def warm_latent_cache(
     is written to the same per-image, per-bucket cache path.
     """
     if not (cfg.cache_latents and cfg.cache_latents_to_disk):
-        return
+        return True
 
     vae.eval()
     vae.to(device=device, dtype=dtype)
@@ -52,6 +60,14 @@ def warm_latent_cache(
 
     pbar = tqdm(total=total, desc="Encoding Latents")
     pbar_lock = threading.Lock()
+    processed = 0
+    aborted = False
+    control.set_encoding(current=0, total=total, done=False)
+
+    def _note_progress() -> None:
+        nonlocal processed
+        processed += 1
+        control.set_encoding(current=processed, total=total, done=False)
 
     # Stage 3: async disk writer; the bounded queue provides backpressure.
     save_queue: "queue.Queue[Optional[tuple[torch.Tensor, Path]]]" = queue.Queue(maxsize=max(4, workers * 2))
@@ -73,6 +89,7 @@ def warm_latent_cache(
                 save_errors.append(exc)
             with pbar_lock:
                 pbar.update(1)
+                _note_progress()
 
     saver = threading.Thread(target=_saver, name="latent-cache-writer", daemon=True)
     saver.start()
@@ -102,6 +119,7 @@ def warm_latent_cache(
         if cache_path.exists() or item["img_type"] != "pixel":
             with pbar_lock:
                 pbar.update(1)
+                _note_progress()
             return
         bucket = (item["bucket_w"], item["bucket_h"])
         bucket_items = chunks.setdefault(bucket, [])
@@ -117,33 +135,41 @@ def warm_latent_cache(
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for fut in done:
                 _handle_item(fut.result())
+                if not at_safe_point("encoding", swap_ctx):
+                    aborted = True
+                    break
                 _submit_next()
+            if aborted:
+                pending = set()
+                break
 
-        # flush partially filled buckets
-        for bucket_items in chunks.values():
-            _encode_chunk(bucket_items)
-        chunks.clear()
+        if not aborted:
+            for bucket_items in chunks.values():
+                _encode_chunk(bucket_items)
+            chunks.clear()
 
-        # signal the writer to stop and wait for all pending saves
-        save_queue.put(None)
-        saver.join()
+            save_queue.put(None)
+            saver.join()
 
-        if save_errors:
-            raise save_errors[0]
+            if save_errors:
+                raise save_errors[0]
+            control.set_encoding(current=processed, total=total, done=True)
+        else:
+            chunks.clear()
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
-        if not save_queue.empty():
-            # error path: make room and signal the writer to stop
-            while True:
+        while True:
+            try:
+                save_queue.put_nowait(None)
+                break
+            except queue.Full:
                 try:
-                    save_queue.put_nowait(None)
-                    break
-                except queue.Full:
-                    try:
-                        save_queue.get_nowait()
-                    except queue.Empty:
-                        pass
+                    save_queue.get_nowait()
+                except queue.Empty:
+                    pass
         saver.join()
         pbar.close()
         vae.to("cpu")
         flush_memory(device)
+
+    return not aborted

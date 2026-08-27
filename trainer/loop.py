@@ -21,6 +21,13 @@ from sampling import generate_sample_image
 from utils import build_time_ids
 from env import flush_memory
 
+try:
+    import control
+    from device_swap import SwapContext, at_safe_point
+except ImportError:
+    from trainer import control
+    from trainer.device_swap import SwapContext, at_safe_point
+
 _loss_recorder = LossRecorder()
 
 
@@ -183,6 +190,7 @@ def _maybe_log_and_sample(
     device: torch.device,
     weight_dtype: torch.dtype,
     global_step: int,
+    swap_ctx: SwapContext | None = None,
 ) -> None:
     """Save checkpoints and generate samples on step boundaries."""
     if accelerator.is_main_process:
@@ -217,6 +225,7 @@ def _maybe_log_and_sample(
                     dtype=weight_dtype,
                     global_step=global_step,
                     output_dir_base=Path(cfg.output_dir),
+                    swap_ctx=swap_ctx,
                 )
             finally:
                 if hasattr(unet_optimizer, "train"):
@@ -244,6 +253,8 @@ def train_one_epoch(
     weight_dtype: torch.dtype,
     global_step: int,
     progress,
+    total_train_steps: int,
+    swap_ctx: SwapContext | None = None,
 ) -> int:
     """Train one epoch and keep all step-based actions aligned with optimizer steps."""
     unet.train()
@@ -321,6 +332,17 @@ def train_one_epoch(
                 progress.update(1)
                 progress.set_description(f"epoch={cfg._current_epoch}/{cfg.epoch} step={global_step} loss={avg_loss:.4f}")
 
+            control.set_training(
+                step=global_step,
+                total_steps=total_train_steps,
+                epoch=int(cfg._current_epoch),
+                epochs=cfg.epoch,
+                loss=float(avg_loss),
+                avg_loss=float(_loss_recorder.moving_average),
+            )
+            if not at_safe_point("training", swap_ctx):
+                return global_step
+
             _maybe_log_and_sample(
                 accelerator=accelerator,
                 cfg=cfg,
@@ -334,7 +356,10 @@ def train_one_epoch(
                 device=device,
                 weight_dtype=weight_dtype,
                 global_step=global_step,
+                swap_ctx=swap_ctx,
             )
+            if control.should_stop():
+                return global_step
 
         flush_memory(device)
 

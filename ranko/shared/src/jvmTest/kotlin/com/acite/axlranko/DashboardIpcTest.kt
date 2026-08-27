@@ -4,6 +4,7 @@ import com.acite.axlranko.data.IpcRequest
 import com.acite.axlranko.data.IpcResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.SamplesResponse
+import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -64,6 +65,56 @@ class DashboardIpcTest {
         """.trimIndent()
         val parsed = json.decodeFromString(SamplesResponse.serializer(), raw)
         assertEquals("/tmp/a_1000_0.png", parsed.samples["1000"]?.first()?.path)
+    }
+
+    @Test
+    fun trainStatusParsesSwapAndPhases() {
+        val raw = """
+            {
+              "schema": 1,
+              "pid": 4242,
+              "started_at": 1000.0,
+              "updated_at": 1001.5,
+              "status": "pausing",
+              "paused_from": "training",
+              "output_name": "rein",
+              "encoding": { "current": 10, "total": 20, "done": true },
+              "training": { "step": 12, "total_steps": 100, "epoch": 1, "epochs": 16, "loss": 0.25, "avg_loss": 0.3 },
+              "sampling": { "active": false, "repeat": 0, "repeats": 3, "denoise_step": 0, "denoise_steps": 55, "global_step": 0 },
+              "swap": { "stage": "offload_unet", "detail": "Moving UNet to CPU", "current": 1, "total": 5 },
+              "error": null,
+              "detail": null,
+              "alive": true,
+              "log_path": "/tmp/train.log"
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(TrainStatus.serializer(), raw)
+        assertEquals("pausing", parsed.status)
+        assertEquals(4242, parsed.pid)
+        assertEquals("rein", parsed.outputName)
+        assertEquals("training", parsed.pausedFrom)
+        assertEquals(12, parsed.training.step)
+        assertEquals(0.25f, parsed.training.loss)
+        assertEquals("offload_unet", parsed.swap?.stage)
+        assertEquals(1, parsed.swap?.current)
+        assertTrue(parsed.alive)
+        assertEquals("/tmp/train.log", parsed.logPath)
+        assertEquals(true, parsed.encoding.done)
+    }
+
+    @Test
+    fun trainResetRequestRoundTrip() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 9,
+                method = "train_reset",
+                params = buildJsonObject { put("delete_weights", true) },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        assertEquals("train_reset", decoded.method)
+        assertEquals("true", decoded.params["delete_weights"]?.jsonPrimitive?.content)
     }
 
     @Test

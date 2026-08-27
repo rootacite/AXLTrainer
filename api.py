@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import traceback
 from collections import defaultdict
@@ -11,6 +12,16 @@ from typing import Any, Optional
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from trainer.config import TrainConfig, _load_toml_config
+from trainer.cleanup import run_cleanup
+from trainer.control import (
+    is_pid_alive,
+    log_path,
+    mark_starting,
+    reconcile,
+    request as request_train_command,
+    reset_to_idle,
+    status_payload,
+)
 from trainer.loss_log import synthesize_avg_loss
 
 _IPC_STDOUT = sys.stdout
@@ -128,6 +139,96 @@ def scan_samples(sample_dir: Path) -> dict[str, list]:
     return {str(k): grouped[k] for k in sorted(grouped.keys(), reverse=True)}
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def handle_train_status(_params: dict[str, Any]) -> dict[str, Any]:
+    return status_payload()
+
+
+def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
+    current = reconcile()
+    if is_pid_alive(current.get("pid")):
+        raise ValueError("training already running")
+
+    root = _repo_root()
+    script = root / "start_train.sh"
+    if not script.is_file():
+        raise FileNotFoundError(f"missing launcher: {script}")
+
+    cfg = _train_config_dict()
+    output_name = str(cfg.get("output_name") or "default")
+    log_file = log_path()
+    with open(log_file, "ab") as log_handle:
+        proc = subprocess.Popen(
+            ["bash", str(script)],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    mark_starting(proc.pid, output_name)
+    return status_payload()
+
+
+def _require_alive() -> dict[str, Any]:
+    current = reconcile()
+    if not is_pid_alive(current.get("pid")):
+        raise ValueError("no running training process")
+    return current
+
+
+def handle_train_pause(_params: dict[str, Any]) -> dict[str, Any]:
+    _require_alive()
+    request_train_command("pause")
+    return status_payload()
+
+
+def handle_train_resume(_params: dict[str, Any]) -> dict[str, Any]:
+    _require_alive()
+    request_train_command("resume")
+    return status_payload()
+
+
+def handle_train_stop(_params: dict[str, Any]) -> dict[str, Any]:
+    _require_alive()
+    request_train_command("stop")
+    return status_payload()
+
+
+_RESET_BLOCKED = frozenset(
+    {
+        "starting",
+        "encoding",
+        "training",
+        "sampling",
+        "pausing",
+        "paused",
+        "resuming",
+    }
+)
+
+
+def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
+    current = reconcile()
+    if current.get("status") in _RESET_BLOCKED and is_pid_alive(current.get("pid")):
+        raise ValueError("cannot reset while training is running")
+    cfg = _train_config_dict()
+    cleanup = run_cleanup(
+        cfg.get("output_dir", "./output"),
+        cfg.get("logging_dir", "./logs"),
+        params.get("name") or cfg.get("output_name", "default"),
+        delete_weights=bool(params.get("delete_weights")),
+    )
+    reset_to_idle()
+    payload = status_payload()
+    payload["cleanup"] = cleanup
+    return payload
+
+
 def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
     cfg = _train_config_dict()
     output_dir = cfg.get("output_dir", "./output")
@@ -140,6 +241,12 @@ _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
     "list_samples": handle_list_samples,
+    "train_status": handle_train_status,
+    "train_start": handle_train_start,
+    "train_pause": handle_train_pause,
+    "train_resume": handle_train_resume,
+    "train_stop": handle_train_stop,
+    "train_reset": handle_train_reset,
 }
 
 

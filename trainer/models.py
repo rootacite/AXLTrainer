@@ -10,7 +10,10 @@ from diffusers import StableDiffusionXLPipeline
 from diffusers.models.attention_processor import AttnProcessor2_0
 from safetensors.torch import save_file
 
-from config import TrainConfig
+try:
+    from config import TrainConfig
+except ImportError:
+    from trainer.config import TrainConfig
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +315,28 @@ def _build_kohya_metadata(
     return meta
 
 
+def safe_output_name(name: str) -> str:
+    text = (name or "").strip() or "lora"
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in text)
+    return cleaned or "lora"
+
+
+def lora_checkpoint_file(
+    cfg: TrainConfig,
+    global_step: int,
+    epoch: Optional[int] = None,
+    final: bool = False,
+) -> Path:
+    name = safe_output_name(cfg.output_name)
+    if final:
+        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_final"
+    elif epoch is not None:
+        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_e{epoch:03d}_s{global_step:06d}"
+    else:
+        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_s{global_step:06d}"
+    return out_dir / f"{name}.safetensors"
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint saver
 # ---------------------------------------------------------------------------
@@ -359,16 +384,9 @@ def save_lora_checkpoint(
 
     merged: dict[str, torch.Tensor] = {**unet_state, **te1_state, **te2_state}
 
-    # Determine output path
-    if final:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_final"
-    elif epoch is not None:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_e{epoch:03d}_s{global_step:06d}"
-    else:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_s{global_step:06d}"
-
+    out_file = lora_checkpoint_file(cfg, global_step, epoch=epoch, final=final)
+    out_dir = out_file.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "pytorch_lora_weights.safetensors"
 
     metadata = _build_kohya_metadata(cfg, global_step, epoch, final)
     save_file(merged, str(out_file), metadata=metadata)
