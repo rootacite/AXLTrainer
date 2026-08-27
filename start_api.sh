@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# Debug helper: run the dashboard IPC process on stdin/stdout.
+# Ranko starts this itself during normal use (python -u api.py).
+
 export AMD_LOG_LEVEL=0
 export CK_LOG_LEVEL=0
 
@@ -16,4 +19,6 @@ export MIOPEN_DEBUG_ENABLE_AI_IMMED_MODE_FALLBACK=0
 export MIOPEN_CUSTOM_CACHE_DIR="$HOME/.cache/miopen"
 export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
-python api.py
+export PYTHONUNBUFFERED=1
+
+python -u api.py

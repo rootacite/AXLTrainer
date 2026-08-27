@@ -1,119 +1,47 @@
-import asyncio
-import io
+import json
 import os
 import re
-import gc
-import ctypes
+import sys
+import traceback
 from collections import defaultdict
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-import torch
+from trainer.config import TrainConfig, _load_toml_config
+from trainer.loss_log import synthesize_avg_loss
 
-from trainer.config import TrainConfig
-import generate.config as gen_config
-import generate.detailer as gen_detailer
-import generate.model_loader as gen_model_loader
-import generate.pipeline as gen_pipeline
-import generate.upscaler as gen_upscaler
+_IPC_STDOUT = sys.stdout
 
 
-# Create a dedicated single-thread executor for generation tasks
-generation_executor = ThreadPoolExecutor(max_workers=1)
-
-@asynccontextmanager
-async def lifespan(lapp: FastAPI):
-    lapp.state.runtime_pipelines = None
-    lapp.state.generation_lock = asyncio.Lock()
-    yield
-    generation_executor.shutdown(wait=True)
-
-app = FastAPI(
-    title="LoRA Training & Generation API",
-    version="1.0.0",
-    description="Backend API for training dashboard and image generation pipeline.",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def _write(payload: dict[str, Any]) -> None:
+    _IPC_STDOUT.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
+    _IPC_STDOUT.flush()
 
 
-# ==========================================
-# Data Models
-# ==========================================
-
-class RefinementPassOverride(BaseModel):
-    name: str
-    model: str
-    denoise: float
-    guide_size: int
-
-
-class PromptOverrides(BaseModel):
-    positive_prompt: Optional[str] = Field(default=None)
-    negative_prompt: Optional[str] = Field(default=None)
-    base_model_path: Optional[str] = Field(default=None)
-    lora_path: Optional[str] = Field(default=None)
-    lora_scale: Optional[float] = Field(default=None)
-    realesrgan_model_path: Optional[str] = Field(default=None)
-    max_token_length: Optional[int] = Field(default=None)
-    clip_skip: Optional[int] = Field(default=None)
-    output_filename_prefix: Optional[str] = Field(default=None)
-    refinement_passes: Optional[List[RefinementPassOverride]] = Field(default=None)
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return str(value)
 
 
-@dataclass
-class RuntimePipelines:
-    base_pipe: Any
-    inpaint_pipe: Any
-    img2img_pipe: Any
-    load_key: Tuple[Any, ...]
-
-
-def _to_png_bytes(image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def _normalize_refinement_passes(
-    refinement_passes: Optional[List[RefinementPassOverride]],
-) -> Optional[List[Dict[str, Any]]]:
-    if refinement_passes is None:
-        return None
-    return [item.model_dump() for item in refinement_passes]
-
-
-def _validate_positive(name: str, value: Optional[int]) -> None:
-    if value is not None and value <= 0:
-        raise HTTPException(status_code=400, detail=f"{name} must be a positive integer.")
-
-
-def _pipeline_load_key() -> Tuple[Any, ...]:
-    return (
-        gen_config.BASE_MODEL_PATH,
-        gen_config.LORA_PATH,
-        gen_config.LORA_SCALE,
-        gen_config.REALESRGAN_MODEL_PATH,
-        gen_config.DEVICE,
-        str(gen_config.TORCH_DTYPE),
-    )
+def _train_config_dict() -> dict[str, Any]:
+    cfg = TrainConfig()
+    data = asdict(cfg) if is_dataclass(cfg) else dict(vars(cfg))
+    data.update(_load_toml_config())
+    return _json_safe(data)
 
 
 def _get_tensorboard_metrics(
@@ -137,7 +65,7 @@ def _get_tensorboard_metrics(
         for tag in ea.Tags()["scalars"]:
             events = ea.Scalars(tag)
             filtered = [
-                {"step": e.step, "value": e.value, "wall_time": e.wall_time}
+                {"step": e.step, "value": float(e.value), "wall_time": float(e.wall_time)}
                 for e in events
                 if (start_step is None or e.step >= start_step)
                 and (end_step is None or e.step <= end_step)
@@ -147,274 +75,23 @@ def _get_tensorboard_metrics(
     return metrics
 
 
-def _destroy_runtime(runtime: RuntimePipelines) -> None:
-    if runtime is None:
-        return
-    try:
-        # Delete the pipelines entirely to break cyclic references
-        del runtime.inpaint_pipe
-        del runtime.img2img_pipe
-        del runtime.base_pipe
-    except Exception:
-        pass
-    finally:
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+def handle_ping(_params: dict[str, Any]) -> dict[str, str]:
+    return {"status": "ok"}
 
 
-def _force_os_memory_release() -> None:
-    # Forces glibc to return freed memory in thread arenas back to the OS
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass
-
-
-def _sync_ensure_runtime_pipelines(state) -> RuntimePipelines | None:
-    desired_key = _pipeline_load_key()
-    runtime: Optional[RuntimePipelines] = getattr(state, "runtime_pipelines", None)
-
-    if runtime is not None and runtime.load_key == desired_key:
-        return runtime
-
-    if runtime is not None:
-        _destroy_runtime(runtime)
-        state.runtime_pipelines = None
-
-    try:
-        gen_upscaler.get_realesrgan_upsampler.cache_clear()
-    except Exception:
-        pass
-
-    base_pipe = gen_model_loader.load_base_pipeline()
-    inpaint_pipe = gen_model_loader.load_inpaint_pipeline_from_base(base_pipe)
-    img2img_pipe = gen_model_loader.load_img2img_pipeline_from_base(base_pipe)
-
-    base_pipe.enable_model_cpu_offload()
-
-    runtime = RuntimePipelines(
-        base_pipe=base_pipe,
-        inpaint_pipe=inpaint_pipe,
-        img2img_pipe=img2img_pipe,
-        load_key=desired_key,
-    )
-    state.runtime_pipelines = runtime
-    return runtime
-
-@contextmanager
-def _temporary_config_overrides(
-    overrides: PromptOverrides,
-    numeric_overrides: Dict[str, Any],
-) -> Iterator[None]:
-    original_values: Dict[str, Any] = {}
-
-    def set_if_present(_attr: str, _value: Any) -> None:
-        if _value is None:
-            return
-        original_values[_attr] = getattr(gen_config, _attr)
-        setattr(gen_config, _attr, _value)
-
-    try:
-        set_if_present("POSITIVE_PROMPT", overrides.positive_prompt)
-        set_if_present("NEGATIVE_PROMPT", overrides.negative_prompt)
-        set_if_present("BASE_MODEL_PATH", overrides.base_model_path)
-        set_if_present("LORA_PATH", overrides.lora_path)
-        set_if_present("LORA_SCALE", overrides.lora_scale)
-        set_if_present("REALESRGAN_MODEL_PATH", overrides.realesrgan_model_path)
-        set_if_present("max_token_length", overrides.max_token_length)
-        set_if_present("clip_skip", overrides.clip_skip)
-        set_if_present("OUTPUT_FILENAME_PREFIX", overrides.output_filename_prefix)
-
-        if overrides.refinement_passes is not None:
-            original_values["REFINEMENT_PASSES"] = getattr(gen_config, "REFINEMENT_PASSES")
-            setattr(
-                gen_config,
-                "REFINEMENT_PASSES",
-                _normalize_refinement_passes(overrides.refinement_passes),
-            )
-
-        for key, value in numeric_overrides.items():
-            if value is None or not hasattr(gen_config, key):
-                continue
-            original_values.setdefault(key, getattr(gen_config, key))
-            setattr(gen_config, key, value)
-
-        yield
-    finally:
-        for attr, value in reversed(list(original_values.items())):
-            setattr(gen_config, attr, value)
-
-
-# ==========================================
-# Output Auto-Save
-# ==========================================
-
-def _save_output(
-    save_dir: str,
-    png_bytes: bytes,
-    seed: Optional[int],
-    params: Dict[str, Any],
-) -> None:
-    try:
-        out_dir = Path(save_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        seed_str = str(seed) if seed is not None else "noseed"
-        stem = f"axl_{date_str}_{seed_str}"
-
-        img_path = out_dir / f"{stem}.png"
-        img_path.write_bytes(png_bytes)
-
-        txt_path = out_dir / f"{stem}.txt"
-        lines = [f"{k}: {v}" for k, v in params.items()]
-        txt_path.write_text("\n".join(lines), encoding="utf-8")
-    except Exception as exc:
-        # 保存失败不应中断正常响应，仅打印警告
-        import traceback
-        print(f"[WARNING] _save_output failed: {exc}\n{traceback.format_exc()}")
-
-
-def _sync_quick(state, overrides, numeric_overrides, seed, steps, cfg_scale) -> bytes:
-    with _temporary_config_overrides(overrides, numeric_overrides):
-        runtime = _sync_ensure_runtime_pipelines(state)
-        image, _ = gen_pipeline.generate_base_image(
-            runtime.base_pipe,
-            seed_override=seed,
-            steps_override=steps,
-            cfg_scale_override=cfg_scale,
-            return_seed=True,
-        )
-        result = _to_png_bytes(image)
-        del image
-
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    _force_os_memory_release()
-
-    return result
-
-
-def _sync_generate(
-    state,
-    overrides: PromptOverrides,
-    numeric_overrides: Dict[str, Any],
-    stages: int,
-    seed: Optional[int],
-    steps: Optional[int],
-    cfg_scale: Optional[float],
-) -> bytes:
-    with _temporary_config_overrides(overrides, numeric_overrides):
-        runtime = _sync_ensure_runtime_pipelines(state)
-
-        raw_image, actual_seed = gen_pipeline.generate_base_image(
-            runtime.base_pipe,
-            seed_override=seed,
-            steps_override=steps,
-            cfg_scale_override=cfg_scale,
-            return_seed=True,
-        )
-        if stages == 1:
-            if hasattr(torch, "cuda") and torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-
-            gc.collect()
-            return _to_png_bytes(raw_image)
-
-        upscaled = gen_upscaler.ultimate_sd_upscale(
-            image=raw_image,
-            img2img_pipe=runtime.img2img_pipe,
-            upscale_factor=2.0,
-            tile_size=480,
-            overlap=64,
-            denoise_strength=0.1,
-            seed_override=actual_seed,
-            steps_override=steps,
-            cfg_scale_override=cfg_scale,
-        )
-        if stages == 2:
-            if hasattr(torch, "cuda") and torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-
-            gc.collect()
-            return _to_png_bytes(upscaled)
-
-        final = gen_detailer.run_detailer_pipeline(
-            upscaled,
-            runtime.inpaint_pipe,
-            seed_override=actual_seed,
-            steps_override=steps,
-            cfg_scale_override=cfg_scale,
-        )
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-
-        gc.collect()
-        _force_os_memory_release()
-        return _to_png_bytes(final)
-
-
-# ==========================================
-# Dashboard & Samples Endpoints
-# ==========================================
-
-@app.get("/api/config/train")
-async def get_train_config():
-    import dataclasses
-
-    cfg = TrainConfig()
-    if dataclasses.is_dataclass(cfg):
-        config_data = dataclasses.asdict(cfg)
-    else:
-        config_data = vars(cfg)
-
-    return config_data
-
-
-@app.get("/api/config/generate")
-async def get_generate_config():
-    import types
-
-    config_dict = {}
-    for key in dir(gen_config):
-        if key.startswith("_"):
-            continue
-
-        val = getattr(gen_config, key)
-
-        if isinstance(val, (types.ModuleType, types.FunctionType, types.BuiltinFunctionType)):
-            continue
-
-        if isinstance(val, torch.dtype):
-            config_dict[key] = str(val)
-        else:
-            config_dict[key] = val
-
-    return config_dict
-
-@app.get("/api/dashboard")
-async def get_dashboard_data(
-    name: Optional[str] = Query(default=None),
-    start_step: Optional[int] = Query(default=None),
-    end_step: Optional[int] = Query(default=None),
-):
-    cfg = await asyncio.to_thread(lambda: vars(TrainConfig()))
-    output_name = name or cfg.get("output_name", "default")
+def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    output_name = params.get("name") or cfg.get("output_name", "default")
     logging_dir = cfg.get("logging_dir", "./logs")
-    target_log_dir = os.path.join(logging_dir, output_name)
+    target_log_dir = os.path.join(str(logging_dir), str(output_name))
 
-    metrics = await asyncio.to_thread(
-        _get_tensorboard_metrics, target_log_dir, start_step, end_step
-    )
+    start_step = params.get("start_step")
+    end_step = params.get("end_step")
+    metrics = _get_tensorboard_metrics(target_log_dir, start_step, end_step)
+    if not metrics.get("Train/Avg_Loss") and metrics.get("Train/Loss"):
+        metrics["Train/Avg_Loss"] = synthesize_avg_loss(metrics["Train/Loss"])
 
-    latest_stats: Dict[str, Any] = {}
+    latest_stats: dict[str, Any] = {}
     for tag, data in metrics.items():
         if data:
             latest_stats[tag] = data[-1]["value"]
@@ -423,161 +100,79 @@ async def get_dashboard_data(
     return {"config": cfg, "latest_stats": latest_stats, "metrics": metrics}
 
 
-@app.get("/api/samples")
-async def list_samples(name: Optional[str] = Query(default=None)):
-    cfg = await asyncio.to_thread(lambda: vars(TrainConfig()))
+_SAMPLE_NAME = re.compile(r"_(\d+)_(\d+)\.png$")
+
+
+def scan_samples(sample_dir: Path) -> dict[str, list]:
+    if not sample_dir.exists():
+        return {}
+
+    grouped: dict[int, list] = defaultdict(list)
+    for img_path in sample_dir.glob("*.png"):
+        match = _SAMPLE_NAME.search(img_path.name)
+        if match:
+            step, repeat_idx = int(match.group(1)), int(match.group(2))
+        else:
+            step, repeat_idx = -1, 0
+        grouped[step].append(
+            {
+                "filename": img_path.name,
+                "repeat_idx": repeat_idx,
+                "path": str(img_path.resolve()),
+            }
+        )
+
+    for step in grouped:
+        grouped[step] = sorted(grouped[step], key=lambda x: x["repeat_idx"])
+
+    return {str(k): grouped[k] for k in sorted(grouped.keys(), reverse=True)}
+
+
+def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
     output_dir = cfg.get("output_dir", "./output")
-    output_name = name or cfg.get("output_name", "default")
-
-    def _scan() -> dict[int, list] | dict[Any, Any]:
-        sample_dir = Path(output_dir) / f"{output_name}_samples"
-        if not sample_dir.exists():
-            return {}
-
-        pattern = re.compile(r"_(\d+)_(\d+)\.png$")
-        grouped: Dict[int, list] = defaultdict(list)
-
-        for img_path in sample_dir.glob("*.png"):
-            match = pattern.search(img_path.name)
-            if match:
-                step, repeat_idx = int(match.group(1)), int(match.group(2))
-            else:
-                step, repeat_idx = -1, 0
-            grouped[step].append({"filename": img_path.name, "repeat_idx": repeat_idx})
-
-        for step in grouped:
-            grouped[step] = sorted(grouped[step], key=lambda x: x["repeat_idx"])
-
-        return {k: grouped[k] for k in sorted(grouped.keys(), reverse=True)}
-
-    samples = await asyncio.to_thread(_scan)
-    return {"samples": samples}
+    output_name = params.get("name") or cfg.get("output_name", "default")
+    sample_dir = Path(str(output_dir)) / f"{output_name}_samples"
+    return {"samples": scan_samples(sample_dir)}
 
 
-@app.get("/api/samples/{filename}")
-async def get_sample_image(
-    filename: str, name: Optional[str] = Query(default=None)
-):
-    cfg = await asyncio.to_thread(lambda: vars(TrainConfig()))
-    output_dir = cfg.get("output_dir", "./output")
-    output_name = name or cfg.get("output_name", "default")
-
-    sample_dir = Path(output_dir) / f"{output_name}_samples"
-    file_path = sample_dir / filename
-
-    exists = await asyncio.to_thread(lambda: file_path.exists() and file_path.is_file())
-    if not exists:
-        raise HTTPException(status_code=404, detail="Sample image not found")
-
-    return FileResponse(str(file_path), media_type="image/png")
+_HANDLERS = {
+    "ping": handle_ping,
+    "dashboard": handle_dashboard,
+    "list_samples": handle_list_samples,
+}
 
 
-# ==========================================
-# Generation Endpoints
-# ==========================================
-
-@app.get("/healthz")
-async def healthz() -> Dict[str, str]:
-    return {"status": "ok"}
+def dispatch(method: str, params: Optional[dict[str, Any]] = None) -> Any:
+    handler = _HANDLERS.get(method)
+    if handler is None:
+        raise ValueError(f"unknown method: {method}")
+    return handler(params or {})
 
 
-@app.post("/api/quick")
-async def api_quick(
-    body: Optional[PromptOverrides] = Body(default=None),
-    seed: Optional[int] = Query(default=None),
-    steps: Optional[int] = Query(default=None),
-    cfg_scale: Optional[float] = Query(default=None, alias="cfg_scale"),
-    width: Optional[int] = Query(default=None),
-    height: Optional[int] = Query(default=None),
-):
-    body = body or PromptOverrides()
-    _validate_positive("steps", steps)
-    _validate_positive("width", width)
-    _validate_positive("height", height)
-
-    numeric_overrides = {
-        "SEED": seed, "STEPS": steps, "CFG_SCALE": cfg_scale,
-        "WIDTH": width, "HEIGHT": height,
-    }
-
-    lock: asyncio.Lock = app.state.generation_lock
-    async with lock:
+def run_ipc_loop() -> None:
+    # Keep stdout exclusive for NDJSON IPC. All logs go to stderr.
+    sys.stdout = sys.stderr
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        req_id: Any = None
         try:
-            loop = asyncio.get_running_loop()
-            png_bytes = await loop.run_in_executor(
-                generation_executor,
-                _sync_quick,
-                app.state, body, numeric_overrides, seed, steps, cfg_scale
-            )
-        except HTTPException:
-            raise
+            req = json.loads(line)
+            req_id = req.get("id")
+            method = req.get("method")
+            if not isinstance(method, str) or not method:
+                raise ValueError("missing method")
+            params = req.get("params") or {}
+            if not isinstance(params, dict):
+                raise ValueError("params must be an object")
+            result = dispatch(method, params)
+            _write({"id": req_id, "ok": True, "result": _json_safe(result)})
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+            traceback.print_exc()
+            _write({"id": req_id, "ok": False, "error": str(exc)})
 
-    save_params: Dict[str, Any] = {
-        **body.model_dump(),
-        "seed": seed,
-        "steps": steps,
-        "cfg_scale": cfg_scale,
-        "width": width,
-        "height": height,
-    }
-    asyncio.create_task(
-        asyncio.to_thread(_save_output, "./output/quick", png_bytes, seed, save_params)
-    )
-
-    return Response(content=png_bytes, media_type="image/png")
-
-
-@app.post("/api/generate")
-async def api_generate(
-    body: Optional[PromptOverrides] = Body(default=None),
-    stages: int = Query(default=3, ge=1, le=3),
-    seed: Optional[int] = Query(default=None),
-    steps: Optional[int] = Query(default=None),
-    cfg_scale: Optional[float] = Query(default=None, alias="cfg_scale"),
-    width: Optional[int] = Query(default=None),
-    height: Optional[int] = Query(default=None),
-):
-    body = body or PromptOverrides()
-    _validate_positive("steps", steps)
-    _validate_positive("width", width)
-    _validate_positive("height", height)
-
-    numeric_overrides = {
-        "SEED": seed, "STEPS": steps, "CFG_SCALE": cfg_scale,
-        "WIDTH": width, "HEIGHT": height,
-    }
-
-    lock: asyncio.Lock = app.state.generation_lock
-    async with lock:
-        try:
-            loop = asyncio.get_running_loop()
-            png_bytes = await loop.run_in_executor(
-                generation_executor,
-                _sync_generate,
-                app.state, body, numeric_overrides, stages, seed, steps, cfg_scale
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
-
-    save_params: Dict[str, Any] = {
-        **body.model_dump(),
-        "stages": stages,
-        "seed": seed,
-        "steps": steps,
-        "cfg_scale": cfg_scale,
-        "width": width,
-        "height": height,
-    }
-    asyncio.create_task(
-        asyncio.to_thread(_save_output, "./output/generate", png_bytes, seed, save_params)
-    )
-
-    return Response(content=png_bytes, media_type="image/png")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+    run_ipc_loop()

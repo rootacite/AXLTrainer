@@ -14,11 +14,14 @@ base_dir = os.getcwd()
 sys.path.append(base_dir)
 
 from config import TrainConfig
+from loss_log import LossRecorder
 from models import save_lora_checkpoint
 from text_processing import encode_prompt_batch
 from sampling import generate_sample_image
 from utils import build_time_ids
 from env import flush_memory
+
+_loss_recorder = LossRecorder()
 
 
 def group_indices_by_bucket(batch: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
@@ -190,6 +193,7 @@ def _maybe_log_and_sample(
         accelerator.log(
             {
                 "Train/Loss": _maybe_log_and_sample.last_loss,
+                "Train/Avg_Loss": _maybe_log_and_sample.last_avg_loss,
                 "UNet/LR/Effective_Actual_LR": unet_effective_lr,
                 "TE/LR/Base_Scheduled": te_base_lr,
                 "TE/LR/Effective_Actual_LR": te_base_lr,
@@ -219,6 +223,7 @@ def _maybe_log_and_sample(
                     unet_optimizer.train()
 
 _maybe_log_and_sample.last_loss = 0.0
+_maybe_log_and_sample.last_avg_loss = 0.0
 
 
 def train_one_epoch(
@@ -246,6 +251,9 @@ def train_one_epoch(
         unet_optimizer.train()
     text_encoder_1.train()
     text_encoder_2.train()
+
+    epoch_step = 0
+    epoch_index = max(0, int(cfg._current_epoch) - 1)
 
     for batch in dataloader:
         # flush_memory(device)
@@ -304,7 +312,10 @@ def train_one_epoch(
         if accelerator.sync_gradients:
             global_step += 1
             avg_loss = batch_loss_sum / max(1, batch_item_count)
+            _loss_recorder.add(epoch=epoch_index, step=epoch_step, loss=avg_loss)
             _maybe_log_and_sample.last_loss = avg_loss
+            _maybe_log_and_sample.last_avg_loss = _loss_recorder.moving_average
+            epoch_step += 1
 
             if progress is not None:
                 progress.update(1)
