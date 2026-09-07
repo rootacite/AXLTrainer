@@ -27,7 +27,7 @@ sys.path.insert(0, str(HERE))
 from PIL import Image
 
 from config import TrainConfig
-from dataset import SDXLLoraDataset
+from dataset import LoraImageDataset
 from utils import pick_bucket_size
 
 
@@ -98,7 +98,7 @@ def bucket_for(img: Path, cfg: TrainConfig):
 def collect_cached(root: Path) -> dict:
     """image stem -> (cache path, latent tensor) for every cached image."""
     cfg = make_cfg(root)
-    dataset = SDXLLoraDataset(cfg)
+    dataset = LoraImageDataset(cfg)
     out = {}
     for img in sorted(root.glob("*.png")):
         bw, bh = bucket_for(img, cfg)
@@ -136,7 +136,7 @@ def test_equivalence_with_serial() -> None:
         make_dataset_dir(dir_b, n_images=17)
 
         cfg_a, cfg_b = make_cfg(dir_a), make_cfg(dir_b)
-        ds_a, ds_b = SDXLLoraDataset(cfg_a), SDXLLoraDataset(cfg_b)
+        ds_a, ds_b = LoraImageDataset(cfg_a), LoraImageDataset(cfg_b)
 
         vae_serial = MockVAE()
         run_serial(ds_b, vae_serial, cfg_b, torch.device("cpu"), torch.float32)
@@ -173,7 +173,7 @@ def test_skip_on_second_run() -> None:
         make_dataset_dir(root, n_images=9)
         cfg = make_cfg(root)
 
-        ds1 = SDXLLoraDataset(cfg)
+        ds1 = LoraImageDataset(cfg)
         vae1 = MockVAE()
         cache.warm_latent_cache(
             ds1, vae1, cfg, torch.device("cpu"), torch.float32,
@@ -181,7 +181,7 @@ def test_skip_on_second_run() -> None:
         )
         first_files = sorted(p.name for p in (root / ".latents_cache").glob("*.pt"))
 
-        ds2 = SDXLLoraDataset(cfg)
+        ds2 = LoraImageDataset(cfg)
         vae2 = MockVAE()
         cache.warm_latent_cache(
             ds2, vae2, cfg, torch.device("cpu"), torch.float32,
@@ -202,13 +202,13 @@ def test_mixed_precached() -> None:
         make_dataset_dir(root, n_images=8)
         cfg = make_cfg(root)
 
-        ds0 = SDXLLoraDataset(cfg)
+        ds0 = LoraImageDataset(cfg)
         item = ds0[0]
         cache_path = Path(item["cache_path"])
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(torch.zeros(4, 8, 8), cache_path)
 
-        ds1 = SDXLLoraDataset(cfg)
+        ds1 = LoraImageDataset(cfg)
         vae = MockVAE()
         cache.warm_latent_cache(
             ds1, vae, cfg, torch.device("cpu"), torch.float32,
@@ -230,7 +230,7 @@ def test_gate_disabled() -> None:
         make_dataset_dir(root, n_images=5)
         cfg = make_cfg(root, cache_latents=False)
 
-        ds = SDXLLoraDataset(cfg)
+        ds = LoraImageDataset(cfg)
         vae = MockVAE()
         cache.warm_latent_cache(ds, vae, cfg, torch.device("cpu"), torch.float32)
         assert vae.encode_calls == 0
@@ -276,7 +276,7 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
         vae.encode = counting_encode
 
         t0 = time.time()
-        ds = SDXLLoraDataset(cfg)
+        ds = LoraImageDataset(cfg)
         cache.warm_latent_cache(
             ds, vae, cfg, device, dtype,
             prefetch_workers=2, encode_batch_size=2,
@@ -292,7 +292,7 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
 
         # second run: everything cached, zero encodes
         calls["n"] = 0
-        ds2 = SDXLLoraDataset(cfg)
+        ds2 = LoraImageDataset(cfg)
         cache.warm_latent_cache(
             ds2, vae, cfg, device, dtype,
             prefetch_workers=2, encode_batch_size=2,

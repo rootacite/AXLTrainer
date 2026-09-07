@@ -12,6 +12,7 @@ from typing import Any, Optional
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from trainer.config import TrainConfig, _load_toml_config
+from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
     is_pid_alive,
@@ -156,6 +157,8 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
     script = root / "start_train.sh"
     if not script.is_file():
         raise FileNotFoundError(f"missing launcher: {script}")
+
+    require_trainable(resolve_family(TrainConfig()))
 
     cfg = _train_config_dict()
     output_name = str(cfg.get("output_name") or "default")

@@ -19,10 +19,9 @@ except ImportError:
 class SwapContext:
     device: torch.device
     vae: Any = None
-    unet: Any = None
-    text_encoder_1: Any = None
-    text_encoder_2: Any = None
-    unet_optimizer: Any = None
+    denoise: Any = None
+    text_encoders: list = field(default_factory=list)
+    denoise_optimizer: Any = None
     te_optimizer: Any = None
     saved_modes: dict[str, Any] = field(default_factory=dict)
 
@@ -60,33 +59,38 @@ def _move_module(module: Any, device) -> None:
     module.to(device)
 
 
+def _named_modules(ctx: SwapContext) -> list[tuple[str, Any]]:
+    items: list[tuple[str, Any]] = [("denoise", ctx.denoise), ("vae", ctx.vae)]
+    for index, te in enumerate(ctx.text_encoders, start=1):
+        items.append((f"text_encoder_{index}", te))
+    return items
+
+
 def capture_modes(ctx: SwapContext) -> dict[str, Any]:
     modes: dict[str, Any] = {}
-    for name in ("unet", "text_encoder_1", "text_encoder_2", "vae"):
-        module = getattr(ctx, name)
+    for name, module in _named_modules(ctx):
         modes[name] = bool(module.training) if module is not None and hasattr(module, "training") else None
-    unet_opt = ctx.unet_optimizer
-    if unet_opt is not None and getattr(unet_opt, "param_groups", None):
-        modes["unet_opt_train_mode"] = bool(unet_opt.param_groups[0].get("train_mode", False))
+    denoise_opt = ctx.denoise_optimizer
+    if denoise_opt is not None and getattr(denoise_opt, "param_groups", None):
+        modes["denoise_opt_train_mode"] = bool(denoise_opt.param_groups[0].get("train_mode", False))
     return modes
 
 
 def restore_modes(ctx: SwapContext, modes: dict[str, Any]) -> None:
-    for name in ("unet", "text_encoder_1", "text_encoder_2", "vae"):
-        module = getattr(ctx, name)
+    for name, module in _named_modules(ctx):
         flag = modes.get(name)
         if module is None or flag is None:
             continue
         module.train(flag)
-    unet_opt = ctx.unet_optimizer
-    wanted = modes.get("unet_opt_train_mode")
-    if unet_opt is None or wanted is None:
+    denoise_opt = ctx.denoise_optimizer
+    wanted = modes.get("denoise_opt_train_mode")
+    if denoise_opt is None or wanted is None:
         return
-    current = bool(unet_opt.param_groups[0].get("train_mode", False)) if unet_opt.param_groups else False
-    if wanted and not current and hasattr(unet_opt, "train"):
-        unet_opt.train()
-    elif (not wanted) and current and hasattr(unet_opt, "eval"):
-        unet_opt.eval()
+    current = bool(denoise_opt.param_groups[0].get("train_mode", False)) if denoise_opt.param_groups else False
+    if wanted and not current and hasattr(denoise_opt, "train"):
+        denoise_opt.train()
+    elif (not wanted) and current and hasattr(denoise_opt, "eval"):
+        denoise_opt.eval()
 
 
 def _first_trainable_param(module: Any) -> Optional[tuple[str, torch.Tensor]]:
@@ -112,32 +116,32 @@ def _first_state_tensor(optimizer: Any, key: str) -> Optional[torch.Tensor]:
 
 def log_snapshot(tag: str, ctx: SwapContext) -> None:
     bits: list[str] = [f"[swap {tag}]"]
-    found = _first_trainable_param(ctx.unet)
+    found = _first_trainable_param(ctx.denoise)
     if found is not None:
         name, param = found
-        bits.append(f"unet.{name} device={param.device} dtype={param.dtype}")
-    if ctx.unet_optimizer is not None:
+        bits.append(f"denoise.{name} device={param.device} dtype={param.dtype}")
+    if ctx.denoise_optimizer is not None:
         for key in ("z", "exp_avg_sq", "exp_avg"):
-            tensor = _first_state_tensor(ctx.unet_optimizer, key)
+            tensor = _first_state_tensor(ctx.denoise_optimizer, key)
             if tensor is not None:
-                bits.append(f"unet_opt.{key} device={tensor.device} dtype={tensor.dtype}")
+                bits.append(f"denoise_opt.{key} device={tensor.device} dtype={tensor.dtype}")
                 break
     print(" ".join(bits), file=sys.stderr, flush=True)
 
 
 def offload_to_cpu(ctx: SwapContext) -> None:
     stages = [
-        ("offload_unet", "Moving UNet to CPU", lambda: _move_module(ctx.unet, "cpu")),
+        ("offload_denoise", "Moving denoise model to CPU", lambda: _move_module(ctx.denoise, "cpu")),
         (
             "offload_text_encoders",
             "Moving text encoders to CPU",
-            lambda: (_move_module(ctx.text_encoder_1, "cpu"), _move_module(ctx.text_encoder_2, "cpu")),
+            lambda: [_move_module(te, "cpu") for te in ctx.text_encoders],
         ),
         (
             "offload_optimizers",
             "Moving optimizer state to CPU",
             lambda: (
-                optimizer_tensors_to(ctx.unet_optimizer, "cpu"),
+                optimizer_tensors_to(ctx.denoise_optimizer, "cpu"),
                 optimizer_tensors_to(ctx.te_optimizer, "cpu"),
             ),
         ),
@@ -157,20 +161,17 @@ def reload_to_device(ctx: SwapContext, phase: str) -> None:
     else:
         stages.extend(
             [
-                ("reload_unet", "Moving UNet to GPU", lambda: _move_module(ctx.unet, ctx.device)),
+                ("reload_denoise", "Moving denoise model to GPU", lambda: _move_module(ctx.denoise, ctx.device)),
                 (
                     "reload_text_encoders",
                     "Moving text encoders to GPU",
-                    lambda: (
-                        _move_module(ctx.text_encoder_1, ctx.device),
-                        _move_module(ctx.text_encoder_2, ctx.device),
-                    ),
+                    lambda: [_move_module(te, ctx.device) for te in ctx.text_encoders],
                 ),
                 (
                     "reload_optimizers",
                     "Moving optimizer state to GPU",
                     lambda: (
-                        optimizer_tensors_to(ctx.unet_optimizer, ctx.device),
+                        optimizer_tensors_to(ctx.denoise_optimizer, ctx.device),
                         optimizer_tensors_to(ctx.te_optimizer, ctx.device),
                     ),
                 ),

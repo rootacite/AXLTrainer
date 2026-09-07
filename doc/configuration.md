@@ -24,16 +24,16 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. |
 | `output_name` | `"rein"` | Run name; used in every artifact path and as the TensorBoard project name. Sanitized to `[A-Za-z0-9._-]`. |
 
-### `[model_spec]` — checkpoint metadata (written into every `.safetensors`)
+### `[model_spec]` — base-model family + checkpoint metadata
 
-| Key | Meaning |
-| --- | --- |
-| `base_model_version` | e.g. `"sdxl_base_v1-0"` |
-| `modelspec_architecture` | e.g. `"stable-diffusion-xl-v1-base/lora"` |
-| `modelspec_implementation` | e.g. `"https://github.com/Stability-AI/generative-models"` |
-| `modelspec_sai_model_spec` | e.g. `"1.0.0"` |
+`base_model_version` is the **dispatch key**. The trainer looks it up in a catalog (`trainer/family.py`, mirrored in Ranko `ModelSpecCatalog`) and loads that family's pipeline / LoRA / loss path. The other three keys must match the catalog row for that version (hand-edits that drift are rejected at `TrainConfig` load). Ranko's Utils tab exposes a dropdown; changing it rewrites the three metadata strings.
 
-These populate the `modelspec.*` metadata fields so tools like the ComfyUI model manager can identify the checkpoint.
+| `base_model_version` | Trainable | `modelspec_architecture` | `modelspec_implementation` | `modelspec_sai_model_spec` |
+| --- | --- | --- | --- | --- |
+| `sdxl_base_v1-0` | yes | `stable-diffusion-xl-v1-base/lora` | `https://github.com/Stability-AI/generative-models` | `1.0.0` |
+| `sd3.5-large` | **no** (UI slot only) | `stable-diffusion-v3-5-large/lora` | `https://github.com/Stability-AI/sd3.5` | `1.0.0` |
+
+These also populate `modelspec.*` and `ss_base_model_version` on every `.safetensors`. `modelspec.prediction_type` is `v_prediction` when `[training].is_vpred` is true, otherwise `epsilon` (SDXL). Selecting `sd3.5-large` is valid config; `train_start` / `build_train_objects` fail before loading weights.
 
 ### `[training]` — core training settings
 

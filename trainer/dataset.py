@@ -6,13 +6,20 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from config import TrainConfig
-from utils import (
-    image_to_tensor, list_images, pick_bucket_size, 
-    read_caption, resize_and_center_crop, sha1_text, shuffle_caption
-)
+try:
+    from config import TrainConfig
+    from utils import (
+        image_to_tensor, list_images, pick_bucket_size,
+        read_caption, resize_and_center_crop, sha1_text, shuffle_caption
+    )
+except ImportError:
+    from trainer.config import TrainConfig
+    from trainer.utils import (
+        image_to_tensor, list_images, pick_bucket_size,
+        read_caption, resize_and_center_crop, sha1_text, shuffle_caption
+    )
 
-class SDXLLoraDataset(Dataset):
+class LoraImageDataset(Dataset):
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         self.root = Path(cfg.train_data_dir)
@@ -100,3 +107,6 @@ def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def make_collate_fn():
     return collate_fn
+
+
+SDXLLoraDataset = LoraImageDataset

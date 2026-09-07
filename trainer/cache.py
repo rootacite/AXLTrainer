@@ -10,14 +10,16 @@ from typing import Any, Dict, Optional
 import torch
 from tqdm.auto import tqdm
 
-from config import TrainConfig
-from dataset import SDXLLoraDataset
-from env import flush_memory
-
 try:
+    from config import TrainConfig
+    from dataset import LoraImageDataset
+    from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
 except ImportError:
+    from trainer.config import TrainConfig
+    from trainer.dataset import LoraImageDataset
+    from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
 
@@ -27,7 +29,7 @@ _DEFAULT_ENCODE_BATCH_SIZE = 8
 
 @torch.no_grad()
 def warm_latent_cache(
-    dataset: SDXLLoraDataset,
+    dataset: LoraImageDataset,
     vae: torch.nn.Module,
     cfg: TrainConfig,
     device: torch.device,

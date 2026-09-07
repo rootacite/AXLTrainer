@@ -114,3 +114,15 @@ class TrainConfig:
     ss_bucket_info: Optional[str] = get_val("ss_bucket_info", None)
 
     _current_epoch: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        try:
+            from family import require_matching_spec
+        except ImportError:
+            from trainer.family import require_matching_spec
+        require_matching_spec(
+            self.base_model_version,
+            self.modelspec_architecture,
+            self.modelspec_implementation,
+            self.modelspec_sai_model_spec,
+        )

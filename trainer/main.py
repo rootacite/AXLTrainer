@@ -7,11 +7,10 @@ from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
 from config import TrainConfig
-from models import lora_checkpoint_file, save_lora_checkpoint
+from models import lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
 from loop import train_one_epoch
-from sampling import generate_sample_image
 from setup import build_train_objects
 
 try:
@@ -20,6 +19,24 @@ try:
 except ImportError:
     from trainer import control
     from trainer.device_swap import SwapContext
+
+
+def _prepare_artifacts(artifacts) -> None:
+    n_te = len(artifacts.modules.text_encoders)
+    prepared = artifacts.accelerator.prepare(
+        artifacts.modules.denoise,
+        *artifacts.modules.text_encoders,
+        artifacts.denoise_optimizer,
+        artifacts.te_optimizer,
+        artifacts.dataloader,
+        artifacts.te_scheduler,
+    )
+    artifacts.modules.denoise = prepared[0]
+    artifacts.modules.text_encoders = list(prepared[1 : 1 + n_te])
+    artifacts.denoise_optimizer = prepared[1 + n_te]
+    artifacts.te_optimizer = prepared[2 + n_te]
+    artifacts.dataloader = prepared[3 + n_te]
+    artifacts.te_scheduler = prepared[4 + n_te]
 
 
 def main() -> None:
@@ -42,11 +59,10 @@ def main() -> None:
         weight_dtype = artifacts.weight_dtype
         swap_ctx = SwapContext(
             device=device,
-            vae=artifacts.vae,
-            unet=artifacts.unet,
-            text_encoder_1=artifacts.text_encoder_1,
-            text_encoder_2=artifacts.text_encoder_2,
-            unet_optimizer=artifacts.unet_optimizer,
+            vae=artifacts.modules.vae,
+            denoise=artifacts.modules.denoise,
+            text_encoders=list(artifacts.modules.text_encoders),
+            denoise_optimizer=artifacts.denoise_optimizer,
             te_optimizer=artifacts.te_optimizer,
         )
 
@@ -55,7 +71,7 @@ def main() -> None:
                 print("Checking/Generating latents cache...")
                 finished = warm_latent_cache(
                     artifacts.train_dataset,
-                    artifacts.vae,
+                    artifacts.modules.vae,
                     cfg,
                     device,
                     weight_dtype,
@@ -71,30 +87,13 @@ def main() -> None:
                 )
                 return
 
-        artifacts.vae.to("cpu")
+        artifacts.modules.vae.to("cpu")
         flush_memory(device)
 
-        (
-            artifacts.unet,
-            artifacts.text_encoder_1,
-            artifacts.text_encoder_2,
-            artifacts.unet_optimizer,
-            artifacts.te_optimizer,
-            artifacts.dataloader,
-            artifacts.te_scheduler,
-        ) = accelerator.prepare(
-            artifacts.unet,
-            artifacts.text_encoder_1,
-            artifacts.text_encoder_2,
-            artifacts.unet_optimizer,
-            artifacts.te_optimizer,
-            artifacts.dataloader,
-            artifacts.te_scheduler,
-        )
-        swap_ctx.unet = artifacts.unet
-        swap_ctx.text_encoder_1 = artifacts.text_encoder_1
-        swap_ctx.text_encoder_2 = artifacts.text_encoder_2
-        swap_ctx.unet_optimizer = artifacts.unet_optimizer
+        _prepare_artifacts(artifacts)
+        swap_ctx.denoise = artifacts.modules.denoise
+        swap_ctx.text_encoders = list(artifacts.modules.text_encoders)
+        swap_ctx.denoise_optimizer = artifacts.denoise_optimizer
         swap_ctx.te_optimizer = artifacts.te_optimizer
 
         if accelerator.is_main_process:
@@ -125,20 +124,8 @@ def main() -> None:
             cfg._current_epoch = epoch + 1
 
             global_step = train_one_epoch(
-                accelerator=accelerator,
+                artifacts=artifacts,
                 cfg=cfg,
-                pipe=artifacts.pipe,
-                vae=artifacts.vae,
-                unet=artifacts.unet,
-                text_encoder_1=artifacts.text_encoder_1,
-                text_encoder_2=artifacts.text_encoder_2,
-                dataloader=artifacts.dataloader,
-                noise_scheduler=artifacts.noise_scheduler,
-                unet_optimizer=artifacts.unet_optimizer,
-                te_optimizer=artifacts.te_optimizer,
-                te_scheduler=artifacts.te_scheduler,
-                device=device,
-                weight_dtype=weight_dtype,
                 global_step=global_step,
                 progress=progress,
                 total_train_steps=total_train_steps,
@@ -150,13 +137,8 @@ def main() -> None:
 
         if stopped_during == "training":
             if global_step > 0 and not lora_checkpoint_file(cfg, global_step).is_file():
-                save_lora_checkpoint(
-                    accelerator,
-                    artifacts.unet,
-                    artifacts.text_encoder_1,
-                    artifacts.text_encoder_2,
-                    cfg,
-                    global_step,
+                artifacts.family.save_lora(
+                    accelerator, artifacts.modules, cfg, global_step
                 )
             progress.close()
             accelerator.wait_for_everyone()
@@ -165,24 +147,19 @@ def main() -> None:
             control.end_run(control.STATUS_FINISHED, detail="stopped_during_training")
             return
 
-        if hasattr(artifacts.unet_optimizer, "eval"):
-            artifacts.unet_optimizer.eval()
+        if hasattr(artifacts.denoise_optimizer, "eval"):
+            artifacts.denoise_optimizer.eval()
         try:
-            save_lora_checkpoint(
+            artifacts.family.save_lora(
                 accelerator,
-                artifacts.unet,
-                artifacts.text_encoder_1,
-                artifacts.text_encoder_2,
+                artifacts.modules,
                 cfg,
                 global_step,
                 final=True,
             )
-            generate_sample_image(
+            artifacts.family.generate_sample(
                 accelerator=accelerator,
-                pipe=artifacts.pipe,
-                trained_unet=accelerator.unwrap_model(artifacts.unet),
-                trained_te1=accelerator.unwrap_model(artifacts.text_encoder_1),
-                trained_te2=accelerator.unwrap_model(artifacts.text_encoder_2),
+                modules=artifacts.modules,
                 cfg=cfg,
                 device=device,
                 dtype=weight_dtype,
@@ -191,8 +168,8 @@ def main() -> None:
                 swap_ctx=swap_ctx,
             )
         finally:
-            if hasattr(artifacts.unet_optimizer, "train"):
-                artifacts.unet_optimizer.train()
+            if hasattr(artifacts.denoise_optimizer, "train"):
+                artifacts.denoise_optimizer.train()
 
         if control.should_stop():
             progress.close()

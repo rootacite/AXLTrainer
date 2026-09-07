@@ -18,7 +18,7 @@ enum class ConfigSection(
     ),
     ModelSpec(
         title = "Model Spec",
-        description = "SAI model specification metadata",
+        description = "Base-model family and SAI checkpoint metadata",
         fieldKeys = setOf(
             "base_model_version",
             "modelspec_architecture",

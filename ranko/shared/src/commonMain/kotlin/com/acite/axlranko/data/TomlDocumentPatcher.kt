@@ -72,4 +72,27 @@ object TomlDocumentPatcher {
         }
         return "\"$escaped\""
     }
+
+    /**
+     * Encode a numeric field as a TOML float.
+     *
+     * ktoml refuses to decode an integer literal (`5`) into a Kotlin `Double`.
+     * Whole-valued floats such as `5.0` / `1` must therefore be written with a
+     * fractional or exponent part (`5.0`), not as a bare integer.
+     */
+    fun float(raw: String): String = encodeFloat(raw.trim().toDouble())
+
+    fun encodeFloat(value: Double): String {
+        require(value.isFinite()) { "TOML float must be finite" }
+        if (value == value.toLong().toDouble() &&
+            value in Long.MIN_VALUE.toDouble()..Long.MAX_VALUE.toDouble()
+        ) {
+            return "${value.toLong()}.0"
+        }
+        val text = value.toString()
+        if ('.' !in text && text.none { it == 'e' || it == 'E' }) {
+            return "$text.0"
+        }
+        return text
+    }
 }

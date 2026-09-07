@@ -46,18 +46,21 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 ├── environment.yml            # conda env manifest (env name: axl)
 ├── start_train.sh             # trainer launcher (AMD/ROCm env vars)
 ├── start_api.sh               # debug launcher for api.py
-├── text_processing.py         # long-prompt chunking + SDXL dual-encoder encoding
+├── text_processing.py         # long-prompt chunking + dual CLIP encode (SDXL family)
 ├── ui.py                      # Streamlit read-only viewer
 ├── API.md                     # IPC protocol reference
 ├── trainer/
 │   ├── main.py                # training entry point (no CLI args)
 │   ├── config.py              # TrainConfig dataclass + TOML loading
 │   ├── config.toml            # the actual configuration
-│   ├── dataset.py             # SDXLLoraDataset, bucketing, captions
+│   ├── family.py              # model-spec catalog + family dispatch
+│   ├── family_sdxl.py         # SDXL pipeline, LoRA, loss, kohya remap
+│   ├── family_sd35.py         # SD 3.5 stub (not implemented)
+│   ├── dataset.py             # LoraImageDataset, bucketing, captions
 │   ├── cache.py               # pipelined latent pre-encode (warm_latent_cache)
 │   ├── loop.py                # train_one_epoch, per-bucket loss, logging
 │   ├── sampling.py            # sample generation (interruptible denoising)
-│   ├── models.py              # pipeline load, PEFT→kohya conversion, checkpoints
+│   ├── models.py              # optimizers, checkpoint paths, kohya metadata
 │   ├── setup.py               # one-stop build of all training objects
 │   ├── control.py             # state machine + runtime-dir IPC + run lock
 │   ├── device_swap.py         # GPU↔CPU offload/restore, safe points
@@ -73,7 +76,7 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 ├── tools/                     # dataset utility scripts (see doc/dataset-tools.md)
 ├── tagger/                    # ONNX caption generator (WD-tagger style)
 ├── fixes/                     # resolved issue reports (e.g. ROCm bucket step)
-└── tests: test_api_ipc.py, test_train_control.py
+└── tests: test_api_ipc.py, test_train_control.py, test_family.py
 ```
 
 ## Training data flow
@@ -85,9 +88,9 @@ trainer/config.toml ──► TrainConfig (trainer/config.py)
 trainer/main.py ──► begin_run (acquires train.lock)
      │              set_seed
      │              build_train_objects (trainer/setup.py)
-     │                ├─ load SDXL pipeline (models.py) → vae / unet / te1 / te2
+     │                ├─ resolve_family(config) → load pipeline (family_sdxl today)
      │                ├─ apply PEFT LoRA (network_dim/alpha/dropout) + flash attention
-     │                ├─ SDXLLoraDataset + DataLoader (dataset.py)
+     │                ├─ LoraImageDataset + DataLoader (dataset.py)
      │                │    └─ images + .txt captions, aspect-ratio bucketing
      │                ├─ UNet optimizer (Schedule-Free AdamW) + TE optimizer (AdamW)
      │                └─ Accelerator (TensorBoard → logging_dir)
@@ -97,7 +100,7 @@ trainer/main.py ──► begin_run (acquires train.lock)
      │
      ├─ epoch loop → train_one_epoch (loop.py)
      │    batch → group by bucket → build inputs (cached latent or on-demand encode)
-     │    → encode prompts (text_processing.py) → noise + timesteps → UNet → MSE
+     │    → family.compute_loss (SDXL: dual CLIP + UNet MSE / v-pred)
      │    → backward → clip grads → both optimizers step
      │    → every save_every_n_steps: save LoRA checkpoint + generate sample
      │    → at_safe_point() every step (handles pause / resume / stop)

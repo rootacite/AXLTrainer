@@ -111,10 +111,20 @@ data class TrainingConfigForm(
         requireText("train_data_dir", trainDataDir)
         requireText("output_name", outputName)
 
-        requireText("base_model_version", baseModelVersion)
-        requireText("modelspec_architecture", modelspecArchitecture)
-        requireText("modelspec_implementation", modelspecImplementation)
-        requireText("modelspec_sai_model_spec", modelspecSaiModelSpec)
+        val preset = ModelSpecCatalog.byVersion(baseModelVersion.trim())
+        if (preset == null) {
+            errors["base_model_version"] = "Unknown base model"
+        } else {
+            if (modelspecArchitecture.trim() != preset.architecture) {
+                errors["modelspec_architecture"] = "Must match ${preset.baseModelVersion}"
+            }
+            if (modelspecImplementation.trim() != preset.implementation) {
+                errors["modelspec_implementation"] = "Must match ${preset.baseModelVersion}"
+            }
+            if (modelspecSaiModelSpec.trim() != preset.saiModelSpec) {
+                errors["modelspec_sai_model_spec"] = "Must match ${preset.baseModelVersion}"
+            }
+        }
 
         requireDouble("min_snr_gamma", minSnrGamma, min = 0.0)
         requireLong("seed", seed)
@@ -180,6 +190,7 @@ data class TrainingConfigForm(
     fun toTomlSections(): Map<String, Map<String, String>> {
         fun q(value: String) = TomlDocumentPatcher.quote(value)
         fun n(value: String) = value.trim()
+        fun f(value: String) = TomlDocumentPatcher.float(value)
         fun b(value: Boolean) = if (value) "true" else "false"
 
         return mapOf(
@@ -198,15 +209,15 @@ data class TrainingConfigForm(
             ),
             "training" to mapOf(
                 "is_vpred" to b(isVpred),
-                "min_snr_gamma" to n(minSnrGamma),
+                "min_snr_gamma" to f(minSnrGamma),
                 "seed" to n(seed),
                 "mixed_precision" to q(mixedPrecision.trim()),
                 "train_batch_size" to n(trainBatchSize),
                 "gradient_accumulation_steps" to n(gradientAccumulationSteps),
-                "learning_rate" to n(learningRate),
+                "learning_rate" to f(learningRate),
                 "lr_scheduler" to q(lrScheduler.trim()),
                 "lr_warmup_steps" to n(lrWarmupSteps),
-                "max_grad_norm" to n(maxGradNorm),
+                "max_grad_norm" to f(maxGradNorm),
                 "epoch" to n(epoch),
                 "save_every_n_epochs" to n(saveEveryNEpochs),
                 "save_every_n_steps" to n(saveEveryNSteps)
@@ -214,7 +225,7 @@ data class TrainingConfigForm(
             "network" to mapOf(
                 "network_dim" to n(networkDim),
                 "network_alpha" to n(networkAlpha),
-                "network_dropout" to n(networkDropout),
+                "network_dropout" to f(networkDropout),
                 "clip_skip" to n(clipSkip),
                 "max_token_length" to n(maxTokenLength)
             ),
@@ -232,22 +243,22 @@ data class TrainingConfigForm(
                 "shuffle_caption" to b(shuffleCaption),
                 "keep_tokens" to n(keepTokens),
                 "caption_extension" to q(captionExtension.trim()),
-                "noise_offset" to n(noiseOffset)
+                "noise_offset" to f(noiseOffset)
             ),
             "unet_optimizer" to mapOf(
-                "unet_learning_rate" to n(unetLearningRate),
-                "unet_weight_decay" to n(unetWeightDecay),
-                "unet_betas_1" to n(unetBetas1),
-                "unet_betas_2" to n(unetBetas2),
-                "unet_eps" to n(unetEps),
+                "unet_learning_rate" to f(unetLearningRate),
+                "unet_weight_decay" to f(unetWeightDecay),
+                "unet_betas_1" to f(unetBetas1),
+                "unet_betas_2" to f(unetBetas2),
+                "unet_eps" to f(unetEps),
                 "unet_warmup_steps" to n(unetWarmupSteps)
             ),
             "te_optimizer" to mapOf(
-                "te_learning_rate" to n(teLearningRate),
-                "te_weight_decay" to n(teWeightDecay),
-                "te_betas_1" to n(teBetas1),
-                "te_betas_2" to n(teBetas2),
-                "te_max_grad_norm" to n(teMaxGradNorm)
+                "te_learning_rate" to f(teLearningRate),
+                "te_weight_decay" to f(teWeightDecay),
+                "te_betas_1" to f(teBetas1),
+                "te_betas_2" to f(teBetas2),
+                "te_max_grad_norm" to f(teMaxGradNorm)
             ),
             "infrastructure" to mapOf(
                 "max_data_loader_n_workers" to n(maxDataLoaderNWorkers),
@@ -261,12 +272,23 @@ data class TrainingConfigForm(
                 "sample_steps" to n(sampleSteps),
                 "sample_seed" to n(sampleSeed),
                 "sample_repeat" to n(sampleRepeat),
-                "guidance_scale" to n(guidanceScale)
+                "guidance_scale" to f(guidanceScale)
             )
         )
     }
 
+    fun withBaseModelVersion(version: String): TrainingConfigForm {
+        val preset = ModelSpecCatalog.byVersion(version) ?: return copy(baseModelVersion = version)
+        return copy(
+            baseModelVersion = preset.baseModelVersion,
+            modelspecArchitecture = preset.architecture,
+            modelspecImplementation = preset.implementation,
+            modelspecSaiModelSpec = preset.saiModelSpec
+        )
+    }
+
     companion object {
+        val baseModelVersionOptions = ModelSpecCatalog.versions
         val mixedPrecisionOptions = listOf("bf16", "fp16", "no")
         val lrSchedulerOptions = listOf(
             "cosine",
@@ -354,6 +376,7 @@ data class TrainingConfigForm(
             )
         }
 
+        /** Display-only: whole-valued doubles show as `5`, not `5.0`. Save uses [TomlDocumentPatcher.float]. */
         private fun formatNumber(value: Double): String {
             if (value.isFinite() &&
                 value == value.toLong().toDouble() &&

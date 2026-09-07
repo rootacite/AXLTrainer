@@ -1,6 +1,6 @@
 # AXLTrainer
 
-AXLTrainer is a complete, local-first **SDXL LoRA training stack** for people who train on AMD GPUs and don't want to live in the terminal: a kohya-style Python training engine, a desktop dashboard that controls it, and a set of dataset tools — all integrated into one application.
+AXLTrainer is a complete, local-first **LoRA training stack** (SDXL today; SD 3.5 is a config/UI slot, not a trainer yet) for people who train on AMD GPUs and don't want to live in the terminal: a kohya-style Python training engine, a desktop dashboard that controls it, and a set of dataset tools — all integrated into one application.
 
 ## Why this project exists
 

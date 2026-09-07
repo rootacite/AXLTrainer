@@ -10,17 +10,21 @@ from PIL import Image
 
 import os
 import sys
-base_dir = os.getcwd()
-sys.path.append(base_dir)
 
-from config import TrainConfig
+base_dir = os.getcwd()
+if base_dir not in sys.path:
+    sys.path.append(base_dir)
+
 from text_processing import encode_prompt_batch
-from env import flush_memory
 
 try:
+    from config import TrainConfig
+    from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
 except ImportError:
+    from trainer.config import TrainConfig
+    from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
 

@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.ConfigSection
+import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
 import dev.zacsweers.metrox.viewmodel.metroViewModel
@@ -390,7 +391,7 @@ private fun EnvironmentFields(
         label = "Pretrained model path",
         value = form.pretrainedModelNameOrPath,
         error = errors["pretrained_model_name_or_path"],
-        supporting = "Diffusers directory or checkpoint used as the SDXL base",
+        supporting = "Diffusers directory or single-file checkpoint for the selected base",
         onValueChange = { viewModel.updateForm { copy(pretrainedModelNameOrPath = it) } },
         onBrowse = {
             viewModel.browseDirectory(form.pretrainedModelNameOrPath) {
@@ -435,29 +436,40 @@ private fun ModelSpecFields(
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
 ) {
-    ConfigTextField(
-        label = "Base model version",
+    val preset = ModelSpecCatalog.byVersion(form.baseModelVersion)
+    ConfigDropdown(
+        label = "Base model",
         value = form.baseModelVersion,
+        options = ModelSpecCatalog.presets.map { it.baseModelVersion to it.label },
+        onChange = { viewModel.updateForm { withBaseModelVersion(it) } },
         error = errors["base_model_version"],
-        onValueChange = { viewModel.updateForm { copy(baseModelVersion = it) } }
+        supporting = if (preset != null && !preset.trainable) {
+            "Listed for future support; training will refuse this family"
+        } else {
+            "Selects architecture metadata written into checkpoints"
+        }
     )
     ConfigTextField(
         label = "Architecture",
         value = form.modelspecArchitecture,
         error = errors["modelspec_architecture"],
-        onValueChange = { viewModel.updateForm { copy(modelspecArchitecture = it) } }
+        onValueChange = {},
+        readOnly = true,
+        supporting = "Filled from the selected base model"
     )
     ConfigTextField(
         label = "Implementation URL",
         value = form.modelspecImplementation,
         error = errors["modelspec_implementation"],
-        onValueChange = { viewModel.updateForm { copy(modelspecImplementation = it) } }
+        onValueChange = {},
+        readOnly = true
     )
     ConfigTextField(
         label = "SAI model spec",
         value = form.modelspecSaiModelSpec,
         error = errors["modelspec_sai_model_spec"],
-        onValueChange = { viewModel.updateForm { copy(modelspecSaiModelSpec = it) } }
+        onValueChange = {},
+        readOnly = true
     )
 }
 
@@ -923,6 +935,54 @@ private fun ValidationFields(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfigDropdown(
+    label: String,
+    value: String,
+    options: List<Pair<String, String>>,
+    onChange: (String) -> Unit,
+    error: String? = null,
+    supporting: String? = null
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.find { it.first == value }?.second ?: value
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            isError = error != null,
+            supportingText = {
+                val text = error ?: supporting
+                if (text != null) Text(text)
+            }
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { (id, optionLabel) ->
+                DropdownMenuItem(
+                    text = { Text(optionLabel) },
+                    onClick = {
+                        onChange(id)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ConfigTextField(
     label: String,
@@ -933,6 +993,7 @@ private fun ConfigTextField(
     supporting: String? = null,
     singleLine: Boolean = true,
     minLines: Int = 1,
+    readOnly: Boolean = false,
     trailingIcon: @Composable (() -> Unit)? = null
 ) {
     OutlinedTextField(
@@ -941,6 +1002,7 @@ private fun ConfigTextField(
         modifier = modifier.fillMaxWidth(),
         label = { Text(label) },
         isError = error != null,
+        readOnly = readOnly,
         supportingText = {
             val text = error ?: supporting
             if (text != null) Text(text)

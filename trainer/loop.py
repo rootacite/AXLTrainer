@@ -5,28 +5,23 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
-from accelerate import Accelerator
-
-import os
-import sys
-base_dir = os.getcwd()
-sys.path.append(base_dir)
-
-from config import TrainConfig
-from loss_log import LossRecorder
-from models import save_lora_checkpoint
-from text_processing import encode_prompt_batch
-from sampling import generate_sample_image
-from utils import build_time_ids
-from env import flush_memory
 
 try:
+    from config import TrainConfig
+    from loss_log import LossRecorder
+    from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
+    from family import FamilyModules, ModelFamily
+    from setup import TrainArtifacts
 except ImportError:
+    from trainer.config import TrainConfig
+    from trainer.loss_log import LossRecorder
+    from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
+    from trainer.family import FamilyModules, ModelFamily
+    from trainer.setup import TrainArtifacts
 
 _loss_recorder = LossRecorder()
 
@@ -69,19 +64,26 @@ def encode_latent_for_item(
     return latent
 
 
+def _stack_extra(extras: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    if not extras or not extras[0]:
+        return {}
+    return {key: torch.stack([item[key] for item in extras], dim=0) for key in extras[0]}
+
+
 def build_group_inputs(
     *,
     indices: list[int],
     batch: dict[str, Any],
+    family: ModelFamily,
     vae: torch.nn.Module,
     cfg: TrainConfig,
     device: torch.device,
     weight_dtype: torch.dtype,
-) -> tuple[list[str], torch.Tensor, torch.Tensor]:
-    """Build prompts, latents, and time IDs for one bucket group."""
+) -> tuple[list[str], torch.Tensor, dict[str, torch.Tensor]]:
+    """Build prompts, latents, and family-specific extra cond for one bucket group."""
     prompts = [batch["caption"][i] for i in indices]
     latents_list: list[torch.Tensor] = []
-    time_ids_list: list[torch.Tensor] = []
+    extras: list[dict[str, torch.Tensor]] = []
 
     for i in indices:
         src_w = int(batch["src_w"][i].item())
@@ -98,104 +100,34 @@ def build_group_inputs(
             weight_dtype=weight_dtype,
         )
         latents_list.append(latent)
-        time_ids_list.append(
-            build_time_ids(
-                original_size=(src_h, src_w),
-                crop_top_left=(0, 0),
-                target_size=(bucket_h, bucket_w),
+        extras.append(
+            family.extra_cond(
+                src_wh=(src_w, src_h),
+                bucket_wh=(bucket_w, bucket_h),
                 device=device,
                 dtype=weight_dtype,
             )
         )
 
     latents = torch.stack(latents_list, dim=0).to(device=device, dtype=weight_dtype)
-    time_ids = torch.stack(time_ids_list, dim=0)
-    return prompts, latents, time_ids
-
-
-def compute_bucket_loss(
-    *,
-    prompts: list[str],
-    latents: torch.Tensor,
-    time_ids: torch.Tensor,
-    tokenizer_1,
-    tokenizer_2,
-    text_encoder_1,
-    text_encoder_2,
-    unet,
-    noise_scheduler,
-    cfg: TrainConfig,
-    device: torch.device,
-    weight_dtype: torch.dtype,
-) -> torch.Tensor:
-    """Run the forward pass for one bucket group and return the loss."""
-    prompt_embeds, pooled_prompt_embeds, _ = encode_prompt_batch(
-        prompts=prompts,
-        tokenizer_1=tokenizer_1,
-        tokenizer_2=tokenizer_2,
-        text_encoder_1=text_encoder_1,
-        text_encoder_2=text_encoder_2,
-        clip_skip=cfg.clip_skip,
-        max_token_length=cfg.max_token_length,
-        device=device,
-        dtype=weight_dtype,
-    )
-
-    noise = torch.randn_like(latents)
-    if cfg.noise_offset > 0:
-        offset = cfg.noise_offset * torch.randn(
-            latents.shape[0],
-            latents.shape[1],
-            1,
-            1,
-            device=device,
-            dtype=weight_dtype,
-        )
-        noise = noise + offset
-
-    timesteps = torch.randint(
-        0,
-        noise_scheduler.config.num_train_timesteps,
-        (latents.shape[0],),
-        device=device,
-        dtype=torch.long,
-    )
-    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-    model_pred = unet(
-        noisy_latents,
-        timesteps,
-        encoder_hidden_states=prompt_embeds,
-        added_cond_kwargs={
-            "text_embeds": pooled_prompt_embeds,
-            "time_ids": time_ids,
-        },
-        return_dict=False,
-    )[0]
-
-    return F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+    return prompts, latents, _stack_extra(extras)
 
 
 def _maybe_log_and_sample(
     *,
-    accelerator: Accelerator,
+    artifacts: TrainArtifacts,
     cfg: TrainConfig,
-    pipe,
-    unet,
-    text_encoder_1,
-    text_encoder_2,
-    unet_optimizer,
-    te_optimizer,
-    te_scheduler,
-    device: torch.device,
-    weight_dtype: torch.dtype,
     global_step: int,
     swap_ctx: SwapContext | None = None,
 ) -> None:
     """Save checkpoints and generate samples on step boundaries."""
+    accelerator = artifacts.accelerator
     if accelerator.is_main_process:
-        unet_effective_lr = unet_optimizer.param_groups[0].get("scheduled_lr",
-                                                      unet_optimizer.param_groups[0]["lr"])
+        denoise_optimizer = artifacts.denoise_optimizer
+        te_scheduler = artifacts.te_scheduler
+        unet_effective_lr = denoise_optimizer.param_groups[0].get(
+            "scheduled_lr", denoise_optimizer.param_groups[0]["lr"]
+        )
         te_base_lr = te_scheduler.get_last_lr()[0]
 
         accelerator.log(
@@ -210,26 +142,25 @@ def _maybe_log_and_sample(
         )
 
         if cfg.save_every_n_steps > 0 and global_step % cfg.save_every_n_steps == 0:
-            if hasattr(unet_optimizer, "eval"):
-                unet_optimizer.eval()
+            if hasattr(denoise_optimizer, "eval"):
+                denoise_optimizer.eval()
             try:
-                save_lora_checkpoint(accelerator, unet, text_encoder_1, text_encoder_2, cfg, global_step)
-                generate_sample_image(
+                artifacts.family.save_lora(
+                    accelerator, artifacts.modules, cfg, global_step
+                )
+                artifacts.family.generate_sample(
                     accelerator=accelerator,
-                    pipe=pipe,
-                    trained_unet=accelerator.unwrap_model(unet),
-                    trained_te1=accelerator.unwrap_model(text_encoder_1),
-                    trained_te2=accelerator.unwrap_model(text_encoder_2),
+                    modules=artifacts.modules,
                     cfg=cfg,
-                    device=device,
-                    dtype=weight_dtype,
+                    device=artifacts.device,
+                    dtype=artifacts.weight_dtype,
                     global_step=global_step,
                     output_dir_base=Path(cfg.output_dir),
                     swap_ctx=swap_ctx,
                 )
             finally:
-                if hasattr(unet_optimizer, "train"):
-                    unet_optimizer.train()
+                if hasattr(denoise_optimizer, "train"):
+                    denoise_optimizer.train()
 
 _maybe_log_and_sample.last_loss = 0.0
 _maybe_log_and_sample.last_avg_loss = 0.0
@@ -237,67 +168,60 @@ _maybe_log_and_sample.last_avg_loss = 0.0
 
 def train_one_epoch(
     *,
-    accelerator: Accelerator,
+    artifacts: TrainArtifacts,
     cfg: TrainConfig,
-    pipe,
-    vae,
-    unet,
-    text_encoder_1,
-    text_encoder_2,
-    dataloader,
-    noise_scheduler,
-    unet_optimizer,
-    te_optimizer,
-    te_scheduler,
-    device: torch.device,
-    weight_dtype: torch.dtype,
     global_step: int,
     progress,
     total_train_steps: int,
     swap_ctx: SwapContext | None = None,
 ) -> int:
     """Train one epoch and keep all step-based actions aligned with optimizer steps."""
-    unet.train()
-    if hasattr(unet_optimizer, "train"):
-        unet_optimizer.train()
-    text_encoder_1.train()
-    text_encoder_2.train()
+    accelerator = artifacts.accelerator
+    modules: FamilyModules = artifacts.modules
+    family = artifacts.family
+    denoise = modules.denoise
+    text_encoders = modules.text_encoders
+    denoise_optimizer = artifacts.denoise_optimizer
+    te_optimizer = artifacts.te_optimizer
+    te_scheduler = artifacts.te_scheduler
+    device = artifacts.device
+    weight_dtype = artifacts.weight_dtype
+
+    denoise.train()
+    if hasattr(denoise_optimizer, "train"):
+        denoise_optimizer.train()
+    for te in text_encoders:
+        te.train()
 
     epoch_step = 0
     epoch_index = max(0, int(cfg._current_epoch) - 1)
 
-    for batch in dataloader:
-        # flush_memory(device)
-        
-        with accelerator.accumulate(unet, text_encoder_1, text_encoder_2):
+    for batch in artifacts.dataloader:
+        with accelerator.accumulate(denoise, *text_encoders):
             groups = group_indices_by_bucket(batch)
 
             batch_loss_sum = 0.0
             batch_item_count = 0
 
             for _, indices in groups.items():
-                prompts, latents, time_ids = build_group_inputs(
+                prompts, latents, extra = build_group_inputs(
                     indices=indices,
                     batch=batch,
-                    vae=vae,
+                    family=family,
+                    vae=modules.vae,
                     cfg=cfg,
                     device=device,
                     weight_dtype=weight_dtype,
                 )
 
-                loss = compute_bucket_loss(
+                loss = family.compute_loss(
                     prompts=prompts,
                     latents=latents,
-                    time_ids=time_ids,
-                    tokenizer_1=pipe.tokenizer,
-                    tokenizer_2=pipe.tokenizer_2,
-                    text_encoder_1=text_encoder_1,
-                    text_encoder_2=text_encoder_2,
-                    unet=unet,
-                    noise_scheduler=noise_scheduler,
+                    extra=extra,
+                    modules=modules,
                     cfg=cfg,
                     device=device,
-                    weight_dtype=weight_dtype,
+                    dtype=weight_dtype,
                 )
 
                 scaled_loss = loss * (len(indices) / len(batch["caption"]))
@@ -306,18 +230,20 @@ def train_one_epoch(
                 batch_item_count += len(indices)
 
             if accelerator.sync_gradients:
-                unet_clip_params = [p for p in unet.parameters() if p.requires_grad]
-                te_clip_params = (
-                    [p for p in text_encoder_1.parameters() if p.requires_grad]
-                    + [p for p in text_encoder_2.parameters() if p.requires_grad]
-                )
+                denoise_clip_params = [p for p in denoise.parameters() if p.requires_grad]
+                te_clip_params = [
+                    p
+                    for te in text_encoders
+                    for p in te.parameters()
+                    if p.requires_grad
+                ]
 
-                accelerator.clip_grad_norm_(unet_clip_params, cfg.max_grad_norm)
+                accelerator.clip_grad_norm_(denoise_clip_params, cfg.max_grad_norm)
                 accelerator.clip_grad_norm_(te_clip_params, cfg.te_max_grad_norm)
-                unet_optimizer.step()
+                denoise_optimizer.step()
                 te_optimizer.step()
                 te_scheduler.step()
-                unet_optimizer.zero_grad(set_to_none=True)
+                denoise_optimizer.zero_grad(set_to_none=True)
                 te_optimizer.zero_grad(set_to_none=True)
 
         if accelerator.sync_gradients:
@@ -330,7 +256,9 @@ def train_one_epoch(
 
             if progress is not None:
                 progress.update(1)
-                progress.set_description(f"epoch={cfg._current_epoch}/{cfg.epoch} step={global_step} loss={avg_loss:.4f}")
+                progress.set_description(
+                    f"epoch={cfg._current_epoch}/{cfg.epoch} step={global_step} loss={avg_loss:.4f}"
+                )
 
             control.set_training(
                 step=global_step,
@@ -344,17 +272,8 @@ def train_one_epoch(
                 return global_step
 
             _maybe_log_and_sample(
-                accelerator=accelerator,
+                artifacts=artifacts,
                 cfg=cfg,
-                pipe=pipe,
-                unet=unet,
-                text_encoder_1=text_encoder_1,
-                text_encoder_2=text_encoder_2,
-                unet_optimizer=unet_optimizer,
-                te_optimizer=te_optimizer,
-                te_scheduler=te_scheduler,
-                device=device,
-                weight_dtype=weight_dtype,
                 global_step=global_step,
                 swap_ctx=swap_ctx,
             )
