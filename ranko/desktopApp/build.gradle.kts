@@ -11,6 +11,7 @@ dependencies {
     implementation(projects.shared)
 
     implementation(compose.desktop.currentOs)
+    implementation(libs.compose.components.resources)
     implementation(libs.kotlinx.coroutinesSwing)
 
     implementation(libs.compose.uiToolingPreview)
@@ -23,7 +24,16 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "com.acite.axlranko"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.1"
+            linux {
+                iconFile.set(project.file("icons/app_icon.png"))
+            }
+            windows {
+                iconFile.set(project.file("icons/app_icon.ico"))
+            }
+            macOS {
+                iconFile.set(project.file("icons/app_icon.icns"))
+            }
         }
     }
 }

@@ -1,40 +1,81 @@
-# AXLTrainer
+<p align="center">
+  <img src="axltrainer.png" alt="AXLTrainer logo" width="168"/>
+</p>
 
-AXLTrainer is a complete, local-first **LoRA training stack** (SDXL today; SD 3.5 is a config/UI slot, not a trainer yet) for people who train on AMD GPUs and don't want to live in the terminal: a kohya-style Python training engine, a desktop dashboard that controls it, and a set of dataset tools — all integrated into one application.
+<h1 align="center">AXLTrainer</h1>
 
-## Why this project exists
+<p align="center">
+  <strong>Local LoRA · AMD first</strong><br/>
+  A local-first LoRA training stack: a kohya-style Python engine, a desktop dashboard that controls it, and a set of dataset tools — one application, no cloud control plane.
+</p>
 
-Training a LoRA is an iterative, hands-on process — curate a dataset, tag it, train for hours, inspect the samples, adjust, repeat. The existing ecosystem makes that loop painful in three ways:
-
-- **AMD ROCm is second-class.** Mainstream tools (kohya sd-scripts and its derivatives) are built for NVIDIA/CUDA first. On AMD hardware they crash or run poorly in subtle ways, and the fixes are buried in driver-level knowledge — for example, `bucket_reso_steps` must be a multiple of 16 on ROCm or you get random GPU page faults ([details](doc/troubleshooting.md)).
-- **The workflow is fragmented.** Config lives in hundreds of CLI flags, monitoring means juggling TensorBoard, a file manager, and sample folders, and dataset management (captioning, tag cleaning, filtering) is scattered across one-off scripts with no unified view.
-- **The tooling is hostile to iteration.** No visibility into what the run is doing, no way to pause and reclaim your GPU for something else, no safe reset.
-
-AXLTrainer addresses this by making the entire loop work well on AMD GPUs inside a single friendly desktop app: an intuitive dataset manager, a validated config editor, live training charts with pause/resume/early-stop, and a control plane that keeps training running even when the GUI is closed.
-
-## Table of contents
-
-- [Design & architecture](#design--architecture)
-- [Runtime environment & dependencies](#runtime-environment--dependencies)
-- [Quick start](#quick-start)
-- [Screenshots](#screenshots)
-- [Key features](#key-features)
-- [Documentation](#documentation)
-- [Testing](#testing)
-- [License](#license)
+<p align="center">
+  SDXL today · SD 3.5 catalogued · Desktop JVM · ROCm
+</p>
 
 ---
 
-## Design & architecture
+## What this is
 
-The project is split into four cooperating pieces:
+AXLTrainer is for people who train LoRAs on their own machine — especially on AMD GPUs — and do not want the loop of curating, tagging, training, inspecting samples, and adjusting to live entirely in the terminal. The training engine is a headless Python process driven by a single TOML file. Ranko, the Kotlin/Compose desktop app, is the place you actually sit: captions, tag statistics, config, live charts, sample galleries, and start / pause / resume / early-stop. Dataset scripts and an ONNX tagger sit beside both.
+
+The project exists because that loop is painful in three ways that the mainstream stack does not treat as first-class.
+
+- **AMD ROCm is second-class.** Tools built around kohya sd-scripts assume NVIDIA/CUDA. On AMD they crash or degrade in ways that only show up as driver-level knowledge — for example `bucket_reso_steps` must keep VAE latents divisible by 16 on ROCm, or you get random GPU page faults ([details](doc/troubleshooting.md)).
+- **The workflow is fragmented.** Config is hundreds of CLI flags, monitoring means TensorBoard plus a file manager plus a samples folder, and captioning / tag cleaning / filtering are one-off scripts with no shared view of the dataset.
+- **The tooling is hostile to iteration.** There is little visibility into what a run is doing, no way to pause and actually reclaim the GPU, and no safe reset of a finished run's artifacts.
+
+AXLTrainer keeps the entire loop on one machine, inside one desktop app, with a control plane that does not die when the GUI closes. SDXL is implemented; SD 3.5 is a catalog and UI slot, not a trainer yet.
+
+The rest of the design follows from four decisions:
+
+- **Configuration is TOML-only.** `trainer/main.py` takes no CLI arguments. `trainer/config.toml` is the single source of truth (with fallbacks in `trainer/config.py`).
+- **Training is detached.** `api.py` spawns the trainer with `setsid`, so closing Ranko never stops a run. The dashboard talks to it through one-shot `command.json` files at swap-safe points.
+- **Pause actually frees the GPU.** Pause offloads the denoise network, the text encoders, both optimizers (including Schedule-Free state) and the VAE to CPU, then calls `empty_cache`. Resume reloads what the current phase needs.
+- **Checkpoints are ComfyUI-ready.** PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` keys, stored as bf16, with `modelspec.*` and `ss_*` metadata.
+
+<p align="center">
+  <img src="doc/screenshots/dashboard-training.png" alt="Dashboard during a live training run — charts, sample gallery, and train controls"/>
+</p>
+
+## Features
+
+What stands out when you use the stack, rather than a complete inventory of every toggle.
+
+- **An SDXL LoRA engine that targets AMD.** Mixed precision defaults to bf16. Dual optimizers: Schedule-Free AdamW on the UNet (no LR scheduler) and AdamW on both text encoders with cosine warmup via Accelerator. Aspect-ratio bucketing is ROCm-safe by default (`bucket_reso_steps = 128`). Optional pipelined latent caching (CPU decode → batched VAE encode → atomic `.pt`) runs before training; on-demand encode is the fallback.
+- **Long prompts, samples, and kohya metadata.** Prompts past 77 tokens are chunked with `clip_skip` up to `max_token_length`. Periodic sample generation takes a negative prompt, a repeat/seed, and can be interrupted. Checkpoints embed `modelspec.*` / `ss_*` and log a kohya-style `Train/Avg_Loss` window.
+- **A dashboard that is the control plane, not a spectator.** Ranko spawns `api.py` over NDJSON stdin/stdout, reads TensorBoard scalars and sample PNGs, and offers Start / Pause / Resume / Early Stop / Reset. Progress bars cover latent encoding, training steps, and sampling. Closing the window does not kill the run.
+- **Dataset work in the same window.** The Images tab is a thumbnail browser and caption editor with unsaved-change tracking. Statistics scans tag frequency, filters with AND/OR, and bulk-removes tags, batch-adds tags, or probabilistically drops samples. Utils is a structured editor for `trainer/config.toml` with validation and path browsing.
+- **CLIs for scripts and agents.** `tools/` covers caption cleaning, tag filtering/counting, sample dropping and shuffling. `tagger/` is an ONNX WD-style captioner. `ranko/tools/agent.py` mirrors the app's dataset features for non-interactive use.
+
+<p align="center">
+  <img src="doc/screenshots/images-tab.png" alt="Images tab — thumbnail browser and caption editor"/>
+</p>
+
+<p align="center">
+  <img src="doc/screenshots/statistics-tab.png" alt="Statistics tab — tag frequency bars and a filtered image grid"/>
+</p>
+
+<p align="center">
+  <img src="doc/screenshots/utils-tab.png" alt="Utils tab — structured editor for trainer/config.toml"/>
+</p>
+
+<p align="center">
+  <img src="doc/screenshots/dashboard-idle.png" alt="Dashboard idle, connected to the trainer IPC helper"/>
+</p>
+
+---
+
+## Design and architecture
+
+Four pieces cooperate. Ranko never talks to the GPU; it only spawns `api.py` and renders responses. `api.py` stdout is NDJSON only.
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| **Training engine** | `trainer/` | Headless, config-driven SDXL LoRA trainer (dataset, latent cache, training loop, sampling, GPU offload, control plane). Entry point: `trainer/main.py`, launched by `start_train.sh`. |
-| **Control plane / IPC** | `api.py`, `trainer/control.py` | `api.py` is a small NDJSON-over-stdin/stdout helper that Ranko spawns. The trainer publishes status to a runtime dir (`state.json`) and consumes one-shot commands (`command.json`, `train.lock`); `api.py` bridges the two and reads TensorBoard metrics + sample images. |
-| **Desktop dashboard** | `ranko/` | Kotlin/Compose Multiplatform app ("AxlRanko"): dataset caption editor, tag statistics + bulk cleanup, `config.toml` editor, and the training dashboard. |
-| **Dataset tooling** | `tools/`, `tagger/`, `ranko/tools/agent.py` | CLI utilities for caption cleaning/filtering/counting, an ONNX auto-tagger, and a machine-friendly dataset CLI for scripts/agents. |
+| **Training engine** | `trainer/` | Headless, config-driven SDXL LoRA trainer (dataset, latent cache, loop, sampling, GPU offload, control plane). Entry: `trainer/main.py`, launched by `start_train.sh`. |
+| **Control plane / IPC** | `api.py`, `trainer/control.py` | Ranko spawns `api.py`. The trainer publishes `state.json` and consumes `command.json` / `train.lock`; `api.py` bridges the two and reads TensorBoard + samples. |
+| **Desktop dashboard** | `ranko/` | Compose Multiplatform app (**AxlRanko**): captions, tag statistics, config editor, training dashboard. |
+| **Dataset tooling** | `tools/`, `tagger/`, `ranko/tools/agent.py` | Caption/tag CLIs, an ONNX auto-tagger, and a machine-friendly dataset CLI. |
 
 ```
 ┌─────────────────────────────┐         ┌──────────────────────────────┐
@@ -51,56 +92,79 @@ The project is split into four cooperating pieces:
 └─────────────────────────────┘
 ```
 
-Key design decisions:
-
-- **Configuration is TOML-only.** `trainer/main.py` takes no CLI arguments; `trainer/config.toml` is the single source of truth (with fallbacks in `trainer/config.py`).
-- **Training is detached.** `api.py` spawns the trainer with `setsid`, so closing the GUI never stops a run. The dashboard controls it through `command.json` at swap-safe points.
-- **Pause actually frees your GPU.** Pause offloads UNet, text encoders, optimizer state (including Schedule-Free) and VAE to CPU and calls `empty_cache`; resume reloads them.
-- **Checkpoints are ComfyUI-ready.** PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` keys, bf16, with `modelspec.*` + `ss_*` metadata.
-
 Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overview.md).
 
 ### Repository layout
 
 | Path | What it is |
 | --- | --- |
-| `trainer/` | The training engine (config, dataset, latent cache, training loop, sampling, GPU offload, control plane). |
-| `api.py` | NDJSON-over-stdin/stdout helper process; reports metrics/samples/state, forwards start/pause/resume/stop/reset commands. |
-| `ranko/` | Kotlin/Compose Multiplatform desktop app (dataset editor, statistics, config editor, training dashboard). |
-| `clean.py` | Interactive CLI cleanup of a run's samples, TensorBoard logs, and (optionally) LoRA checkpoints. |
-| `ui.py` | **Deprecated** Streamlit read-only viewer (kept for reference; use the dashboard instead). |
-| `tools/` | Dataset utility scripts: tag removal, sample dropping, tag filtering/counting, caption editors, dataset shuffling. |
+| `trainer/` | Training engine (config, dataset, latent cache, loop, sampling, GPU offload, control plane). |
+| `api.py` | NDJSON helper; metrics, samples, state, and start/pause/resume/stop/reset. |
+| `ranko/` | Compose Multiplatform desktop app. |
+| `clean.py` | Interactive cleanup of samples, TensorBoard logs, and optional LoRA checkpoints. |
+| `ui.py` | **Deprecated** Streamlit viewer — use Ranko. |
+| `tools/` | Dataset scripts: tag removal, sample dropping, filtering/counting, caption editors, shuffling. |
 | `tagger/` | ONNX (WD-tagger style) caption generator for a folder of images. |
-| `text_processing.py` | Long-prompt chunking and dual-encoder (SDXL) prompt encoding used by the trainer. |
-| `start_train.sh` | Launcher for training; sets AMD/ROCm env vars and filters noisy driver logs. |
+| `text_processing.py` | Long-prompt chunking and dual-encoder (SDXL) prompt encoding. |
+| `start_train.sh` | Training launcher; AMD/ROCm env and driver-log filters. |
 | `start_api.sh` | Debug launcher for `api.py` on stdin/stdout. |
-| `API.md` | The IPC protocol reference (framing, all methods, request/response shapes). |
-| `fixes/` | Field reports of resolved issues (e.g. the ROCm bucket-step alignment crash). |
-| `environment.yml` | Conda environment manifest (the only dependency manifest in the repo). |
+| `API.md` | IPC protocol (framing, methods, request/response shapes). |
+| `fixes/` | Field reports of resolved issues (e.g. ROCm bucket-step alignment). |
+| `environment.yml` | Conda manifest — the only Python dependency file in the repo. |
 
 ---
 
-## Runtime environment & dependencies
+## Building and running
 
-**Python side (training engine + IPC):**
+There is no `requirements.txt`. Create the conda environment from the manifest (env name `axl`), point `trainer/config.toml` at **your** model, dataset and output paths — the shipped values are the author's machine and will not work elsewhere — then either train from the shell or open Ranko.
 
-- Python 3.12 (3.11+ works; `tomllib` is used for config and `agent.py`).
-- Managed by conda: `conda env create -f environment.yml` (env name `axl`). There is **no `requirements.txt`** — `environment.yml` is the only Python manifest.
-- Key pinned deps: PyTorch `2.12.0+rocm7.2` (torch/torchvision/torchaudio), diffusers 0.38.0, transformers 4.57.6, peft 0.19.1, accelerate 1.13.0, schedulefree 1.4.1, safetensors, tensorboard.
-- **Primary target is AMD ROCm** (MIOpen/MIGraphX). The training code is standard PyTorch/diffusers, so CUDA works too with an equivalent `torch` build — see [Installation](doc/installation.md#nvidia--cuda-instead-of-rocm).
-- A GPU with enough VRAM for SDXL LoRA training at your chosen resolution and batch size.
+```bash
+conda env create -f environment.yml
+conda activate axl
 
-**Desktop dashboard (Ranko):**
+# edit trainer/config.toml  (model / dataset / output paths)
 
-- JDK 17+ (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver), Gradle 9.1.0 wrapper.
-- Kotlin 2.4.0, Compose Multiplatform 1.11.1, Material 3, ktoml, kotlinx.serialization, Coil 3.
-- The trainer repo must be discoverable by walking up from the executable/cwd (it looks for `api.py` or `trainer/config.toml`), and `python3` with the trainer deps must be on `PATH` (or set `AXL_PYTHON`).
+# dataset: one folder of images, each with a same-stem .txt caption (comma-separated tags)
 
-Full setup instructions, dataset preparation, and verification steps: [Installation](doc/installation.md).
+bash start_train.sh
 
-### Reference: the author's development / test machine
+# or the desktop dashboard
+cd ranko && ./gradlew :desktopApp:run
+# hot reload while developing Ranko
+# ./gradlew :desktopApp:hotRun --auto
+```
 
-This is the environment the project is developed and verified on, provided as a reference point — readers do not need to match it exactly. It is also the machine on which the [ROCm bucket-step fix](doc/troubleshooting.md) was validated (a full 1200+ step run with sampling).
+The trainer reads **everything** from `trainer/config.toml`. See [Configuration](doc/configuration.md) and [Installation](doc/installation.md). Ranko locates the repo by walking up from the executable / working directory until it finds `api.py` or `trainer/config.toml`, then runs `$AXL_PYTHON` or `python3 -u api.py`.
+
+### Tests
+
+```bash
+# Python: IPC + train-control state machine
+python -m unittest test_api_ipc test_train_control
+
+# Family catalog / spec checks
+python -m unittest test_family
+
+# Latent-cache equivalence (mock VAE; add --real for a real VAE smoke test)
+python trainer/test_warm_latent_cache.py [--real]
+
+# Ranko (serialization / IPC models / TOML patch)
+cd ranko && ./gradlew :shared:jvmTest
+```
+
+Details: [Installation](doc/installation.md#running-the-tests).
+
+---
+
+## Runtime environment
+
+**Python (engine + IPC).** Python 3.12 (3.11+ works; `tomllib` is used). Key pins in `environment.yml`: PyTorch `2.12.0+rocm7.2`, diffusers 0.38.0, transformers 4.57.6, peft 0.19.1, accelerate 1.13.0, schedulefree 1.4.1, safetensors, tensorboard. The primary target is **AMD ROCm** (MIOpen/MIGraphX). The training code is ordinary PyTorch/diffusers, so CUDA works with an equivalent `torch` build — see [Installation](doc/installation.md#nvidia--cuda-instead-of-rocm). You still need enough VRAM for SDXL LoRA at the resolution and batch size you chose.
+
+**Ranko.** JDK 17+ (the Gradle wrapper provisions a JDK 21 toolchain), Gradle 9.1.0 wrapper, Kotlin 2.4.0, Compose Multiplatform 1.11.1, Material 3, ktoml, kotlinx.serialization, Coil 3.
+
+### Author's development machine
+
+Provided as a reference, not a requirement. This is also the machine on which the [ROCm bucket-step fix](doc/troubleshooting.md) was validated (a full 1200+ step run with sampling).
 
 | Component | Details |
 | --- | --- |
@@ -109,7 +173,7 @@ This is the environment the project is developed and verified on, provided as a 
 | RAM | 32 GB |
 | GPU | AMD Radeon RX 9070 XT 16 GB GDDR6 (Navi 48 / RDNA4, PowerColor) |
 | ROCm stack | ROCm 7.2.4 (HIP 7.2.53211, MIOpen 3.5.1) |
-| Java | OpenJDK 26.0.2.1 (system JVM; the Ranko Gradle daemon uses the auto-provisioned JDK 21 toolchain) |
+| Java | OpenJDK 26.0.2.1 (system JVM; Ranko's Gradle daemon uses the provisioned JDK 21 toolchain) |
 | Python | 3.12.13 (conda env `axl`) |
 | torch / torchvision / torchaudio | `2.12.0+rocm7.2` / `0.27.0+rocm7.2` / `2.11.0+rocm7.2` |
 | diffusers / transformers / peft / accelerate | `0.38.0` / `4.57.6` / `0.19.1` / `1.13.0` |
@@ -118,76 +182,7 @@ This is the environment the project is developed and verified on, provided as a 
 | onnxruntime-migraphx / triton-rocm | `1.23.2` / `3.7.0` |
 | kornia / opencv-python / numpy / pillow | `0.8.3` / `4.13.0.92` / `2.4.4` / `12.2.0` |
 
-> The versions above are what is installed in the `axl` environment at the time of writing and may drift slightly from the manifest; `environment.yml` is the pinned, reproducible record.
-
----
-
-## Quick start
-
-```bash
-# 1. Create the conda environment (Python 3.12, ROCm PyTorch, all training deps)
-conda env create -f environment.yml      # env name: axl
-conda activate axl
-
-# 2. Point the config at YOUR model, dataset, and output paths
-#    (the shipped values are the author's local machine — they will NOT work elsewhere)
-vim trainer/config.toml
-
-# 3. Make sure your dataset is ready:
-#    one folder of images, each with a same-named .txt caption (comma-separated tags)
-
-# 4. Train from the command line
-bash start_train.sh
-
-# or run the desktop dashboard (builds the GUI, spawns api.py, lets you start/pause/stop from a UI)
-cd ranko && ./gradlew :desktopApp:run
-
-# 5. Watch progress
-tensorboard --logdir "$(grep logging_dir trainer/config.toml | head -1 | cut -d'\"' -f2)"
-```
-
-The trainer reads **everything** from `trainer/config.toml` — there are no command-line arguments. See [Configuration](doc/configuration.md) for the full reference.
-
----
-
-## Screenshots
-
-| Dashboard — live training run | Dashboard — idle |
-| --- | --- |
-| ![Dashboard during a training run](doc/screenshots/dashboard-training.png) | ![Dashboard idle, connected](doc/screenshots/dashboard-idle.png) |
-
-| Images — caption editor | Statistics — tag analysis |
-| --- | --- |
-| ![Images tab: caption editor](doc/screenshots/images-tab.png) | ![Statistics tab: tag bars and filtered grid](doc/screenshots/statistics-tab.png) |
-
-| Utils — config editor | |
-| --- | --- |
-| ![Utils tab: config editor](doc/screenshots/utils-tab.png) | |
-
----
-
-## Key features
-
-**Training engine**
-- SDXL LoRA training via diffusers/PEFT, bf16 mixed precision, outputs ComfyUI-compatible kohya-format `.safetensors`.
-- Dual optimizers: Schedule-Free AdamW for the UNet, plain AdamW for both text encoders, per-group LR, warmup + cosine decay.
-- Aspect-ratio **bucketing** (`bucket_reso_steps`, min/max resolution); auto-adjusts batch grouping per bucket. ROCm-safe by default (`bucket_reso_steps = 128`).
-- **Latent caching**: optional pipelined pre-encode (CPU decode → batched VAE encode → atomic `.pt` write) before training; on-demand encode during training as fallback.
-- **Long-prompt support**: prompts beyond 77 tokens are chunked and encoded with `clip_skip`, up to `max_token_length`.
-- **Pause / resume / early stop** from the dashboard or IPC: GPU weights offload to CPU and reload at swap-safe points; training keeps running even if the GUI closes.
-- Periodic **sample generation** with negative prompt, configurable repeat/seed, and interruptible denoising.
-- Kohya-style metadata (`modelspec.*`, `ss_*`) embedded in checkpoints; `Train/Avg_Loss` epoch-window logging.
-
-**Desktop dashboard (Ranko)**
-- Images tab: thumbnail browser + caption editor with unsaved-change tracking.
-- Statistics tab: tag frequency bars, AND/OR filtering, bulk tag removal / batch add / probabilistic sample dropping.
-- Utils tab: structured editor for `trainer/config.toml` with validation and path browsing.
-- Dashboard tab: live metrics, interactive charts, sample gallery, and full training control (Start / Pause / Resume / Early Stop / Reset).
-
-**Dataset tooling**
-- CLI utilities for caption cleaning, tag filtering/counting, sample dropping, dataset shuffling, and a Qt caption editor.
-- ONNX tagger for auto-captioning image folders.
-- `ranko/tools/agent.py`: a machine-friendly CLI mirroring the app's dataset features, for scripts and AI agents.
+> Versions above are what is installed in `axl` at the time of writing and may drift slightly; `environment.yml` is the pinned record.
 
 ---
 
@@ -195,31 +190,14 @@ The trainer reads **everything** from `trainer/config.toml` — there are no com
 
 | Guide | Contents |
 | --- | --- |
-| [Overview](doc/overview.md) | What the pieces are, how they fit together, training data flow, process model. |
-| [Installation](doc/installation.md) | Environment setup, prerequisites, first run, running the test suites. |
-| [Configuration](doc/configuration.md) | Every `trainer/config.toml` section and key, with defaults and practical notes. |
-| [Training](doc/training.md) | Running training from the CLI, the run lifecycle, pause/resume/early-stop semantics, checkpoint & sample layout, GPU offloading, cleanup. |
-| [Dashboard](doc/dashboard.md) | The Ranko desktop app: each tab, building/running, how it talks to the trainer, train controls, keyboard & chart interactions. |
-| [Dataset tools](doc/dataset-tools.md) | `tools/` scripts, the `tagger/` ONNX tagger, and the `ranko/tools/agent.py` CLI for scripted/agent dataset management. |
-| [Troubleshooting](doc/troubleshooting.md) | Known issues (including the ROCm bucket-step rule), environment variables, common failure modes. |
-| [API.md](API.md) | Full IPC protocol reference. |
-
----
-
-## Testing
-
-```bash
-# Python: IPC + train-control state machine
-python -m unittest test_api_ipc test_train_control
-
-# Python: latent-cache equivalence tests (mock VAE; add --real for a real VAE smoke test)
-python trainer/test_warm_latent_cache.py [--real]
-
-# Kotlin: Ranko unit tests (serialization / IPC models)
-cd ranko && ./gradlew :shared:jvmTest
-```
-
-See [Installation](doc/installation.md#running-the-tests) for details.
+| [Overview](doc/overview.md) | Pieces, data flow, process model. |
+| [Installation](doc/installation.md) | Environment, first run, test suites. |
+| [Configuration](doc/configuration.md) | Every `trainer/config.toml` section and key. |
+| [Training](doc/training.md) | CLI runs, lifecycle, pause/resume/stop, checkpoints, offload, cleanup. |
+| [Dashboard](doc/dashboard.md) | Ranko tabs, IPC, train controls, charts. |
+| [Dataset tools](doc/dataset-tools.md) | `tools/`, `tagger/`, `ranko/tools/agent.py`. |
+| [Troubleshooting](doc/troubleshooting.md) | ROCm bucket-step rule, env vars, common failures. |
+| [API.md](API.md) | IPC protocol. |
 
 ---
 

@@ -2,9 +2,11 @@ package com.acite.axlranko
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
@@ -15,9 +17,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import axlranko.shared.generated.resources.Res
+import axlranko.shared.generated.resources.app_icon
+import org.jetbrains.compose.resources.painterResource
 import com.acite.axlranko.pages.DashboardScreen
 import com.acite.axlranko.pages.DashboardScreenViewModel
 import com.acite.axlranko.pages.ImageScreenViewModel
@@ -89,6 +95,14 @@ public fun Stage(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Image(
+                    painter = painterResource(Res.drawable.app_icon),
+                    contentDescription = "AxlRanko",
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape),
+                )
+
                 IconButton(onClick = {
                     viewModel.currentScreen = Screen.Images
                     imViewModel.reloadFromDiskSafely()
