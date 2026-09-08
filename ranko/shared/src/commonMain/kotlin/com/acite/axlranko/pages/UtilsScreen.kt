@@ -784,6 +784,12 @@ private fun OptimizationFields(
         description = "Shuffle comma-separated tags each step; keep_tokens stay fixed",
         onChecked = { viewModel.updateForm { copy(shuffleCaption = it) } }
     )
+    ConfigSwitch(
+        label = "Flush GPU memory every step",
+        checked = form.flushMemoryEveryStep,
+        description = "Call empty_cache after each training batch; turn off to reduce ROCm allocator churn",
+        onChecked = { viewModel.updateForm { copy(flushMemoryEveryStep = it) } }
+    )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Keep tokens",

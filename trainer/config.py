@@ -75,6 +75,7 @@ class TrainConfig:
     keep_tokens: int = get_val("keep_tokens", 2)
     caption_extension: str = get_val("caption_extension", ".txt")
     noise_offset: float = get_val("noise_offset", 0.05)
+    flush_memory_every_step: bool = get_val("flush_memory_every_step", True)
 
     # UNet optimizer (Schedule-Free AdamW)
     unet_learning_rate: float = get_val("unet_learning_rate", 6e-5)

@@ -48,6 +48,7 @@ data class TrainingConfigForm(
     val keepTokens: String = "",
     val captionExtension: String = ".txt",
     val noiseOffset: String = "",
+    val flushMemoryEveryStep: Boolean = true,
 
     val unetLearningRate: String = "",
     val unetWeightDecay: String = "",
@@ -243,7 +244,8 @@ data class TrainingConfigForm(
                 "shuffle_caption" to b(shuffleCaption),
                 "keep_tokens" to n(keepTokens),
                 "caption_extension" to q(captionExtension.trim()),
-                "noise_offset" to f(noiseOffset)
+                "noise_offset" to f(noiseOffset),
+                "flush_memory_every_step" to b(flushMemoryEveryStep)
             ),
             "unet_optimizer" to mapOf(
                 "unet_learning_rate" to f(unetLearningRate),
@@ -352,6 +354,7 @@ data class TrainingConfigForm(
                 keepTokens = opt.keepTokens.toString(),
                 captionExtension = opt.captionExtension,
                 noiseOffset = formatNumber(opt.noiseOffset),
+                flushMemoryEveryStep = opt.flushMemoryEveryStep,
                 unetLearningRate = formatNumber(unet.unetLearningRate),
                 unetWeightDecay = formatNumber(unet.unetWeightDecay),
                 unetBetas1 = formatNumber(unet.unetBetas1),

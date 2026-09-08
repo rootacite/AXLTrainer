@@ -280,6 +280,7 @@ def train_one_epoch(
             if control.should_stop():
                 return global_step
 
-        flush_memory(device)
+        if cfg.flush_memory_every_step:
+            flush_memory(device)
 
     return global_step

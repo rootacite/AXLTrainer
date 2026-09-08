@@ -123,9 +123,9 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
     modules.denoise.requires_grad_(False)
     modules = family.apply_lora(cfg, modules)
 
+    # Encoding only needs the VAE on GPU. TEs stay on CPU until accelerator.prepare
+    # after the latent cache (otherwise CLIP-G + VAE encode OOMs a 16GB card).
     modules.vae.to(device=device).eval()
-    for te in modules.text_encoders:
-        te.to(device=device, dtype=weight_dtype)
 
     train_dataset, dataloader = build_dataloader(cfg)
     denoise_optimizer, te_optimizer, te_scheduler = build_optimizers_and_schedulers(

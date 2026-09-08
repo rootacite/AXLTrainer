@@ -34,12 +34,74 @@ def _offload_module(module: torch.nn.Module) -> None:
     module.to("cpu")
 
 
-def _move_module_to_device(module: torch.nn.Module, device: torch.device, dtype: torch.dtype) -> None:
-    """Move a module to the target device with the requested dtype."""
-    module.to(device=device, dtype=dtype)
+def _move_module_to_device(module: torch.nn.Module, device: torch.device) -> None:
+    """Move a module without changing parameter dtypes.
+
+    LoRA adapters stay fp32 while the frozen base is bf16. Casting the whole
+    module to weight_dtype breaks Schedule-Free AdamW (z is fp32) and doubles
+    VRAM during the copy.
+    """
+    module.to(device)
 
 
-@torch.inference_mode()
+def _reify_autograd_tensors(module: torch.nn.Module) -> None:
+    """Clone inference-mode parameters so training backward can save them."""
+    with torch.inference_mode(False):
+        for param in module.parameters():
+            if torch.is_inference(param):
+                param.data = param.data.clone()
+        for buf in module.buffers():
+            if torch.is_inference(buf):
+                buf.data = buf.data.clone()
+
+
+def _offload_text_encoders(*modules: torch.nn.Module | None) -> None:
+    for module in modules:
+        if module is not None:
+            _offload_module(module)
+
+
+def _prepare_denoise_device(
+    unet: torch.nn.Module,
+    device: torch.device,
+    *text_encoders: torch.nn.Module | None,
+) -> None:
+    """UNet on the train device; TEs off GPU (resume sampling puts them back)."""
+    _offload_text_encoders(*text_encoders)
+    _move_module_to_device(unet, device)
+    flush_memory(device)
+
+
+def _prepare_decode_devices(
+    unet: torch.nn.Module,
+    vae: torch.nn.Module,
+    device: torch.device,
+) -> None:
+    """VAE decode must not overlap the denoise network on GPU."""
+    _offload_module(unet)
+    flush_memory(device)
+    _move_module_to_device(vae, device)
+
+
+def _restore_train_modules(
+    *,
+    unet: torch.nn.Module,
+    te1: torch.nn.Module,
+    te2: torch.nn.Module,
+    vae: torch.nn.Module,
+    device: torch.device,
+) -> None:
+    """Put UNet + TEs back where the training loop expects them."""
+    _offload_module(vae)
+    flush_memory(device)
+    _move_module_to_device(unet, device)
+    _move_module_to_device(te1, device)
+    _move_module_to_device(te2, device)
+    for module in (unet, te1, te2):
+        _reify_autograd_tensors(module)
+
+
+@torch.no_grad()
 def generate_sample_image(
     *,
     accelerator: Accelerator,
@@ -109,6 +171,9 @@ def generate_sample_image(
         target_num_chunks=npu
     )
 
+    _offload_text_encoders(trained_te1, trained_te2)
+    flush_memory(device)
+
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,6 +193,8 @@ def generate_sample_image(
         while repeat_idx < repeats:
             if not at_safe_point("sampling", swap_ctx):
                 return
+
+            _prepare_denoise_device(trained_unet, device, trained_te1, trained_te2)
 
             interrupted = {"value": False}
 
@@ -180,7 +247,7 @@ def generate_sample_image(
             latents = latent_result.images.to(device=device, dtype=vae_dtype)
             latents = latents / pipe.vae.config.scaling_factor
 
-            _move_module_to_device(pipe.vae, device, vae_dtype)
+            _prepare_decode_devices(trained_unet, pipe.vae, device)
             if hasattr(pipe.vae.config, "force_upcast"):
                 pipe.vae.config.force_upcast = False
             pipe.vae.enable_slicing()
@@ -192,14 +259,19 @@ def generate_sample_image(
             image = (image * 255).round().astype("uint8")
 
             out_filename = f"{cfg.output_name}_{global_step:06d}_{repeat_idx}.png"
-            out_path = sample_dir / out_filename
-            Image.fromarray(image).save(out_path)
+            Image.fromarray(image).save(sample_dir / out_filename)
 
             _offload_module(pipe.vae)
             repeat_idx += 1
 
     finally:
-        _offload_module(pipe.vae)
+        _restore_train_modules(
+            unet=trained_unet,
+            te1=trained_te1,
+            te2=trained_te2,
+            vae=pipe.vae,
+            device=device,
+        )
 
         if prev_unet_training:
             trained_unet.train()

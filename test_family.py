@@ -16,6 +16,7 @@ from trainer.family import (
     require_trainable,
     resolve_family,
 )
+from trainer.family_sdxl import enable_te_gradient_checkpointing
 from trainer.models import build_kohya_metadata
 from trainer.setup import build_train_objects
 
@@ -84,6 +85,41 @@ class FamilyCatalogTest(unittest.TestCase):
             extra["time_ids"].tolist(),
             [768.0, 1024.0, 0.0, 0.0, 768.0, 1280.0],
         )
+
+
+class TeCheckpointHelperTest(unittest.TestCase):
+    def test_calls_transformers_and_input_grad_hooks(self):
+        class Stub:
+            def __init__(self):
+                self.checkpoint = 0
+                self.input_grads = 0
+
+            def gradient_checkpointing_enable(self):
+                self.checkpoint += 1
+
+            def enable_input_require_grads(self):
+                self.input_grads += 1
+
+        stub = Stub()
+        enable_te_gradient_checkpointing(stub)
+        self.assertEqual(stub.checkpoint, 1)
+        self.assertEqual(stub.input_grads, 1)
+
+    def test_falls_back_to_diffusers_enable_name(self):
+        class Stub:
+            def __init__(self):
+                self.checkpoint = 0
+
+            def enable_gradient_checkpointing(self):
+                self.checkpoint += 1
+
+        stub = Stub()
+        enable_te_gradient_checkpointing(stub)
+        self.assertEqual(stub.checkpoint, 1)
+
+    def test_plain_linear_is_a_noop(self):
+        module = torch.nn.Linear(4, 4)
+        enable_te_gradient_checkpointing(module)
 
 
 class MetadataPredictionTypeTest(unittest.TestCase):

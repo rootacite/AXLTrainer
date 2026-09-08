@@ -140,9 +140,9 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/family_sdxl.py` | SDXL load/unpack/LoRA/encode/loss/save/sample; PEFT → kohya remap. |
 | `trainer/family_sd35.py` | Stub; every method raises `UnsupportedFamilyError`. |
 | `trainer/dataset.py` | `LoraImageDataset`: images + sidecar captions, buckets, latent `.pt` lookup. |
-| `trainer/cache.py` | Pipelined CPU decode → batched VAE encode → atomic `.pt` in `<data>/.latents_cache`. |
+| `trainer/cache.py` | Pipelined CPU decode → batched VAE encode → atomic `.pt` in `<data>/.latents_cache`. GPU holds only the VAE; UNet/TEs are offloaded first. |
 | `trainer/loop.py` | `train_one_epoch`: group by bucket, family `compute_loss`, both optimizers, save+sample cadence, `at_safe_point`. |
-| `trainer/sampling.py` | Interruptible SDXL sample gen (called from `SdxlFamily.generate_sample`). |
+| `trainer/sampling.py` | Interruptible SDXL sample gen (called from `SdxlFamily.generate_sample`). Prompt encode → TE offload; denoise → UNet offload then VAE decode; restore UNet+TEs before returning to the train loop. |
 | `trainer/models.py` | Flash attn, optimizers, checkpoint **paths**, kohya metadata helper. |
 | `trainer/control.py` | State machine, atomic JSON, lock, command poll. |
 | `trainer/device_swap.py` | GPU↔CPU offload; `at_safe_point`. |
@@ -174,6 +174,7 @@ When adding a trainer module, support **both** import styles, or you will pass C
 - Mixed precision default **bf16**.
 - Dual optimizers: **Schedule-Free AdamW** on UNet (no LR scheduler), **AdamW** on TE1+TE2 with cosine/warmup via Accelerator.
 - LoRA targets: UNet `to_q/to_k/to_v/to_out.0`; TE `q_proj/k_proj/v_proj/out_proj` (`setup.apply_lora_modules`).
+- UNet and both TEs enable gradient checkpointing after PEFT wrap (TEs also `enable_input_require_grads` because embeddings stay frozen).
 - Batches are **regrouped by `(bucket_w, bucket_h)`** before stacking — never stack mixed spatial sizes.
 - `at_safe_point` is called every step (and during cache/sample). New long GPU work must call it or pause/stop will hang until the phase ends.
 - VAE is moved to CPU after latent warm-cache; on-demand encode during training is the fallback.
@@ -314,13 +315,15 @@ Single helper: `trainer/cleanup.py`. `clean.py` is the interactive CLI; `train_r
 | IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag |
 | Tagger | `python -m unittest test_tagger` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors |
-| Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata |
+| Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper |
+| Sample offload | `python -m unittest test_sampling_offload` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
+| GPU smoke | `python -m unittest test_vram_gpu` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
 | Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
 | Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch, catalog form, image headers |
 
 Cwd for Python tests: **repo root**. Use conda env `axl` so `torch` / `tensorboard` import.
 
-Do not hit a real GPU in unit tests. `test_train_control` may import `torch` for tensor device checks.
+Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped when `torch.cuda.is_available()` is false. `test_train_control` may import `torch` for tensor device checks.
 
 ---
 

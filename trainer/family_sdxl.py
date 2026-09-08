@@ -116,6 +116,40 @@ def _remap_core_path(raw_key: str, prefix: str) -> str:
     return key.replace(".", "_")
 
 
+def enable_te_gradient_checkpointing(module: Any) -> None:
+    """Turn on TE checkpointing after PEFT wrap. Frozen embeddings need input grads."""
+    candidates: list[Any] = [module]
+    getter = getattr(module, "get_base_model", None)
+    if callable(getter):
+        try:
+            candidates.append(getter())
+        except Exception:
+            pass
+    inner = getattr(module, "base_model", None)
+    if inner is not None:
+        candidates.append(inner)
+
+    seen: list[Any] = []
+    for candidate in candidates:
+        if candidate is None or any(candidate is item for item in seen):
+            continue
+        seen.append(candidate)
+
+    for candidate in seen:
+        fn = getattr(candidate, "gradient_checkpointing_enable", None)
+        if not callable(fn):
+            fn = getattr(candidate, "enable_gradient_checkpointing", None)
+        if callable(fn):
+            fn()
+            break
+
+    for candidate in seen:
+        fn = getattr(candidate, "enable_input_require_grads", None)
+        if callable(fn):
+            fn()
+            break
+
+
 def _convert_peft_to_kohya_bf16(
     state_dict: dict[str, torch.Tensor],
     prefix: str,
@@ -198,6 +232,8 @@ class SdxlFamily:
             target_modules=["to_q", "to_k", "to_v", "to_out.0"],
         )
         tes = [get_peft_model(te, te_lora_config()) for te in modules.text_encoders]
+        for te in tes:
+            enable_te_gradient_checkpointing(te)
         denoise = get_peft_model(modules.denoise, unet_lora_config)
         denoise.enable_gradient_checkpointing()
         enable_flash_attention(denoise)

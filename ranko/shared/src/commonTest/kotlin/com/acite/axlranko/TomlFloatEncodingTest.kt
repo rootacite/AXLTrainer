@@ -72,6 +72,7 @@ class TomlFloatEncodingTest {
         assertEquals("1.0", training["max_grad_norm"])
         assertEquals("0.0", form.toTomlSections()["network"]!!["network_dropout"])
         assertEquals("0.0", form.toTomlSections()["optimization"]!!["noise_offset"])
+        assertEquals("true", form.toTomlSections()["optimization"]!!["flush_memory_every_step"])
         assertEquals("6.0", form.toTomlSections()["validation"]!!["guidance_scale"])
     }
 }

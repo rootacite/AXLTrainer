@@ -84,6 +84,7 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `keep_tokens` | `2` | Number of leading caption tokens kept in place when shuffling. |
 | `caption_extension` | `".txt"` | Caption file extension. |
 | `noise_offset` | `0.05` | Adds a small offset to the noise target (aids contrast/color variety). |
+| `flush_memory_every_step` | `true` | After each training batch, `gc.collect` + HIP/CUDA `empty_cache`. Disable if step time is dominated by allocator churn. |
 
 ### `[unet_optimizer]` — UNet optimizer (Schedule-Free AdamW)
 

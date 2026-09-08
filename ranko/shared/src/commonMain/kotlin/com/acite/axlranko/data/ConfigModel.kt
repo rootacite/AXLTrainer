@@ -77,7 +77,8 @@ data class OptimizationConfig(
     @SerialName("shuffle_caption") val shuffleCaption: Boolean,
     @SerialName("keep_tokens") val keepTokens: Int,
     @SerialName("caption_extension") val captionExtension: String,
-    @SerialName("noise_offset") val noiseOffset: Double
+    @SerialName("noise_offset") val noiseOffset: Double,
+    @SerialName("flush_memory_every_step") val flushMemoryEveryStep: Boolean = true
 )
 
 @Serializable

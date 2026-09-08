@@ -24,7 +24,33 @@ except ImportError:
     from trainer.device_swap import SwapContext, at_safe_point
 
 _DEFAULT_PREFETCH_WORKERS = max(2, min(8, os.cpu_count() or 4))
-_DEFAULT_ENCODE_BATCH_SIZE = 8
+# 1280² SDXL VAE activations are huge; 8 was enough to OOM a 16GB card when
+# UNet/TEs were still resident. Encoding only needs the VAE.
+_DEFAULT_ENCODE_BATCH_SIZE = 2
+
+
+def prepare_encoding_devices(
+    vae: torch.nn.Module,
+    device: torch.device,
+    swap_ctx: Optional[SwapContext] = None,
+) -> None:
+    """Encoding uses only the VAE. UNet + TEs must not sit on the GPU."""
+    if swap_ctx is not None:
+        if swap_ctx.denoise is not None:
+            swap_ctx.denoise.to("cpu")
+        for te in swap_ctx.text_encoders:
+            if te is not None:
+                te.to("cpu")
+    vae.eval()
+    vae.to(device=device)
+    cfg = getattr(vae, "config", None)
+    if cfg is not None and hasattr(cfg, "force_upcast"):
+        cfg.force_upcast = False
+    if hasattr(vae, "enable_tiling"):
+        vae.enable_tiling()
+    if hasattr(vae, "enable_slicing"):
+        vae.enable_slicing()
+    flush_memory(device)
 
 
 @torch.no_grad()
@@ -52,8 +78,7 @@ def warm_latent_cache(
     if not (cfg.cache_latents and cfg.cache_latents_to_disk):
         return True
 
-    vae.eval()
-    vae.to(device=device)
+    prepare_encoding_devices(vae, device, swap_ctx)
 
     total = len(dataset)
     workers = prefetch_workers or _DEFAULT_PREFETCH_WORKERS
@@ -113,8 +138,10 @@ def warm_latent_cache(
         pixel_values = torch.stack([item["img_data"] for item in items]).to(device=device, dtype=dtype)
         latents = vae.encode(pixel_values).latent_dist.sample() * vae.config.scaling_factor
         latents = latents.detach().cpu()
+        del pixel_values
         for item, latent in zip(items, latents):
             save_queue.put((latent, Path(item["cache_path"])))
+        flush_memory(device)
 
     def _handle_item(item: Dict[str, Any]) -> None:
         cache_path = Path(item["cache_path"])

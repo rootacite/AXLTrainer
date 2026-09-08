@@ -70,14 +70,15 @@ enum class ConfigSection(
     ),
     Optimization(
         title = "Optimization",
-        description = "Latent cache, caption shuffle, and noise offset",
+        description = "Latent cache, caption shuffle, noise offset, and step-end GPU flush",
         fieldKeys = setOf(
             "cache_latents",
             "cache_latents_to_disk",
             "shuffle_caption",
             "keep_tokens",
             "caption_extension",
-            "noise_offset"
+            "noise_offset",
+            "flush_memory_every_step"
         )
     ),
     UnetOptimizer(
