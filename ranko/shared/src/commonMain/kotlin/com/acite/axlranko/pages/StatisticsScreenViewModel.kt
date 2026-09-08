@@ -3,6 +3,7 @@ package com.acite.axlranko.pages
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.model.DatasetItem
 import com.acite.axlranko.model.StatisticsUiState
 import com.acite.axlranko.model.TagStat
@@ -25,7 +26,9 @@ import kotlin.random.Random
 @Inject
 @ViewModelKey
 @ContributesIntoMap(AppScope::class)
-class StatisticsScreenViewModel : ViewModel() {
+class StatisticsScreenViewModel(
+    private val refreshHub: DatasetRefreshHub,
+) : ViewModel() {
     private val _uiState = MutableStateFlow(StatisticsUiState())
     val uiState: StateFlow<StatisticsUiState> = _uiState.asStateFlow()
 
@@ -33,6 +36,9 @@ class StatisticsScreenViewModel : ViewModel() {
 
     init {
         scanDataset(isInitial = true)
+        viewModelScope.launch {
+            refreshHub.events.collect { scanDataset() }
+        }
     }
 
     /**

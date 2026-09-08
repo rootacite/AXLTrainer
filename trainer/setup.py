@@ -123,7 +123,7 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
     modules.denoise.requires_grad_(False)
     modules = family.apply_lora(cfg, modules)
 
-    modules.vae.to(device=device, dtype=weight_dtype).eval()
+    modules.vae.to(device=device).eval()
     for te in modules.text_encoders:
         te.to(device=device, dtype=weight_dtype)
 

@@ -11,6 +11,7 @@ write lands in the temp dir, never in the real dataset.
 """
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -23,6 +24,10 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+
+# Isolate control.state.json from the live runtime dir.
+_RUNTIME_DIR = tempfile.TemporaryDirectory(prefix="axl-cache-test-")
+os.environ["AXL_RUNTIME_DIR"] = _RUNTIME_DIR.name
 
 from PIL import Image
 
@@ -264,7 +269,7 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
 
         cfg = make_cfg(root, enable_bucket=False, train_resolution=512)
         vae = AutoencoderKL.from_pretrained(
-            str(model_root), subfolder="vae", torch_dtype=torch.float32
+            str(model_root), subfolder="vae", dtype=dtype
         )
         orig_encode = vae.encode
         calls = {"n": 0}

@@ -28,20 +28,24 @@ Notes:
 
 ## `tagger/` — ONNX caption generator
 
-A WD-tagger-style auto-captioner that writes a `.txt` next to each image in a folder, using an ONNX model on AMD GPU (MIGraphX provider) with CPU fallback.
+A WD-tagger-style auto-captioner that writes a `.txt` next to each image in a folder. It prefers AMD GPU via ONNX Runtime **MIGraphX** (CUDA if present) and falls back to CPU. Model files sit next to the script (`tagger/model.onnx`, `tagger/selected_tags.csv`) so you can run it from the repo root. Use the `axl` interpreter (`AXL_PYTHON` or `conda run -n axl`).
 
 ```bash
-cd tagger          # model.onnx and selected_tags.csv are loaded by relative path
-python main.py
+# Non-interactive (overwrites sidecar captions). Progress on stderr; optional JSON on stdout.
+python tagger/main.py /path/to/dataset --threshold 0.35 --json
+
+# Interactive REPL (directory + threshold prompts, tab-completion)
+python tagger/main.py
 ```
 
-It runs an interactive REPL:
+| Flag | Meaning |
+| --- | --- |
+| `-t` / `--threshold` | Minimum confidence, `0.0`–`1.0` (default `0.35`) |
+| `-b` / `--batch-size` | ONNX batch size (default `1`; MIGraphX compiles per input shape) |
+| `--json` | Print one result object to stdout |
+| `--cpu` | Force `CPUExecutionProvider` |
 
-1. Enter a directory path (tab-completion enabled).
-2. Enter a confidence threshold (default `0.35`).
-3. For every image (png/jpg/jpeg/webp/bmp) it writes `", ".join(tags)` sorted by confidence into `<image>.txt`.
-
-The model is 448×448 input; labels come from `selected_tags.csv`. Type `exit` / `q` to quit. The `migraphx_cache/` folder inside `tagger/` is a compiled-model cache created on first run.
+For every image (`png` / `jpg` / `jpeg` / `webp` / `bmp`, non-recursive) it writes `", ".join(tags)` sorted by confidence into `<stem>.txt`. Input is 448×448 BGR. Ranko’s Utils → Environment **Tag dataset** button calls the same script through the `dataset_tag` IPC method. The `migraphx_cache/` folder inside `tagger/` is a compiled-model cache created on first GPU run.
 
 ## `ranko/tools/agent.py` — dataset CLI for scripts & AI agents
 

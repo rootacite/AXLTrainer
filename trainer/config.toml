@@ -5,8 +5,8 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/home/acite/LLM/Character/Chika/"
-output_name = "chika"
+train_data_dir = "/tmp/alice"
+output_name = "alice"
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"

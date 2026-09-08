@@ -167,7 +167,7 @@ public fun UtilsScreen(
             }
         }
 
-        if (uiState.isSaving) {
+        if (uiState.isSaving || uiState.isTagging) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter)
             )
@@ -224,7 +224,7 @@ private fun ConfigHeader(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { viewModel.loadConfig() },
-                    enabled = !uiState.isDirty && !uiState.isSaving
+                    enabled = !uiState.isDirty && !uiState.isSaving && !uiState.isTagging
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -232,7 +232,7 @@ private fun ConfigHeader(
                 }
                 OutlinedButton(
                     onClick = { viewModel.resetForm() },
-                    enabled = uiState.isDirty && !uiState.isSaving
+                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging
                 ) {
                     Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -240,7 +240,7 @@ private fun ConfigHeader(
                 }
                 Button(
                     onClick = { viewModel.saveConfig() },
-                    enabled = uiState.isDirty && !uiState.isSaving
+                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging
                 ) {
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -367,7 +367,7 @@ private fun SectionFields(
     val errors = uiState.fieldErrors
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         when (uiState.selectedSection) {
-            ConfigSection.Environment -> EnvironmentFields(form, errors, viewModel)
+            ConfigSection.Environment -> EnvironmentFields(uiState, viewModel)
             ConfigSection.ModelSpec -> ModelSpecFields(form, errors, viewModel)
             ConfigSection.Training -> TrainingFields(form, errors, viewModel)
             ConfigSection.Network -> NetworkFields(form, errors, viewModel)
@@ -383,10 +383,11 @@ private fun SectionFields(
 
 @Composable
 private fun EnvironmentFields(
-    form: TrainingConfigForm,
-    errors: Map<String, String>,
+    uiState: UtilsUiState,
     viewModel: UtilsScreenViewModel
 ) {
+    val form = uiState.form
+    val errors = uiState.fieldErrors
     ConfigPathField(
         label = "Pretrained model path",
         value = form.pretrainedModelNameOrPath,
@@ -407,6 +408,7 @@ private fun EnvironmentFields(
         onValueChange = { viewModel.updateForm { copy(trainDataDir = it) } },
         onBrowse = { viewModel.browseDirectory(form.trainDataDir) { copy(trainDataDir = it) } }
     )
+    AutoTagCard(uiState = uiState, viewModel = viewModel)
     ConfigTextField(
         label = "Output name",
         value = form.outputName,
@@ -428,6 +430,75 @@ private fun EnvironmentFields(
         onValueChange = { viewModel.updateForm { copy(loggingDir = it) } },
         onBrowse = { viewModel.browseDirectory(form.loggingDir) { copy(loggingDir = it) } }
     )
+}
+
+@Composable
+private fun AutoTagCard(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel
+) {
+    val thresholdValue = uiState.tagThreshold.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.35f
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Auto-tag dataset",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Runs the WD ONNX tagger on GPU (MIGraphX) and overwrites every sidecar .txt in the train data directory. Images and Statistics reload when it finishes.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Confidence  ${"%.2f".format(thresholdValue)}",
+                style = MaterialTheme.typography.labelLarge
+            )
+            Slider(
+                value = thresholdValue,
+                onValueChange = { viewModel.updateTagThreshold("%.2f".format(it)) },
+                valueRange = 0f..1f,
+                steps = 19,
+                enabled = !uiState.isTagging
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ConfigTextField(
+                    label = "Threshold",
+                    value = uiState.tagThreshold,
+                    error = null,
+                    supporting = "0.0 – 1.0  (default 0.35)",
+                    onValueChange = viewModel::updateTagThreshold,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = { viewModel.runAutoTag() },
+                    enabled = !uiState.isTagging && !uiState.isSaving && uiState.form.trainDataDir.isNotBlank()
+                ) {
+                    if (uiState.isTagging) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (uiState.isTagging) "Tagging…" else "Tag dataset")
+                }
+            }
+        }
+    }
 }
 
 @Composable

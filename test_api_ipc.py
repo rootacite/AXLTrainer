@@ -1,7 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import api
 from trainer.loss_log import LossRecorder, synthesize_avg_loss
@@ -93,6 +95,66 @@ class AvgLossTest(unittest.TestCase):
             self.assertEqual(result["metrics"]["Train/Avg_Loss"][0]["value"], 1.5)
         finally:
             api._get_tensorboard_metrics = orig
+
+
+class DatasetTagIpcTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+
+    def tearDown(self):
+        from trainer import control
+
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def test_dispatch_registered(self):
+        self.assertIn("dataset_tag", api._HANDLERS)
+
+    def test_missing_directory(self):
+        with self.assertRaises(ValueError):
+            api.handle_dataset_tag({"directory": "/tmp/axl-missing-tag-dir", "threshold": 0.35})
+
+    def test_bad_threshold(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 1.5})
+
+    def test_blocked_while_training(self):
+        from trainer import control
+
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35})
+
+    def test_success_uses_tagger_result(self):
+        fake = {
+            "directory": "/tmp/alice",
+            "threshold": 0.35,
+            "provider": "MIGraphXExecutionProvider",
+            "total": 2,
+            "processed": 2,
+            "failed": 0,
+            "seconds": 0.1,
+            "errors": [],
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(api, "run_tagger_process", return_value=fake) as tagged:
+                result = api.dispatch("dataset_tag", {"directory": raw, "threshold": 0.4})
+        self.assertEqual(result["processed"], 2)
+        tagged.assert_called_once()
+        args, kwargs = tagged.call_args
+        self.assertEqual(args[1], 0.4)
 
 
 if __name__ == "__main__":

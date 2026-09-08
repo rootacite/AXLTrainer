@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Optional
 
@@ -148,13 +149,18 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
         if path_obj.is_file()
         else StableDiffusionXLPipeline.from_pretrained
     )
-    return loader_func(
-        str(path_obj),
-        torch_dtype=dtype,
-        safety_checker=None,
-        feature_extractor=None,
-        requires_safety_checker=False,
-    )
+    # diffusers 0.40 lazy-imports guiders → kornia.geometry, which still uses @torch.jit.script
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=FutureWarning,
+            message=r".*torch\.jit\.script.*deprecated.*",
+        )
+        return loader_func(
+            str(path_obj),
+            dtype=dtype,
+            feature_extractor=None,
+        )
 
 
 class SdxlFamily:
@@ -175,13 +181,15 @@ class SdxlFamily:
         )
 
     def apply_lora(self, cfg: Any, modules: FamilyModules) -> FamilyModules:
-        te_lora_config = LoraConfig(
-            r=cfg.network_dim,
-            lora_alpha=cfg.network_alpha,
-            lora_dropout=cfg.network_dropout,
-            init_lora_weights="gaussian",
-            target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
-        )
+        def te_lora_config() -> LoraConfig:
+            return LoraConfig(
+                r=cfg.network_dim,
+                lora_alpha=cfg.network_alpha,
+                lora_dropout=cfg.network_dropout,
+                init_lora_weights="gaussian",
+                target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
+            )
+
         unet_lora_config = LoraConfig(
             r=cfg.network_dim,
             lora_alpha=cfg.network_alpha,
@@ -189,7 +197,7 @@ class SdxlFamily:
             init_lora_weights="gaussian",
             target_modules=["to_q", "to_k", "to_v", "to_out.0"],
         )
-        tes = [get_peft_model(te, te_lora_config) for te in modules.text_encoders]
+        tes = [get_peft_model(te, te_lora_config()) for te in modules.text_encoders]
         denoise = get_peft_model(modules.denoise, unet_lora_config)
         denoise.enable_gradient_checkpointing()
         enable_flash_attention(denoise)

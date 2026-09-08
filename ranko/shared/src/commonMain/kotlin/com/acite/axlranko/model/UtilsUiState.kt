@@ -130,6 +130,8 @@ enum class ConfigSection(
 data class UtilsUiState(
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
+    val isTagging: Boolean = false,
+    val tagThreshold: String = "0.35",
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val configPath: String = "",

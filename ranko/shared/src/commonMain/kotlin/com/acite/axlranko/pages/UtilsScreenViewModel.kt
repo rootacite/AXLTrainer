@@ -3,6 +3,8 @@ package com.acite.axlranko.pages
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.DatasetRefreshHub
+import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
@@ -23,7 +25,10 @@ import javax.swing.JFileChooser
 @Inject
 @ViewModelKey
 @ContributesIntoMap(AppScope::class)
-class UtilsScreenViewModel : ViewModel() {
+class UtilsScreenViewModel(
+    private val ipc: TrainerIpcClient,
+    private val refreshHub: DatasetRefreshHub,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UtilsUiState())
     val uiState: StateFlow<UtilsUiState> = _uiState.asStateFlow()
@@ -111,6 +116,56 @@ class UtilsScreenViewModel : ViewModel() {
     fun browseDirectory(current: String, update: TrainingConfigForm.(String) -> TrainingConfigForm) {
         val selected = pickPath(current, directoriesOnly = true) ?: return
         updateForm { update(selected) }
+    }
+
+    fun updateTagThreshold(value: String) {
+        _uiState.update { it.copy(tagThreshold = value, errorMessage = null) }
+    }
+
+    fun runAutoTag() {
+        val state = _uiState.value
+        if (state.isTagging || state.isSaving) return
+        val directory = state.form.trainDataDir.trim()
+        if (directory.isEmpty()) {
+            _uiState.update { it.copy(errorMessage = "Set a train data directory before tagging") }
+            return
+        }
+        val threshold = state.tagThreshold.toFloatOrNull()
+        if (threshold == null || threshold !in 0f..1f) {
+            _uiState.update { it.copy(errorMessage = "Tag confidence must be a number between 0.0 and 1.0") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(isTagging = true, errorMessage = null, statusMessage = "Tagging dataset…")
+            }
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    ipc.datasetTag(directory, threshold)
+                }
+                val provider = result.provider.ifBlank { "ONNX" }
+                val summary =
+                    "Tagged ${result.processed}/${result.total} images in ${result.seconds}s ($provider)"
+                val suffix = if (result.failed > 0) " · ${result.failed} failed" else ""
+                _uiState.update {
+                    it.copy(
+                        isTagging = false,
+                        statusMessage = summary + suffix,
+                        errorMessage = null
+                    )
+                }
+                refreshHub.notifyDatasetChanged()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isTagging = false,
+                        statusMessage = null,
+                        errorMessage = e.message ?: "Tagging failed"
+                    )
+                }
+            }
+        }
     }
 
     fun saveConfig() {

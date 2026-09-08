@@ -23,6 +23,18 @@ from trainer.control import (
     reset_to_idle,
     status_payload,
 )
+
+_TAG_BLOCKED = frozenset(
+    {
+        "starting",
+        "encoding",
+        "training",
+        "sampling",
+        "pausing",
+        "resuming",
+        "stopping",
+    }
+)
 from trainer.loss_log import synthesize_avg_loss
 
 _IPC_STDOUT = sys.stdout
@@ -240,6 +252,80 @@ def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
     return {"samples": scan_samples(sample_dir)}
 
 
+def run_tagger_process(
+    directory: str,
+    threshold: float,
+    batch_size: int = 1,
+) -> dict[str, Any]:
+    """Spawn tagger/main.py with the same interpreter as api.py (the axl env)."""
+    script = _repo_root() / "tagger" / "main.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"missing tagger: {script}")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-u",
+            str(script),
+            str(directory),
+            "--threshold",
+            str(threshold),
+            "--batch-size",
+            str(int(batch_size)),
+            "--json",
+        ],
+        cwd=str(_repo_root()),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    raw_out = (proc.stdout or "").strip()
+    raw_err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        detail = raw_err or raw_out or f"tagger exited {proc.returncode}"
+        raise RuntimeError(detail[-2000:])
+    if not raw_out:
+        raise RuntimeError(raw_err[-2000:] if raw_err else "tagger produced no output")
+    try:
+        payload = json.loads(raw_out.splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"tagger returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or "error" in payload and "processed" not in payload:
+        raise RuntimeError(str(payload.get("error") if isinstance(payload, dict) else payload))
+    return payload
+
+
+def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
+    current = reconcile()
+    if current.get("status") in _TAG_BLOCKED and is_pid_alive(current.get("pid")):
+        raise ValueError("cannot tag while training is using the GPU")
+
+    cfg = _train_config_dict()
+    directory = params.get("directory") or cfg.get("train_data_dir")
+    if not directory:
+        raise ValueError("missing directory")
+    directory_path = Path(str(directory)).expanduser()
+    if not directory_path.is_dir():
+        raise ValueError(f"not a directory: {directory_path}")
+
+    try:
+        threshold = float(params["threshold"]) if params.get("threshold") is not None else 0.35
+    except (TypeError, ValueError) as exc:
+        raise ValueError("threshold must be a number") from exc
+    if not (0.0 <= threshold <= 1.0):
+        raise ValueError("threshold must be between 0.0 and 1.0")
+
+    batch_size = params.get("batch_size", 1)
+    try:
+        batch_size = int(batch_size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("batch_size must be an integer") from exc
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+
+    return run_tagger_process(str(directory_path), threshold, batch_size=batch_size)
+
+
 _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
@@ -250,6 +336,7 @@ _HANDLERS = {
     "train_resume": handle_train_resume,
     "train_stop": handle_train_stop,
     "train_reset": handle_train_reset,
+    "dataset_tag": handle_dataset_tag,
 }
 
 

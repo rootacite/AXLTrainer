@@ -31,6 +31,24 @@ data class SamplesResponse(
 )
 
 @Serializable
+data class DatasetTagError(
+    val file: String = "",
+    val error: String = "",
+)
+
+@Serializable
+data class DatasetTagResult(
+    val directory: String = "",
+    val threshold: Float = 0.35f,
+    val provider: String = "",
+    val total: Int = 0,
+    val processed: Int = 0,
+    val failed: Int = 0,
+    val seconds: Float = 0f,
+    val errors: List<DatasetTagError> = emptyList(),
+)
+
+@Serializable
 data class TrainSwap(
     val stage: String = "",
     val detail: String = "",

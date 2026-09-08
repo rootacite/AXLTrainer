@@ -20,16 +20,16 @@ The manifest pins the ROCm stack used during development, including:
 | Component | Version (in `environment.yml`) | Notes |
 | --- | --- | --- |
 | Python | 3.12.13 | |
-| PyTorch | `2.12.0+rocm7.2` | torch / torchvision / torchaudio |
-| diffusers | 0.38.0 | pipeline + schedulers |
-| transformers | 4.57.6 | CLIP text encoders |
-| peft | 0.19.1 | LoRA adapters |
-| accelerate | 1.13.0 | mixed precision + TensorBoard |
+| PyTorch | `2.14.0+rocm7.2` | torch / torchvision (`0.29.0+rocm7.2`); torchaudio in the pin is still `2.11.0+rocm7.2` |
+| diffusers | 0.40.0 | pipeline + schedulers |
+| transformers | 5.16.1 | CLIP text encoders |
+| peft | 0.20.0 | LoRA adapters |
+| accelerate | 1.14.0 | mixed precision + TensorBoard |
 | schedulefree | 1.4.1 | UNet optimizer (`AdamWScheduleFree`) |
-| safetensors | 0.8.0rc1 | checkpoint I/O |
-| tensorboard | 2.20.0 | metric logging (read by `api.py` / `ui.py`) |
-| streamlit + plotly | 1.58.0 / 6.8.0 | `ui.py` viewer |
-| onnxruntime | 1.27.0 | `tagger/` ONNX captioning |
+| safetensors | 0.8.0 | checkpoint I/O |
+| tensorboard | 2.21.0 | metric logging (read by `api.py` / `ui.py`) |
+| streamlit + plotly | 1.63.0 / 7.0.0 | `ui.py` viewer |
+| onnxruntime-migraphx | 1.27.1 | `tagger/` ONNX captioning (`import onnxruntime`) |
 
 ### NVIDIA / CUDA instead of ROCm
 

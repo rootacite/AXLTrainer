@@ -52,6 +52,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 ![Utils tab](screenshots/utils-tab.png)
 
 - A validated, structured editor for `trainer/config.toml` — no hand-editing TOML.
+- Environment section includes **Auto-tag dataset**: a confidence slider / threshold (default `0.35`) and a **Tag dataset** button. That calls IPC `dataset_tag`, which runs `tagger/main.py` on GPU (MIGraphX) against the current train data directory and overwrites sidecar `.txt` captions. When it finishes, Images and Statistics reload from disk.
 - Left: the ten config sections (Environment, Model Spec, Training, Network, Bucketing, Optimization, UNet Optimizer, Text Encoder, Infrastructure, Validation), with a warning badge on sections containing invalid fields.
 - Right: fields per section — path fields with a **Browse** button (file chooser), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio).
 - Header shows the config path, a summary line (`name · resolution · epochs · batch`), and an **Unsaved** indicator. **Save** validates the whole form (auto-jumping to the first invalid section), then patches the TOML in place, preserving comments and formatting. **Reload** is blocked while the form is dirty.

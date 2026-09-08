@@ -3,6 +3,7 @@ package com.acite.axlranko
 import com.acite.axlranko.data.IpcRequest
 import com.acite.axlranko.data.IpcResponse
 import com.acite.axlranko.model.DashboardResponse
+import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
@@ -115,6 +116,47 @@ class DashboardIpcTest {
         val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
         assertEquals("train_reset", decoded.method)
         assertEquals("true", decoded.params["delete_weights"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun datasetTagResultParses() {
+        val raw = """
+            {
+              "directory": "/tmp/alice",
+              "threshold": 0.35,
+              "provider": "MIGraphXExecutionProvider",
+              "total": 4,
+              "processed": 4,
+              "failed": 0,
+              "seconds": 1.25,
+              "errors": []
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(DatasetTagResult.serializer(), raw)
+        assertEquals("/tmp/alice", parsed.directory)
+        assertEquals(0.35f, parsed.threshold)
+        assertEquals("MIGraphXExecutionProvider", parsed.provider)
+        assertEquals(4, parsed.processed)
+        assertEquals(0, parsed.failed)
+        assertEquals(1.25f, parsed.seconds)
+    }
+
+    @Test
+    fun datasetTagRequestRoundTrip() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 11,
+                method = "dataset_tag",
+                params = buildJsonObject {
+                    put("directory", "/tmp/alice")
+                    put("threshold", 0.4)
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        assertEquals("dataset_tag", decoded.method)
+        assertEquals("/tmp/alice", decoded.params["directory"]?.jsonPrimitive?.content)
     }
 
     @Test

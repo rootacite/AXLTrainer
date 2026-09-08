@@ -220,6 +220,7 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | `train_start` | spawn `start_train.sh` |
 | `train_pause` / `train_resume` / `train_stop` | write `command.json` |
 | `train_reset` | `run_cleanup` + `reset_to_idle` |
+| `dataset_tag` | spawn `tagger/main.py` (GPU ONNX); overwrites sidecar `.txt` |
 
 `dashboard` synthesizes `Train/Avg_Loss` from `Train/Loss` via `synthesize_avg_loss` when the tag is missing (old runs). Do not rename TensorBoard tags without updating Ranko chart cards.
 
@@ -262,7 +263,7 @@ Python trainer `list_images` / Ranko / `agent.py` should stay consistent on exte
 
 Latent cache: `<train_data_dir>/.latents_cache/{sha1(abs_path::WxH)}.pt`. Changing bucket math invalidates keys; do not hand-edit cache files.
 
-`tagger/` is an interactive ONNX WD-tagger (`cd tagger && python main.py`). Model files are relative (`model.onnx`, `selected_tags.csv`). `migraphx_cache/` is generated — do not treat as source.
+`tagger/` is an ONNX WD-tagger (`python tagger/main.py DIR --threshold 0.35`). Model files sit next to the script (`model.onnx`, `selected_tags.csv`). `migraphx_cache/` is generated — do not treat as source. Ranko Utils → Environment **Tag dataset** uses IPC `dataset_tag`.
 
 `tools/` scripts are mostly **in-place / destructive**. Prefer `ranko/tools/agent.py --dry-run` for agent-driven edits. `ui.py` is a **deprecated** Streamlit viewer; do not extend it.
 
@@ -310,7 +311,8 @@ Single helper: `trainer/cleanup.py`. `clean.py` is the interactive CLI; `train_r
 
 | Suite | Command | Covers |
 | --- | --- | --- |
-| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss |
+| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag |
+| Tagger | `python -m unittest test_tagger` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors |
 | Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata |
 | Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
@@ -344,7 +346,7 @@ Do not hit a real GPU in unit tests. `test_train_control` may import `torch` for
 | `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
 | `MIOPEN_*` / `AMD_LOG_LEVEL` | `start_train.sh` | Quiet ROCm, pin cache |
 
-Python: 3.12, PyTorch `2.12.0+rocm7.2` (CUDA torch also works if you swap the wheel). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
+Python: 3.12, PyTorch `2.14.0+rocm7.2` (CUDA torch also works if you swap the wheel). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
 
 Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD ROCm**, not NVIDIA.
 

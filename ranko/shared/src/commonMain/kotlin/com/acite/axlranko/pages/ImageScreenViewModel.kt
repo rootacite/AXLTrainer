@@ -4,6 +4,7 @@ package com.acite.axlranko.pages
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.model.ImageItem
 import com.acite.axlranko.model.ImageScreenState
 import dev.zacsweers.metro.AppScope
@@ -14,7 +15,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -23,16 +23,25 @@ import java.io.File
 @Inject
 @ViewModelKey
 @ContributesIntoMap(AppScope::class)
-class ImageScreenViewModel : ViewModel() {
+class ImageScreenViewModel(
+    private val refreshHub: DatasetRefreshHub,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ImageScreenState())
     val uiState: StateFlow<ImageScreenState> = _uiState.asStateFlow()
 
     init {
         loadData()
+        viewModelScope.launch {
+            refreshHub.events.collect { reloadFromDisk(resetDrafts = true) }
+        }
     }
 
     fun reloadFromDiskSafely() {
+        reloadFromDisk(resetDrafts = false)
+    }
+
+    fun reloadFromDisk(resetDrafts: Boolean) {
         viewModelScope.launch {
             val currentDir = try {
                 ConfigImporter.getConfig().environment.trainDataDir
@@ -59,7 +68,7 @@ class ImageScreenViewModel : ViewModel() {
 
                         val existingItem = currentItemsMap[imgFile.absolutePath]
 
-                        if (existingItem != null) {
+                        if (existingItem != null && !resetDrafts) {
                             existingItem.copy(tags = diskTags)
                         } else {
                             ImageItem(

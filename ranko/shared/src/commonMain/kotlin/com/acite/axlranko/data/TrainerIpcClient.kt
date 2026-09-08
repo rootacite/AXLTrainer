@@ -1,6 +1,7 @@
 package com.acite.axlranko.data
 
 import com.acite.axlranko.model.DashboardResponse
+import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
@@ -114,6 +115,22 @@ class TrainerIpcClient {
             buildJsonObject {
                 put("delete_weights", deleteWeights)
                 name?.let { put("name", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun datasetTag(
+        directory: String,
+        threshold: Float,
+        batchSize: Int? = null,
+    ): DatasetTagResult {
+        val result = call(
+            "dataset_tag",
+            buildJsonObject {
+                put("directory", directory)
+                put("threshold", threshold.toDouble())
+                batchSize?.let { put("batch_size", it) }
             },
         )
         return json.decodeFromJsonElement(result)

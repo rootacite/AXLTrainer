@@ -53,7 +53,7 @@ def warm_latent_cache(
         return True
 
     vae.eval()
-    vae.to(device=device, dtype=dtype)
+    vae.to(device=device)
 
     total = len(dataset)
     workers = prefetch_workers or _DEFAULT_PREFETCH_WORKERS

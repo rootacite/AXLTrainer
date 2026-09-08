@@ -169,6 +169,35 @@ Params:
 
 Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper.
 
+### `dataset_tag`
+
+Runs `tagger/main.py` with the same interpreter as `api.py` (the `axl` env). Writes WD-tagger captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `directory` | string \| null | No | Dataset folder. Defaults to `[environment].train_data_dir`. |
+| `threshold` | number | No | Minimum tag confidence, `0.0`–`1.0`. Default `0.35`. |
+| `batch_size` | integer | No | ONNX batch size. Default `1` (MIGraphX compiles once per shape; use `8` only after you accept a one-time recompile). |
+
+Result:
+
+```json
+{
+  "directory": "/abs/path",
+  "threshold": 0.35,
+  "provider": "MIGraphXExecutionProvider",
+  "total": 100,
+  "processed": 100,
+  "failed": 0,
+  "seconds": 12.3,
+  "errors": [{ "file": "0001.png", "error": "…" }]
+}
+```
+
+Fails if the folder is missing, `threshold` is out of range, or a training process is in a GPU-using status (`starting` / `encoding` / `training` / `sampling` / `pausing` / `resuming` / `stopping`). Pause (`paused`) is allowed because weights are offloaded. The tagger is a child process so GPU memory is released when it exits.
+
 ## Example
 
 ```bash
