@@ -2,6 +2,7 @@ package com.acite.axlranko
 
 import com.acite.axlranko.data.IpcRequest
 import com.acite.axlranko.data.IpcResponse
+import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.SamplesResponse
@@ -79,6 +80,8 @@ class DashboardIpcTest {
               "status": "pausing",
               "paused_from": "training",
               "output_name": "rein",
+              "run_id": "rein_20260911_120000",
+              "resume": { "path": "/out/rein_final/rein.safetensors", "filename": "rein.safetensors", "step": 300, "epoch": 7, "loaded": 96, "skipped": 2 },
               "encoding": { "current": 10, "total": 20, "done": true },
               "training": { "step": 12, "total_steps": 100, "epoch": 1, "epochs": 16, "loss": 0.25, "avg_loss": 0.3 },
               "sampling": { "active": false, "repeat": 0, "repeats": 3, "denoise_step": 0, "denoise_steps": 55, "global_step": 0 },
@@ -101,6 +104,91 @@ class DashboardIpcTest {
         assertTrue(parsed.alive)
         assertEquals("/tmp/train.log", parsed.logPath)
         assertEquals(true, parsed.encoding.done)
+        assertEquals("rein_20260911_120000", parsed.runId)
+        assertEquals(300, parsed.resume?.step)
+        assertEquals(96, parsed.resume?.loaded)
+        assertEquals("rein.safetensors", parsed.resume?.filename)
+    }
+
+    @Test
+    fun trainStatusWithoutRunOrResumeDefaultsToNull() {
+        val parsed = json.decodeFromString(TrainStatus.serializer(), """{"status": "idle"}""")
+        assertEquals(null, parsed.runId)
+        assertEquals(null, parsed.resume)
+    }
+
+    @Test
+    fun dashboardResponseParsesRunId() {
+        val raw = """
+            {
+              "config": { "output_name": "rein" },
+              "run_id": "rein_20260911_120000",
+              "latest_stats": {},
+              "metrics": {}
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(DashboardResponse.serializer(), raw)
+        assertEquals("rein_20260911_120000", parsed.runId)
+    }
+
+    @Test
+    fun samplesResponseParsesRunId() {
+        val parsed = json.decodeFromString(
+            SamplesResponse.serializer(),
+            """{"run_id": "rein_20260911_120000", "samples": {}}""",
+        )
+        assertEquals("rein_20260911_120000", parsed.runId)
+    }
+
+    @Test
+    fun checkpointsResponseParses() {
+        val raw = """
+            {
+              "checkpoints": [
+                {
+                  "path": "/out/rein_20260911_120000/rein_final/rein.safetensors",
+                  "run_id": "rein_20260911_120000",
+                  "dir": "rein_final",
+                  "filename": "rein.safetensors",
+                  "step": 300,
+                  "epoch": 7,
+                  "final": true,
+                  "size_bytes": 12345678,
+                  "modified": 1757500000.0,
+                  "network_dim": 48,
+                  "network_alpha": 24,
+                  "output_name": "rein"
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(CheckpointsResponse.serializer(), raw)
+        assertEquals(1, parsed.checkpoints.size)
+        val item = parsed.checkpoints.first()
+        assertEquals("rein_final", item.dir)
+        assertEquals(300, item.step)
+        assertEquals(true, item.final)
+        assertEquals(12345678L, item.sizeBytes)
+        assertEquals(48, item.networkDim)
+        assertEquals(24, item.networkAlpha)
+    }
+
+    @Test
+    fun listCheckpointsRequestRoundTrip() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 21,
+                method = "list_checkpoints",
+                params = buildJsonObject {
+                    put("name", "rein")
+                    put("output_dir", "/out")
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        assertEquals("list_checkpoints", decoded.method)
+        assertEquals("/out", decoded.params["output_dir"]?.jsonPrimitive?.content)
     }
 
     @Test

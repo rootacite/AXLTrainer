@@ -12,6 +12,7 @@ import com.acite.axlranko.data.TomlDocumentPatcher
 import com.acite.axlranko.data.TrainingConfig
 import com.acite.axlranko.data.UnetOptimizerConfig
 import com.acite.axlranko.data.ValidationConfig
+import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.TrainingConfigForm
 import com.akuleshov7.ktoml.Toml
@@ -74,6 +75,20 @@ class TomlFloatEncodingTest {
         assertEquals("0.0", form.toTomlSections()["optimization"]!!["noise_offset"])
         assertEquals("true", form.toTomlSections()["optimization"]!!["flush_memory_every_step"])
         assertEquals("6.0", form.toTomlSections()["validation"]!!["guidance_scale"])
+    }
+
+    @Test
+    fun formRoundTripsResumeLoraPath() {
+        val base = TrainingConfigForm.from(wholeValuedFloatConfig())
+        assertEquals("", base.resumeLoraPath)
+        assertEquals("\"\"", base.toTomlSections()["training"]!!["resume_lora_path"])
+
+        val resumed = base.copy(resumeLoraPath = "/out/rein_final/rein.safetensors")
+        assertEquals(
+            "\"/out/rein_final/rein.safetensors\"",
+            resumed.toTomlSections()["training"]!!["resume_lora_path"],
+        )
+        assertTrue("resume_lora_path" in ConfigSection.Training.fieldKeys)
     }
 }
 

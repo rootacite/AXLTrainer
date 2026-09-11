@@ -164,6 +164,7 @@ fun DashboardScreen(
                             pendingCommand = uiState.pendingCommand,
                             outputDir = uiState.config.string("output_dir"),
                             loggingDir = uiState.config.string("logging_dir"),
+                            resumeFrom = uiState.config.string("resume_lora_path"),
                             onStart = viewModel::startTraining,
                             onPause = viewModel::pauseTraining,
                             onResume = viewModel::resumeTraining,
@@ -173,7 +174,7 @@ fun DashboardScreen(
                     }
 
                     item {
-                        PathRow(uiState.config)
+                        PathRow(uiState.config, uiState.runId)
                     }
 
                     item {
@@ -368,13 +369,14 @@ private fun DashboardHeader(
 }
 
 @Composable
-private fun PathRow(config: JsonObject) {
+private fun PathRow(config: JsonObject, runId: String?) {
     val loggingDir = config.string("logging_dir")
-    val outputName = config.string("output_name")
     val outputDir = config.string("output_dir")
+    val run = runId?.takeIf { it.isNotBlank() }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        PathChip("Logs", "$loggingDir/$outputName")
-        PathChip("Output", outputDir)
+        PathChip("Run", run ?: "—")
+        PathChip("Logs", run?.let { "$loggingDir/$it" } ?: "—")
+        PathChip("Output", run?.let { "$outputDir/$it" } ?: "—")
     }
 }
 

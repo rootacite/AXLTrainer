@@ -40,6 +40,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.TrainingConfigForm
@@ -171,6 +172,10 @@ public fun UtilsScreen(
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter)
             )
+        }
+
+        if (uiState.checkpointPickerOpen) {
+            CheckpointPickerDialog(uiState = uiState, viewModel = viewModel)
         }
     }
 }
@@ -656,6 +661,186 @@ private fun TrainingFields(
             modifier = Modifier.weight(1f)
         )
     }
+    ResumeCheckpointCard(form, errors, viewModel)
+}
+
+@Composable
+private fun ResumeCheckpointCard(
+    form: TrainingConfigForm,
+    errors: Map<String, String>,
+    viewModel: UtilsScreenViewModel
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Resume from LoRA checkpoint",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Loads LoRA weights into the UNet and both text encoders before training. " +
+                    "Weights only: this run still counts steps from 0 and writes into its own " +
+                    "timestamped run directory, so earlier runs are never overwritten. " +
+                    "The checkpoint's network_dim / network_alpha must match this config.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            ConfigPathField(
+                label = "Checkpoint file or its directory",
+                value = form.resumeLoraPath,
+                error = errors["resume_lora_path"],
+                supporting = "Leave empty for a fresh run. Accepts any kohya LoRA .safetensors.",
+                onValueChange = { viewModel.updateForm { copy(resumeLoraPath = it) } },
+                onBrowse = { viewModel.browseCheckpointPath() }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(onClick = { viewModel.openCheckpointPicker() }) {
+                    Icon(
+                        Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Pick from run checkpoints")
+                }
+                OutlinedButton(
+                    onClick = { viewModel.clearCheckpoint() },
+                    enabled = form.resumeLoraPath.isNotBlank()
+                ) {
+                    Text("Clear")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CheckpointPickerDialog(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel
+) {
+    val checkpoints = uiState.checkpoints
+    AlertDialog(
+        onDismissRequest = { viewModel.closeCheckpointPicker() },
+        title = { Text("Run checkpoints") },
+        text = {
+            Column(
+                modifier = Modifier.width(620.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Checkpoints written by earlier runs of \"${uiState.form.outputName}\"." +
+                        " Selecting one only fills the path field — save the config to apply it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                when {
+                    uiState.isLoadingCheckpoints -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("Scanning run directories…")
+                    }
+                    uiState.checkpointError != null -> Text(
+                        text = uiState.checkpointError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    checkpoints.isEmpty() -> Text(
+                        text = "No checkpoints found yet. Finish a run first, or type/browse a path.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    else -> LazyColumn(
+                        modifier = Modifier.heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(checkpoints, key = { it.path }) { item ->
+                            CheckpointRow(item) { viewModel.selectCheckpoint(item) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { viewModel.loadCheckpoints() }) { Text("Refresh") }
+        },
+        dismissButton = {
+            TextButton(onClick = { viewModel.closeCheckpointPicker() }) { Text("Close") }
+        }
+    )
+}
+
+@Composable
+private fun CheckpointRow(
+    checkpoint: CheckpointItem,
+    onSelect: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onSelect() },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = checkpoint.dir.ifBlank { checkpoint.filename },
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = checkpointSubtitle(checkpoint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = checkpoint.path,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun checkpointSubtitle(checkpoint: CheckpointItem): String {
+    val parts = mutableListOf<String>()
+    parts += checkpoint.runId.ifBlank { "run" }
+    checkpoint.step?.let { parts += "step $it" }
+    val rank = checkpoint.networkDim
+    val alpha = checkpoint.networkAlpha
+    if (rank != null && alpha != null) parts += "r$rank/α$alpha"
+    parts += formatBytes(checkpoint.sizeBytes)
+    if (checkpoint.final) parts += "final"
+    return parts.joinToString(" · ")
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0) return "0 B"
+    val units = listOf("B", "KB", "MB", "GB")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return if (index == 0) "$bytes B" else "${(value * 10).toInt() / 10.0} ${units[index]}"
 }
 
 @Composable

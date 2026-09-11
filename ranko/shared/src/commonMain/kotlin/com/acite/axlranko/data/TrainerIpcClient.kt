@@ -1,5 +1,6 @@
 package com.acite.axlranko.data
 
+import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.SamplesResponse
@@ -72,6 +73,7 @@ class TrainerIpcClient {
         name: String? = null,
         startStep: Int? = null,
         endStep: Int? = null,
+        runId: String? = null,
     ): DashboardResponse {
         val result = call(
             "dashboard",
@@ -79,6 +81,21 @@ class TrainerIpcClient {
                 name?.let { put("name", it) }
                 startStep?.let { put("start_step", it) }
                 endStep?.let { put("end_step", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun listCheckpoints(
+        name: String? = null,
+        outputDir: String? = null,
+    ): CheckpointsResponse {
+        val result = call(
+            "list_checkpoints",
+            buildJsonObject {
+                name?.let { put("name", it) }
+                outputDir?.let { put("output_dir", it) }
             },
         )
         return json.decodeFromJsonElement(result)
@@ -136,11 +153,12 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
-    suspend fun listSamples(name: String? = null): SamplesResponse {
+    suspend fun listSamples(name: String? = null, runId: String? = null): SamplesResponse {
         val result = call(
             "list_samples",
             buildJsonObject {
                 name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
             },
         )
         return json.decodeFromJsonElement(result)
