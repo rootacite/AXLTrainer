@@ -5,8 +5,8 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/tmp/alice"
-output_name = "alice"
+train_data_dir = "/home/acite/LLM/Character/Haruko/"
+output_name = "haruko"
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"
@@ -36,8 +36,8 @@ save_every_n_epochs = 1
 save_every_n_steps = 10
 
 [network]
-network_dim = 50
-network_alpha = 24
+network_dim = 36
+network_alpha = 18
 network_dropout = 0.2
 clip_skip = 1
 max_token_length = 225
