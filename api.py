@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
+from trainer.checkpoints import discover_checkpoints, resolve_resume_path
 from trainer.config import TrainConfig, _load_toml_config
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
@@ -23,6 +24,7 @@ from trainer.control import (
     reset_to_idle,
     status_payload,
 )
+from trainer.runs import find_latest_run
 
 _TAG_BLOCKED = frozenset(
     {
@@ -99,19 +101,41 @@ def _get_tensorboard_metrics(
     return metrics
 
 
+def _run_name(params: dict[str, Any], cfg: dict[str, Any]) -> str:
+    return str(params.get("name") or cfg.get("output_name") or "default")
+
+
+def _resolve_run_id(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[str]:
+    """Explicit param → the run recorded in state.json → the newest run directory."""
+    explicit = params.get("run_id")
+    if explicit:
+        return str(explicit)
+    name = _run_name(params, cfg)
+    current = reconcile()
+    state_run = current.get("run_id")
+    if state_run and str(current.get("output_name") or name) == name:
+        return str(state_run)
+    logging_dir = cfg.get("logging_dir")
+    if not logging_dir:
+        return None
+    return find_latest_run(str(logging_dir), name)
+
+
 def handle_ping(_params: dict[str, Any]) -> dict[str, str]:
     return {"status": "ok"}
 
 
 def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
     cfg = _train_config_dict()
-    output_name = params.get("name") or cfg.get("output_name", "default")
     logging_dir = cfg.get("logging_dir", "./logs")
-    target_log_dir = os.path.join(str(logging_dir), str(output_name))
+    run_id = _resolve_run_id(params, cfg)
 
     start_step = params.get("start_step")
     end_step = params.get("end_step")
-    metrics = _get_tensorboard_metrics(target_log_dir, start_step, end_step)
+    metrics: dict = {}
+    if run_id:
+        target_log_dir = os.path.join(str(logging_dir), str(run_id))
+        metrics = _get_tensorboard_metrics(target_log_dir, start_step, end_step)
     if not metrics.get("Train/Avg_Loss") and metrics.get("Train/Loss"):
         metrics["Train/Avg_Loss"] = synthesize_avg_loss(metrics["Train/Loss"])
 
@@ -121,7 +145,12 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
             latest_stats[tag] = data[-1]["value"]
             latest_stats["current_step"] = data[-1]["step"]
 
-    return {"config": cfg, "latest_stats": latest_stats, "metrics": metrics}
+    return {
+        "config": cfg,
+        "run_id": run_id,
+        "latest_stats": latest_stats,
+        "metrics": metrics,
+    }
 
 
 _SAMPLE_NAME = re.compile(r"_(\d+)_(\d+)\.png$")
@@ -170,7 +199,15 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
     if not script.is_file():
         raise FileNotFoundError(f"missing launcher: {script}")
 
-    require_trainable(resolve_family(TrainConfig()))
+    cfg_obj = TrainConfig()
+    require_trainable(resolve_family(cfg_obj))
+
+    resume_raw = str(getattr(cfg_obj, "resume_lora_path", "") or "").strip()
+    if resume_raw:
+        try:
+            resolve_resume_path(resume_raw)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     cfg = _train_config_dict()
     output_name = str(cfg.get("output_name") or "default")
@@ -232,14 +269,33 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
     if current.get("status") in _RESET_BLOCKED and is_pid_alive(current.get("pid")):
         raise ValueError("cannot reset while training is running")
     cfg = _train_config_dict()
-    cleanup = run_cleanup(
-        cfg.get("output_dir", "./output"),
-        cfg.get("logging_dir", "./logs"),
-        params.get("name") or cfg.get("output_name", "default"),
-        delete_weights=bool(params.get("delete_weights")),
-    )
+    run_id = _resolve_run_id(params, cfg)
+    delete_weights = bool(params.get("delete_weights"))
+    if run_id:
+        cleanup: dict[str, Any] = run_cleanup(
+            cfg.get("output_dir", "./output"),
+            cfg.get("logging_dir", "./logs"),
+            _run_name(params, cfg),
+            run_id=run_id,
+            delete_weights=delete_weights,
+        )
+    else:
+        # No run directory to clean: legacy flat artifacts are only reachable
+        # through `python clean.py --legacy-flat`.
+        cleanup = {
+            "run_id": None,
+            "run_dir": None,
+            "samples_dir": None,
+            "log_dir": None,
+            "weight_dirs": [],
+            "delete_weights": delete_weights,
+            "removed": [],
+            "skipped": [],
+            "errors": [],
+        }
     reset_to_idle()
     payload = status_payload()
+    payload["run_id"] = run_id
     payload["cleanup"] = cleanup
     return payload
 
@@ -247,9 +303,19 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
 def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
     cfg = _train_config_dict()
     output_dir = cfg.get("output_dir", "./output")
-    output_name = params.get("name") or cfg.get("output_name", "default")
-    sample_dir = Path(str(output_dir)) / f"{output_name}_samples"
-    return {"samples": scan_samples(sample_dir)}
+    run_id = _resolve_run_id(params, cfg)
+    if not run_id:
+        return {"run_id": None, "samples": {}}
+    sample_dir = Path(str(output_dir)) / str(run_id) / f"{_run_name(params, cfg)}_samples"
+    return {"run_id": run_id, "samples": scan_samples(sample_dir)}
+
+
+def handle_list_checkpoints(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    output_dir = params.get("output_dir") or cfg.get("output_dir", "./output")
+    return {
+        "checkpoints": discover_checkpoints(str(output_dir), _run_name(params, cfg)),
+    }
 
 
 def run_tagger_process(
@@ -330,6 +396,7 @@ _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
     "list_samples": handle_list_samples,
+    "list_checkpoints": handle_list_checkpoints,
     "train_status": handle_train_status,
     "train_start": handle_train_start,
     "train_pause": handle_train_pause,

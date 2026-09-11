@@ -16,13 +16,13 @@ The dashboard starts it the same way — `api.py`'s `train_start` spawns `bash s
 
 ## What a run does, phase by phase
 
-1. **Startup (`starting`)** — loads `config.toml`, acquires the run lock (`train.lock`, fails fast if another run holds it), seeds RNG, resolves `[model_spec].base_model_version` to a model family, and builds that family's pipeline (LoRA adapters via PEFT, dataset + DataLoader, optimizers). Unknown or inconsistent spec strings fail here; `sd3.5-large` is a catalogued family but training is not implemented yet.
+1. **Startup (`starting`)** — loads `config.toml`, creates this run's timestamped output + log directory, acquires the run lock (`train.lock`, fails fast if another run holds it), seeds RNG, resolves `[model_spec].base_model_version` to a model family, and builds that family's pipeline (LoRA adapters via PEFT, dataset + DataLoader, optimizers). When `[training].resume_lora_path` is set, the LoRA weights are loaded here (before `accelerator.prepare`). Unknown or inconsistent spec strings fail here; `sd3.5-large` is a catalogued family but training is not implemented yet.
 2. **Encoding (`encoding`)** — if `cache_latents` and `cache_latents_to_disk` are on, all images are pre-encoded to latents by a 3-stage pipeline (CPU decode/resize → batched VAE encode per bucket → atomic `.pt` writes into `<train_data_dir>/.latents_cache/`). Already-cached images are skipped. Only the VAE is on the GPU (UNet + text encoders stay on CPU); encode batches are small and the VAE uses tiling. The VAE is moved back to CPU afterwards and GPU memory is flushed. Progress is published as `encoding.current/total`.
 3. **Training (`training`)** — the epoch loop: batches are grouped by aspect-ratio bucket, prompts are encoded (chunked for long prompts, `clip_skip` applied), noise + timesteps are added, and the UNet predicts the noise target (with optional `noise_offset`). Per-bucket losses are weighted by bucket size. After gradient accumulation, UNet grads are clipped to `max_grad_norm`, TE grads to `te_max_grad_norm`, and both optimizers step. Every `save_every_n_steps` steps the run saves a checkpoint and generates samples.
-4. **Sampling (`sampling`)** — validation images are generated with the current LoRA weights (scheduler swapped to Euler-A with hand-built sigmas, interruptible denoising). After prompt encode the text encoders are offloaded; after each denoise pass the UNet is offloaded before VAE decode (slicing + tiling). Returning to the training loop restores UNet + both TEs to the train device. One checkpoint's samples are saved as `<output_name>_<step:06d>_<repeat>.png` in `{output_dir}/{output_name}_samples/`.
+4. **Sampling (`sampling`)** — validation images are generated with the current LoRA weights (scheduler swapped to Euler-A with hand-built sigmas, interruptible denoising). After prompt encode the text encoders are offloaded; after each denoise pass the UNet is offloaded before VAE decode (slicing + tiling). Returning to the training loop restores UNet + both TEs to the train device. One checkpoint's samples are saved as `<output_name>_<step:06d>_<repeat>.png` in `{output_dir}/{run_id}/{output_name}_samples/`.
 5. **Finish (`finished`)** — the final LoRA is saved (unless stopped early), and the lock is released. On exception the status becomes `error` and the traceback is recorded.
 
-TensorBoard metrics are written to `{logging_dir}/{output_name}/`:
+TensorBoard metrics are written to `{logging_dir}/{run_id}/`:
 
 | Tag | Meaning |
 | --- | --- |
@@ -57,40 +57,72 @@ In all cases the run ends in `finished` (with a `detail` of `stopped_during_*`),
 
 ## Checkpoint and artifact layout
 
-All paths derive from `output_name` (sanitized):
+Every run creates its own directory, named `{output_name}_{YYYYMMDD_HHMMSS}` (a `_2` / `_3` suffix is appended if that name is taken). Inside it the artifact names are unchanged:
+
+```
+run_id = {output_name}_{YYYYMMDD_HHMMSS}
+```
 
 | Artifact | Path |
 | --- | --- |
-| Per-step LoRA | `{output_dir}/{name}_s{step:06d}/{name}.safetensors` |
-| Final LoRA | `{output_dir}/{name}_final/{name}.safetensors` |
-| Sample images | `{output_dir}/{name}_samples/{name}_{step:06d}_{repeat}.png` |
-| TensorBoard logs | `{logging_dir}/{name}/` |
+| Per-step LoRA | `{output_dir}/{run_id}/{name}_s{step:06d}/{name}.safetensors` |
+| Per-epoch LoRA (unused today) | `{output_dir}/{run_id}/{name}_e{epoch:03d}_s{step:06d}/{name}.safetensors` |
+| Final LoRA | `{output_dir}/{run_id}/{name}_final/{name}.safetensors` |
+| Sample images | `{output_dir}/{run_id}/{name}_samples/{name}_{step:06d}_{repeat}.png` |
+| TensorBoard logs | `{logging_dir}/{run_id}/` |
 | Latent cache | `{train_data_dir}/.latents_cache/<sha1>.pt` |
 | Runtime state / commands / lock / log | `$AXL_RUNTIME_DIR` → `$XDG_RUNTIME_DIR/axltrainer` → `/tmp/axltrainer-$UID` (`state.json`, `command.json`, `train.lock`, `train.log`) |
 
+`state.json` carries the current `run_id`, and the dashboard / `list_samples` / `train_reset` resolve a run as: explicit `run_id` argument → `state.json`'s `run_id` → the newest `{name}_<timestamp>` directory under `logging_dir`. Runs created before this layout (flat `{output_dir}/{name}_s000010/`, `{logging_dir}/{name}/`) are **not** resolved anymore; their files stay on disk and can be cleaned with `python clean.py --legacy-flat`.
+
 **Checkpoint format:** PEFT state dicts are remapped to kohya keys (`lora_unet_*`, `lora_te1_*`, `lora_te2_*`), converted to bf16, and saved with alpha scalars plus `modelspec.*` and `ss_*` metadata — directly loadable in ComfyUI or with kohya sd-scripts.
+
+## Resuming from a checkpoint
+
+Set `[training].resume_lora_path` to a LoRA `.safetensors` (or to a directory containing exactly one) and start a run. The weights are loaded into the wrapped UNet and both text encoders right after the LoRA adapters are created, before the accelerator prepares the models.
+
+What carries over and what does not:
+
+| Carried over | Restarts from zero |
+| --- | --- |
+| UNet / TE1 / TE2 LoRA weights (`lora_down`, `lora_up`) | Optimizer state (Schedule-Free AdamW on the UNet, AdamW on the TEs) |
+| — | LR schedules (`lr_warmup_steps`, TE cosine, `unet_warmup_steps`) |
+| — | `global_step` / `epoch` counters, sample filenames, TensorBoard step axis |
+| — | Dataset order (caption shuffle is reseeded per epoch) |
+
+Because the counters restart, the run writes into its own `{output_dir}/{run_id}/` directory — resuming from a run that ended at step 300 does not overwrite that run's `{name}_s000300/`.
+
+Rules and failure modes:
+
+- `network_dim` / `network_alpha` must match the checkpoint's rank. A rank mismatch is rejected at startup with a message naming `network_dim`; a differing alpha only logs a warning (the checkpoint's alpha scalars are ignored — this run uses `network_alpha`).
+- Tensors in the checkpoint that this LoRA does not use (e.g. modules outside `to_q/to_k/to_v/to_out.0` and `q_proj/k_proj/v_proj/out_proj`) are counted and listed in the run log; if **no** tensor maps, the run refuses to start.
+- `train_start` (and the trainer itself) validates the path before doing any GPU work, so a missing or ambiguous path surfaces as an immediate error in the dashboard.
+- Any kohya-format LoRA works as long as its rank matches, including ones trained by other tools; `ss_steps` / `ss_epoch` metadata are only reported for information.
 
 ## Watching progress
 
 - **Dashboard** (recommended): live metric cards, charts, progress bars, and sample gallery.
-- **Streamlit viewer**: `streamlit run ui.py` — read-only, same data sources.
 - **TensorBoard**: `tensorboard --logdir <logging_dir>`.
 - **Runtime state**: `cat $XDG_RUNTIME_DIR/axltrainer/state.json` (or the equivalent resolved path).
 - **Logs**: `tail -f <runtime_dir>/train.log` (trainer stdout/stderr; driver log noise is filtered by `start_train.sh`).
 
 ## Cleanup
 
-A run leaves samples, TensorBoard logs, and checkpoints behind. Two ways to clean up (same targets, same underlying helper `trainer/cleanup.py`):
+A run leaves samples, TensorBoard logs, and checkpoints behind. Two ways to clean up (same targets, same underlying helper `trainer/cleanup.py`), both scoped to **one run**:
 
 ```bash
-python clean.py        # interactive; asks before deleting checkpoints (safe by default)
+python clean.py                    # interactive: lists run directories, asks which to clean
+python clean.py --run rein_20260911_120000
+python clean.py --legacy-flat      # old flat layout ({output_dir}/{name}_*, {logging_dir}/{name})
 ```
 
 Or the dashboard's **Reset** button, which additionally clears the `finished`/`error` state so a new run can start. Both delete:
 
-1. `{output_dir}/{name}_samples/`
-2. `{logging_dir}/{name}/`
-3. Optionally (with confirmation / `delete_weights`) all `{output_dir}/{name}_*` checkpoint dirs.
+1. `{output_dir}/{run_id}/{name}_samples/`
+2. `{logging_dir}/{run_id}/`
+3. Optionally (with confirmation / `delete_weights`) all `{output_dir}/{run_id}/{name}_*` checkpoint dirs.
+
+The run directory itself is removed once it is empty. If no run directory can be resolved, Reset only clears the state — it does not touch legacy flat artifacts.
 
 The latent cache is **not** deleted — it's reusable across runs.
 
@@ -101,3 +133,5 @@ The latent cache is **not** deleted — it's reusable across runs.
 - **Stop during sampling** keeps the already-saved step checkpoint; the partially-denoised image is discarded.
 - **`sample_seed = 0`** gives each repeat a fresh random seed (printed to the log); set a fixed seed for reproducibility.
 - **Schedule-Free optimizer** requires `train()`/`eval()` mode toggling around sampling; the code does this automatically.
+- **One metric window per run.** Each run writes its own TensorBoard event directory, so the dashboard shows the current/latest run only; a resumed run starts a new curve at step 1 rather than continuing the old one.
+- **`ui.py` is deprecated** and still reads the old flat paths, so it will not show runs written in the new layout.

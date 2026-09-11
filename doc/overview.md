@@ -27,15 +27,15 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 │  └──────┬───────┘  stdout   │         │  state.json / command.json / │
 │         │                   │         │  train.lock  (runtime dir)   │
 │         │                   │         └──────────────┬───────────────┘
-│         └── reads ── TensorBoard logs (logging_dir)  │
-│         └── reads ── sample PNGs (output_dir/*_samples)              │
+│         └── reads ── TensorBoard logs (logging_dir/{run_id})         │
+│         └── reads ── sample PNGs (output_dir/{run_id}/*_samples)     │
 └─────────────────────────────┘
 ```
 
 - **Ranko** starts `api.py` as a subprocess and talks to it with newline-delimited JSON over stdin/stdout. All control goes through `api.py`.
 - **Training** is spawned by `api.py` via `bash start_train.sh` in a new session (`setsid`). It is **detached**: closing Ranko does not stop training.
 - The running trainer publishes its state to a **runtime directory** (`$AXL_RUNTIME_DIR` → `$XDG_RUNTIME_DIR/axltrainer` → `/tmp/axltrainer-$UID`) as `state.json` (status + progress), `command.json` (one-shot pause/resume/stop commands), and `train.lock` (single-run lock). `api.py` reads `state.json` and writes `command.json` on the trainer's behalf.
-- Training metrics go to **TensorBoard** under `logging_dir/{output_name}/`, and sample images land in `output_dir/{output_name}_samples/`. `api.py` reads both to serve `dashboard` / `list_samples`.
+- Training metrics go to **TensorBoard** under `logging_dir/{run_id}/`, and sample images land in `output_dir/{run_id}/{output_name}_samples/`, where `run_id` is the `{output_name}_{YYYYMMDD_HHMMSS}` directory created for that run. `api.py` reads both to serve `dashboard` / `list_samples`, resolving the run id from the request, `state.json`, or the newest run directory.
 
 ## Repository layout
 
@@ -127,11 +127,11 @@ Pause/resume adds `pausing` and `paused` (GPU weights offloaded to CPU) and `res
 
 | Consumer | Reads | Writes |
 | --- | --- | --- |
-| `trainer/main.py` | `config.toml`, dataset images/captions, `.latents_cache/` | `state.json`, `train.lock`, TensorBoard logs, checkpoints, samples |
-| `api.py` | TensorBoard logs, `{output_dir}/{name}_samples/`, `state.json` | `command.json` (on pause/resume/stop), spawned trainer process |
+| `trainer/main.py` | `config.toml`, dataset images/captions, `.latents_cache/`, optional resume LoRA | `state.json`, `train.lock`, TensorBoard logs, checkpoints, samples |
+| `api.py` | TensorBoard logs, `{output_dir}/{run_id}/{name}_samples/`, `state.json` | `command.json` (on pause/resume/stop), spawned trainer process |
 | Ranko (dashboard) | `api.py` responses | `api.py` requests |
-| `ui.py` (Streamlit) | TensorBoard logs, sample PNGs | — (read-only) |
-| `clean.py` | output/log dirs | deletes run artifacts |
+| `ui.py` (Streamlit, deprecated) | TensorBoard logs, sample PNGs (old flat layout only) | — (read-only) |
+| `clean.py` | one run's output/log dirs | deletes run artifacts |
 
 ## Design notes worth knowing
 

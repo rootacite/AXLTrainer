@@ -47,9 +47,11 @@ Ranko (JVM)  --NDJSON stdin/stdout-->  api.py  --reads-->  TensorBoard + sample 
                          python -u trainer/main.py
                                       |
                                       +--> runtime dir: state.json, command.json, train.lock, train.log
-                                      +--> logging_dir/{output_name}/   TensorBoard
-                                      +--> output_dir/{output_name}_*   checkpoints + samples
+                                      +--> logging_dir/{run_id}/          TensorBoard
+                                      +--> output_dir/{run_id}/{name}_*   checkpoints + samples
 ```
+
+`run_id` = `{output_name}_{YYYYMMDD_HHMMSS}`, created by `trainer/main.py` through `trainer/runs.py` (`create_run_dirs`). Every run gets its own pair of directories, so a later run (whose step counter restarts at 0) never overwrites an earlier one. `api.py` resolves the run for `dashboard` / `list_samples` / `train_reset` as: explicit `run_id` param → `state.json`'s `run_id` → newest `{name}_<timestamp>` under `logging_dir`.
 
 Hard rules:
 
@@ -103,6 +105,8 @@ Early-stop semantics (keep these):
 
 `train_start` fails if a live PID exists, including a process that marked `finished` but has not exited. `train_reset` fails while status is in `_RESET_BLOCKED` **and** PID is alive.
 
+`state.json` also carries `run_id` (the run directory created for this run, written by `control.begin_run`) and `resume` (`null`, or `{path, filename, step, epoch, loaded, skipped}` for a run seeded from a checkpoint via `control.set_resume`).
+
 ---
 
 ## 4. Configuration contract
@@ -123,6 +127,8 @@ Adding a hyperparameter (all four, or the GUI will drift):
 
 If only the trainer needs it, you can skip (3) but document that the Utils editor will not see it until the Kotlin model is updated. ktoml parse of the full file will fail if a **required** Kotlin field is missing — new optional keys are safer as Kotlin defaults.
 
+`run_dir` is the one field that is **not** a user-facing key: `main.py` writes the run directory it created into `cfg.run_dir` at startup, and `artifact_root(cfg)` roots every artifact path at it. Leave it empty in `config.toml`.
+
 Shipped `config.toml` and `TrainConfig` fallbacks contain **author machine paths**. Never “fix” them to placeholders as part of an unrelated PR unless asked; consumers already know they must edit `[environment]`.
 
 ---
@@ -133,11 +139,11 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 
 | File | Responsibility |
 | --- | --- |
-| `trainer/main.py` | Lifecycle: lock, seed, `build_train_objects`, optional `warm_latent_cache`, epoch loop, final checkpoint, `end_run`. |
+| `trainer/main.py` | Lifecycle: run dir, lock, seed, `build_train_objects`, optional `warm_latent_cache`, epoch loop, final checkpoint, `end_run`. |
 | `trainer/setup.py` | `TrainArtifacts`: `resolve_family`, pipeline, PEFT LoRA, dataloader, dual optimizers, Accelerator. |
 | `trainer/config.py` | `TrainConfig` + TOML flatten; `__post_init__` validates `[model_spec]` against the family catalog. |
 | `trainer/family.py` | Catalog (`sdxl_base_v1-0`, `sd3.5-large`), `resolve_family`, `require_trainable`. |
-| `trainer/family_sdxl.py` | SDXL load/unpack/LoRA/encode/loss/save/sample; PEFT → kohya remap. |
+| `trainer/family_sdxl.py` | SDXL load/unpack/LoRA/encode/loss/save/sample; PEFT → kohya remap **and** the reverse map used by resume (`load_lora`). |
 | `trainer/family_sd35.py` | Stub; every method raises `UnsupportedFamilyError`. |
 | `trainer/dataset.py` | `LoraImageDataset`: images + sidecar captions, buckets, latent `.pt` lookup. |
 | `trainer/cache.py` | Pipelined CPU decode → batched VAE encode → atomic `.pt` in `<data>/.latents_cache`. GPU holds only the VAE; UNet/TEs are offloaded first. |
@@ -147,7 +153,9 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/control.py` | State machine, atomic JSON, lock, command poll. |
 | `trainer/device_swap.py` | GPU↔CPU offload; `at_safe_point`. |
 | `trainer/loss_log.py` | Kohya-style `Train/Avg_Loss` window (`LossRecorder`). |
-| `trainer/cleanup.py` | Discover/delete samples, TB logs, optional `{output_name}_*` weight dirs. Shared by `api.py` `train_reset` and `clean.py`. |
+| `trainer/cleanup.py` | Discover/delete one run's samples, TB logs, optional weight dirs. Shared by `api.py` `train_reset` and `clean.py`. |
+| `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs`. torch-free. |
+| `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
 | `trainer/env.py` | MIGraphX cache dir, `flush_memory`. |
 | `trainer/utils.py` | Image list, caption shuffle, bucket math, `build_time_ids`. |
 | `text_processing.py` | **Repo root**, not under `trainer/`. Long-prompt chunking + dual CLIP encode. `family_sdxl.py` adds `os.getcwd()` to `sys.path` to import it. |
@@ -188,17 +196,21 @@ When adding a trainer module, support **both** import styles, or you will pass C
 - tensors **bf16**
 - metadata `modelspec.*` + `ss_*`
 
-Layout (`lora_checkpoint_file`):
+Layout (`lora_checkpoint_file`, rooted at `artifact_root(cfg)` = `cfg.run_dir` or `cfg.output_dir`):
 
 | Kind | Directory |
 | --- | --- |
-| step | `{output_dir}/{output_name}_s{step:06d}/{safe_name}.safetensors` |
-| epoch | `{output_dir}/{output_name}_e{epoch:03d}_s{step:06d}/…` |
-| final | `{output_dir}/{output_name}_final/…` |
+| step | `{output_dir}/{run_id}/{output_name}_s{step:06d}/{safe_name}.safetensors` |
+| epoch | `{output_dir}/{run_id}/{output_name}_e{epoch:03d}_s{step:06d}/…` |
+| final | `{output_dir}/{run_id}/{output_name}_final/…` |
 
-Samples: `{output_dir}/{output_name}_samples/` filenames matching `_(\d+)_(\d+)\.png$` → `(step, repeat_idx)`. `api.scan_samples` uses that regex; unmatched files go under step `"-1"`.
+Samples: `{output_dir}/{run_id}/{output_name}_samples/` filenames matching `_(\d+)_(\d+)\.png$` → `(step, repeat_idx)`. `api.scan_samples` uses that regex; unmatched files go under step `"-1"`.
 
-Cleanup treats every `{output_dir}` child dir whose name **starts with** `output_name` except `{name}_samples` as a weight dir. Do not invent output folder names that collide with that prefix rule.
+Cleanup treats every child dir of the run dir whose name **starts with** `output_name` except `{name}_samples` as a weight dir, and removes the run dir once it is empty. Flat artifacts from before the run-directory layout are no longer resolved by the API/Ranko — `clean.py --legacy-flat` still cleans them.
+
+### Resume (weights only)
+
+`[training].resume_lora_path` (file, or a directory holding exactly one `.safetensors`) is loaded in `build_train_objects` **after** `family.apply_lora` and **before** `accelerator.prepare`, via `ModelFamily.load_lora`. `SdxlFamily.load_lora` builds the kohya→PEFT key map with `build_kohya_to_peft_map`, which derives it from `adapter_parameter_names(module)` (i.e. `named_parameters()`, **not** `get_peft_model_state_dict` — that one strips the `.default` adapter name and produces keys `load_state_dict` cannot use). Rank/alpha must match `network_dim`/`network_alpha`; unmatched tensors are counted and logged, zero matches raise. Step/epoch counters restart at 0 — there is no optimizer/scheduler state. `[train_start]` validates the path up front; `main.py` publishes `artifacts.resume` into `state.json` via `control.set_resume`.
 
 ### ROCm (non-negotiable)
 
@@ -215,12 +227,13 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | Method | Side effect |
 | --- | --- |
 | `ping` | none |
-| `dashboard` | read TB scalars + flattened config |
-| `list_samples` | scan sample PNGs |
+| `dashboard` | read TB scalars + flattened config (run-scoped: `run_id`) |
+| `list_samples` | scan the run's sample PNGs |
+| `list_checkpoints` | list LoRA files under `output_dir/{name}_<timestamp>/` (read-only) |
 | `train_status` | `control.status_payload()` + dead-PID reconcile |
-| `train_start` | spawn `start_train.sh` |
+| `train_start` | spawn `start_train.sh` (rejects a bad `resume_lora_path` up front) |
 | `train_pause` / `train_resume` / `train_stop` | write `command.json` |
-| `train_reset` | `run_cleanup` + `reset_to_idle` |
+| `train_reset` | `run_cleanup` (resolved run) + `reset_to_idle` |
 | `dataset_tag` | spawn `tagger/main.py` (GPU ONNX); overwrites sidecar `.txt` |
 
 `dashboard` synthesizes `Train/Avg_Loss` from `Train/Loss` via `synthesize_avg_loss` when the tag is missing (old runs). Do not rename TensorBoard tags without updating Ranko chart cards.
@@ -304,7 +317,11 @@ Only `trainer/device_swap.py` + call sites of `at_safe_point`. Iterate `SwapCont
 
 ### Change cleanup targets
 
-Single helper: `trainer/cleanup.py`. `clean.py` is the interactive CLI; `train_reset` is the API. Keep them identical.
+Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `run_id=None` meaning the legacy flat layout. `clean.py` is the interactive CLI (`--run`, `--legacy-flat`); `train_reset` is the API and does nothing when no run resolves. Keep them identical.
+
+### Change resume / checkpoint loading
+
+`ModelFamily.load_lora` (implemented in `family_sdxl.py`) + `trainer/checkpoints.py`. Keep the kohya key map derived from the save-side `_convert_peft_to_kohya_bf16`, cover with `test_family.py` (map, round trip, rank mismatch, zero matches). Weights only — do not promise optimizer-state resume without implementing it.
 
 ---
 
@@ -312,10 +329,11 @@ Single helper: `trainer/cleanup.py`. `clean.py` is the interactive CLI; `train_r
 
 | Suite | Command | Covers |
 | --- | --- | --- |
-| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag |
+| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag, run-scoped dashboard/samples/checkpoints/reset |
 | Tagger | `python -m unittest test_tagger` | CLI parse, dummy-session sidecar writes |
-| Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors |
-| Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper |
+| Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
+| Runs | `python -m unittest test_runs` | run id format/collision, run dir creation, latest-run lookup, run listing |
+| Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
 | Sample offload | `python -m unittest test_sampling_offload` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
 | GPU smoke | `python -m unittest test_vram_gpu` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
 | Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |

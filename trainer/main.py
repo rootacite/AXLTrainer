@@ -7,10 +7,11 @@ from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
 from config import TrainConfig
-from models import lora_checkpoint_file
+from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
 from loop import train_one_epoch
+from runs import create_run_dirs
 from setup import build_train_objects
 
 try:
@@ -44,7 +45,12 @@ def main() -> None:
     os.makedirs(cfg.output_dir, exist_ok=True)
     os.makedirs(cfg.logging_dir, exist_ok=True)
 
-    control.begin_run(os.getpid(), cfg.output_name)
+    # Every run gets its own timestamped output/log directory so artifacts from an
+    # earlier run (including step names restarting at 0) are never overwritten.
+    run_id = create_run_dirs(cfg.output_dir, cfg.logging_dir, cfg.output_name)
+    cfg.run_dir = str(Path(cfg.output_dir) / run_id)
+
+    control.begin_run(os.getpid(), cfg.output_name, run_id=run_id)
     set_seed(cfg.seed)
 
     artifacts = None
@@ -54,6 +60,7 @@ def main() -> None:
 
     try:
         artifacts = build_train_objects(cfg)
+        control.set_resume(artifacts.resume)
         accelerator = artifacts.accelerator
         device = artifacts.device
         weight_dtype = artifacts.weight_dtype
@@ -98,7 +105,7 @@ def main() -> None:
 
         if accelerator.is_main_process:
             accelerator.init_trackers(
-                project_name=cfg.output_name,
+                project_name=run_id,
                 config=vars(cfg),
             )
 
@@ -164,7 +171,7 @@ def main() -> None:
                 device=device,
                 dtype=weight_dtype,
                 global_step=global_step,
-                output_dir_base=Path(cfg.output_dir),
+                output_dir_base=artifact_root(cfg),
                 swap_ctx=swap_ctx,
             )
         finally:

@@ -1,0 +1,145 @@
+"""LoRA checkpoint discovery and metadata for resume + the Ranko picker."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any, Optional, Union
+
+from safetensors import safe_open
+
+try:
+    from runs import run_id_re, safe_name
+except ImportError:
+    from trainer.runs import run_id_re, safe_name
+
+_STEP_DIR_RE = re.compile(r"_s(\d{6})$")
+_EPOCH_DIR_RE = re.compile(r"_e(\d{3})_s(\d{6})$")
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_resume_path(raw: Union[str, Path]) -> Path:
+    """Accept a `.safetensors` file or a checkpoint directory holding exactly one."""
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("resume_lora_path is empty")
+    path = Path(text).expanduser()
+    if path.is_dir():
+        found = sorted(
+            item
+            for item in path.iterdir()
+            if item.is_file() and item.suffix.lower() == ".safetensors"
+        )
+        if not found:
+            raise ValueError(f"no .safetensors file in resume directory: {path}")
+        if len(found) > 1:
+            names = ", ".join(item.name for item in found[:4])
+            raise ValueError(
+                f"resume directory holds {len(found)} .safetensors files ({names}); "
+                f"point resume_lora_path at the file: {path}"
+            )
+        return found[0]
+    if not path.is_file():
+        raise ValueError(f"resume checkpoint not found: {path}")
+    if path.suffix.lower() != ".safetensors":
+        raise ValueError(f"resume checkpoint must be a .safetensors file: {path}")
+    return path
+
+
+def read_lora_metadata(path: Union[str, Path]) -> dict[str, str]:
+    target = Path(path)
+    try:
+        with safe_open(str(target), framework="pt") as handle:
+            metadata = handle.metadata() or {}
+    except Exception as exc:  # noqa: BLE001 - surfaced as a config error
+        raise ValueError(f"failed to read safetensors metadata from {target}: {exc}") from exc
+    return {str(key): str(value) for key, value in metadata.items()}
+
+
+def parse_checkpoint_dir(dir_name: str, output_name: str) -> dict[str, Any]:
+    """Infer step/epoch/final from an artifact directory name."""
+    names = [name for name in (str(output_name or ""), safe_name(output_name)) if name]
+    rest = dir_name
+    for name in names:
+        if dir_name.startswith(name):
+            rest = dir_name[len(name):]
+            break
+    if rest == "_final":
+        return {"final": True, "step": None, "epoch": None}
+    match = _EPOCH_DIR_RE.search(rest)
+    if match:
+        return {"final": False, "step": int(match.group(2)), "epoch": int(match.group(1))}
+    match = _STEP_DIR_RE.search(rest)
+    if match:
+        return {"final": False, "step": int(match.group(1)), "epoch": None}
+    return {"final": False, "step": None, "epoch": None}
+
+
+def discover_checkpoints(
+    output_dir: Union[str, Path],
+    output_name: str,
+) -> list[dict[str, Any]]:
+    """LoRA files inside this output_name's run directories, newest step first."""
+    root = Path(output_dir)
+    if not root.is_dir():
+        return []
+    pattern = run_id_re(output_name)
+    samples_name = f"{output_name}_samples"
+
+    items: list[dict[str, Any]] = []
+    for run_dir in sorted(root.iterdir()):
+        if not run_dir.is_dir() or not pattern.match(run_dir.name):
+            continue
+        for child in sorted(run_dir.iterdir()):
+            if not child.is_dir() or child.name == samples_name:
+                continue
+            files = sorted(child.glob("*.safetensors"))
+            if not files:
+                continue
+            parsed = parse_checkpoint_dir(child.name, output_name)
+            target = files[0]
+            try:
+                metadata = read_lora_metadata(target)
+            except ValueError:
+                metadata = {}
+            if parsed["step"] is None:
+                parsed["step"] = _int_or_none(metadata.get("ss_steps"))
+            if parsed["epoch"] is None:
+                parsed["epoch"] = _int_or_none(metadata.get("ss_epoch"))
+            try:
+                stat = target.stat()
+            except OSError:
+                continue
+            items.append(
+                {
+                    "path": str(target.resolve()),
+                    "run_id": run_dir.name,
+                    "dir": child.name,
+                    "filename": target.name,
+                    "step": parsed["step"],
+                    "epoch": parsed["epoch"],
+                    "final": bool(parsed["final"]),
+                    "size_bytes": int(stat.st_size),
+                    "modified": float(stat.st_mtime),
+                    "network_dim": _int_or_none(metadata.get("ss_network_dim")),
+                    "network_alpha": _int_or_none(metadata.get("ss_network_alpha")),
+                    "output_name": metadata.get("ss_output_name") or output_name,
+                }
+            )
+
+    items.sort(
+        key=lambda item: (
+            item["step"] if item["step"] is not None else -1,
+            item["modified"],
+        ),
+        reverse=True,
+    )
+    return items

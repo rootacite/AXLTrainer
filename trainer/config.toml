@@ -5,8 +5,8 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/tmp/alice"
-output_name = "alice"
+train_data_dir = "/home/acite/LLM/Character/Haruko"
+output_name = "haruko"
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"
@@ -34,10 +34,14 @@ max_grad_norm = 1.0
 epoch = 56
 save_every_n_epochs = 1
 save_every_n_steps = 10
+# Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
+# training starts. Weights only: step/epoch counting still starts at 0, and this
+# run writes into its own timestamped run directory.
+resume_lora_path = ""
 
 [network]
-network_dim = 50
-network_alpha = 24
+network_dim = 36
+network_alpha = 18
 network_dropout = 0.2
 clip_skip = 1
 max_token_length = 225
@@ -79,7 +83,7 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "(chika_character:1.1), masterpiece, best quality, newest, solo, 1girl, long hair, pink hair, looking at viewer, large breasts, shy, blushing, school uniform, white blouse, navy blue blazer, plaid skirt, white thighhighs, indoors, classroom, desk, sitting on desk, legs slightly parted, blouse partially unbuttoned, cleavage, breasts partially exposed, soft lighting, opened eyes, empty classroom, after school, sunlight from window, one hand on desk, other hand holding skirt hem, skirt hiked up, panties pulled down hanging from one thigh, crotch covered by skirt, no genitals visible, blouse slipping off shoulder, nipples faintly outlined, embarrassed expression, biting lip, fidgeting"
+sample_prompts = "(haruko_character:1.1), masterpiece, best quality, newest, solo, 1girl, looking at viewer, large breasts, shy, blushing, school uniform, white blouse, navy blue blazer, plaid skirt, white thighhighs, indoors, classroom, desk, sitting on desk, legs slightly parted, blouse partially unbuttoned, cleavage, breasts partially exposed, soft lighting, opened eyes, empty classroom, after school, sunlight from window, one hand on desk, other hand holding skirt hem, skirt hiked up, panties pulled down hanging from one thigh, crotch covered by skirt, no genitals visible, blouse slipping off shoulder, nipples faintly outlined, embarrassed expression, biting lip, fidgeting"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1280
 sample_height = 720

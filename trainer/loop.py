@@ -13,6 +13,7 @@ try:
     import control
     from device_swap import SwapContext, at_safe_point
     from family import FamilyModules, ModelFamily
+    from models import artifact_root
     from setup import TrainArtifacts
 except ImportError:
     from trainer.config import TrainConfig
@@ -21,6 +22,7 @@ except ImportError:
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
     from trainer.family import FamilyModules, ModelFamily
+    from trainer.models import artifact_root
     from trainer.setup import TrainArtifacts
 
 _loss_recorder = LossRecorder()
@@ -155,7 +157,7 @@ def _maybe_log_and_sample(
                     device=artifacts.device,
                     dtype=artifacts.weight_dtype,
                     global_step=global_step,
-                    output_dir_base=Path(cfg.output_dir),
+                    output_dir_base=artifact_root(cfg),
                     swap_ctx=swap_ctx,
                 )
             finally:
