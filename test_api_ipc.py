@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import torch
+
 import api
 from trainer.loss_log import LossRecorder, synthesize_avg_loss
 
@@ -75,7 +77,9 @@ class AvgLossTest(unittest.TestCase):
         orig = api._get_tensorboard_metrics
         api._get_tensorboard_metrics = lambda *a, **k: dict(fake)
         try:
-            result = api.handle_dashboard({"name": "__avg_loss_synth__"})
+            result = api.handle_dashboard(
+                {"name": "__avg_loss_synth__", "run_id": "__avg_loss_synth___20260101_000000"}
+            )
             series = result["metrics"]["Train/Avg_Loss"]
             self.assertEqual(series[0]["value"], 2.0)
             self.assertEqual(series[1]["value"], 3.0)
@@ -91,10 +95,167 @@ class AvgLossTest(unittest.TestCase):
         orig = api._get_tensorboard_metrics
         api._get_tensorboard_metrics = lambda *a, **k: dict(fake)
         try:
-            result = api.handle_dashboard({"name": "__avg_loss_keep__"})
+            result = api.handle_dashboard(
+                {"name": "__avg_loss_keep__", "run_id": "__avg_loss_keep___20260101_000000"}
+            )
             self.assertEqual(result["metrics"]["Train/Avg_Loss"][0]["value"], 1.5)
         finally:
             api._get_tensorboard_metrics = orig
+
+
+class RunScopedIpcTest(unittest.TestCase):
+    """dashboard / list_samples / list_checkpoints / train_reset are run-scoped."""
+
+    RUN_ID = "rein_20260911_120000"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+
+        self.out = Path(self.tmp.name) / "out"
+        self.logs = Path(self.tmp.name) / "logs"
+        self.cfg = {
+            "output_dir": str(self.out),
+            "logging_dir": str(self.logs),
+            "output_name": "rein",
+        }
+        self._orig_config = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+
+    def tearDown(self):
+        from trainer import control
+
+        api._train_config_dict = self._orig_config
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _make_run(self, run_id: str = RUN_ID) -> Path:
+        run_dir = self.out / run_id
+        (run_dir / "rein_samples").mkdir(parents=True)
+        (self.logs / run_id).mkdir(parents=True)
+        return run_dir
+
+    def test_dashboard_without_run_is_empty(self):
+        result = api.dispatch("dashboard", {})
+        self.assertIsNone(result["run_id"])
+        self.assertEqual(result["metrics"], {})
+        self.assertEqual(result["latest_stats"], {})
+
+    def test_dashboard_prefers_state_run_id(self):
+        from trainer import control
+
+        control.write_state(
+            {"status": "training", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        result = api.dispatch("dashboard", {})
+        self.assertEqual(result["run_id"], self.RUN_ID)
+
+    def test_dashboard_falls_back_to_latest_run_dir(self):
+        self._make_run("rein_20260101_000000")
+        self._make_run("rein_20260911_120000")
+        (self.logs / "rein").mkdir(parents=True)  # legacy flat dir is ignored
+        result = api.dispatch("dashboard", {})
+        self.assertEqual(result["run_id"], "rein_20260911_120000")
+
+    def test_dashboard_explicit_run_id_wins(self):
+        self._make_run("rein_20260101_000000")
+        result = api.dispatch("dashboard", {"run_id": self.RUN_ID})
+        self.assertEqual(result["run_id"], self.RUN_ID)
+
+    def test_list_samples_reads_run_dir(self):
+        run_dir = self._make_run()
+        (run_dir / "rein_samples" / "rein_000100_0.png").write_bytes(b"x")
+        (run_dir / "rein_samples" / "rein_000200_0.png").write_bytes(b"x")
+        result = api.dispatch("list_samples", {})
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(list(result["samples"].keys()), ["200", "100"])
+
+    def test_list_samples_without_run_is_empty(self):
+        result = api.dispatch("list_samples", {})
+        self.assertIsNone(result["run_id"])
+        self.assertEqual(result["samples"], {})
+
+    def test_list_checkpoints_reports_metadata(self):
+        from safetensors.torch import save_file
+
+        run_dir = self._make_run()
+        weight_dir = run_dir / "rein_s000100"
+        weight_dir.mkdir(parents=True)
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(weight_dir / "rein.safetensors"),
+            metadata={"ss_steps": "100", "ss_network_dim": "4", "ss_network_alpha": "2"},
+        )
+        final_dir = run_dir / "rein_final"
+        final_dir.mkdir(parents=True)
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(final_dir / "rein.safetensors"),
+            metadata={"ss_steps": "300", "ss_network_dim": "4", "ss_network_alpha": "2"},
+        )
+        legacy = self.out / "rein_s000999"
+        legacy.mkdir(parents=True)
+        save_file({"lora_unet_x.lora_down.weight": torch.zeros(4, 2)}, str(legacy / "rein.safetensors"))
+
+        result = api.dispatch("list_checkpoints", {})
+        checkpoints = result["checkpoints"]
+        self.assertEqual([item["step"] for item in checkpoints], [300, 100])
+        self.assertEqual(checkpoints[0]["final"], True)
+        self.assertEqual(checkpoints[0]["run_id"], self.RUN_ID)
+        self.assertEqual(checkpoints[0]["network_dim"], 4)
+        self.assertEqual(checkpoints[0]["output_name"], "rein")
+        self.assertTrue(Path(checkpoints[0]["path"]).is_file())
+
+    def test_list_checkpoints_empty_output_dir(self):
+        self.assertEqual(api.dispatch("list_checkpoints", {})["checkpoints"], [])
+
+    def test_reset_cleans_run_dir(self):
+        run_dir = self._make_run()
+        (run_dir / "rein_samples" / "a.png").write_bytes(b"x")
+        (self.logs / self.RUN_ID / "events.out.tfevents.1").write_bytes(b"e")
+        weights = run_dir / "rein_s000100"
+        weights.mkdir(parents=True)
+        (weights / "rein.safetensors").write_bytes(b"w")
+
+        result = api.dispatch("train_reset", {})
+        self.assertEqual(result["status"], "idle")
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertFalse((run_dir / "rein_samples").exists())
+        self.assertFalse((self.logs / self.RUN_ID).exists())
+        self.assertTrue(weights.exists())
+        self.assertEqual(result["cleanup"]["weight_dirs"], [str(weights)])
+
+    def test_reset_can_delete_weights_and_run_dir(self):
+        run_dir = self._make_run()
+        weights = run_dir / "rein_final"
+        weights.mkdir(parents=True)
+        (weights / "rein.safetensors").write_bytes(b"w")
+
+        result = api.dispatch("train_reset", {"delete_weights": True})
+        self.assertFalse(weights.exists())
+        self.assertFalse(run_dir.exists())
+        self.assertEqual(result["cleanup"]["run_id"], self.RUN_ID)
+
+    def test_reset_without_run_leaves_legacy_alone(self):
+        legacy_samples = self.out / "rein_samples"
+        legacy_samples.mkdir(parents=True)
+        (legacy_samples / "a.png").write_bytes(b"x")
+        (self.logs / "rein").mkdir(parents=True)
+
+        result = api.dispatch("train_reset", {})
+        self.assertIsNone(result["run_id"])
+        self.assertTrue(legacy_samples.exists())
+        self.assertTrue((self.logs / "rein").exists())
 
 
 class DatasetTagIpcTest(unittest.TestCase):

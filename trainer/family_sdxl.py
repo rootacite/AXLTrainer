@@ -11,9 +11,10 @@ import torch
 import torch.nn.functional as F
 from diffusers import DDIMScheduler, StableDiffusionXLPipeline
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 try:
+    from checkpoints import read_lora_metadata, resolve_resume_path
     from family import FamilyModules, FamilySpec
     from models import (
         build_kohya_metadata,
@@ -22,6 +23,7 @@ try:
     )
     from utils import build_time_ids
 except ImportError:
+    from trainer.checkpoints import read_lora_metadata, resolve_resume_path
     from trainer.family import FamilyModules, FamilySpec
     from trainer.models import (
         build_kohya_metadata,
@@ -176,6 +178,71 @@ def _convert_peft_to_kohya_bf16(
     return converted
 
 
+def build_kohya_to_peft_map(
+    adapter_state_dict: dict[str, torch.Tensor],
+    prefix: str,
+    alpha: float,
+) -> dict[str, str]:
+    """Invert the save-time remap: kohya key → PEFT parameter name.
+
+    Derived from the model's own adapter tensors so it stays exactly in sync with
+    `_convert_peft_to_kohya_bf16` (no fragile un-flattening of the kohya path).
+    """
+    mapping: dict[str, str] = {}
+    for peft_key, tensor in adapter_state_dict.items():
+        for kohya_key in _convert_peft_to_kohya_bf16({peft_key: tensor}, prefix, alpha):
+            if kohya_key.endswith(".alpha"):
+                continue
+            mapping[kohya_key] = peft_key
+    return mapping
+
+
+def adapter_parameter_names(module: Any) -> dict[str, torch.Tensor]:
+    """Adapter tensors keyed by the exact name `load_state_dict` expects.
+
+    `get_peft_model_state_dict` strips the adapter name (`.default`) from its keys,
+    so the resume path must read `named_parameters()` instead.
+    """
+    return {
+        name: param
+        for name, param in module.named_parameters()
+        if ".lora_A." in name or ".lora_B." in name
+    }
+
+
+def _parse_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_into_module(
+    module: Any,
+    updates: dict[str, torch.Tensor],
+    *,
+    source: Path,
+) -> int:
+    shapes = {name: tuple(param.shape) for name, param in module.named_parameters()}
+    checked: dict[str, torch.Tensor] = {}
+    for peft_key, tensor in updates.items():
+        expected = shapes.get(peft_key)
+        if expected is None:
+            continue
+        if tuple(tensor.shape) != expected:
+            raise ValueError(
+                f"checkpoint tensor {peft_key} has shape {tuple(tensor.shape)} but this LoRA "
+                f"expects {expected}; set network_dim/network_alpha to match the checkpoint "
+                f"({source})"
+            )
+        checked[peft_key] = tensor
+    if checked:
+        module.load_state_dict(checked, strict=False)
+    return len(checked)
+
+
 def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeline:
     path_obj = Path(path)
     loader_func = (
@@ -240,6 +307,94 @@ class SdxlFamily:
         modules.denoise = denoise
         modules.text_encoders = tes
         return modules
+
+    def load_lora(self, cfg: Any, modules: FamilyModules) -> dict[str, Any]:
+        """Load a kohya LoRA checkpoint into the wrapped UNet / text encoders.
+
+        Weights only: the optimizer state, LR schedule, and step/epoch counters
+        all start from zero for the new run.
+        """
+        raw = str(getattr(cfg, "resume_lora_path", "") or "").strip()
+        if not raw:
+            return {}
+
+        source = resolve_resume_path(raw)
+        metadata = read_lora_metadata(source)
+        state = load_file(str(source))
+
+        targets: list[tuple[str, Any]] = [("unet", modules.denoise)]
+        targets += [(prefix, te) for prefix, te in zip(("te1", "te2"), modules.text_encoders)]
+
+        key_maps = {
+            prefix: build_kohya_to_peft_map(
+                adapter_parameter_names(module), prefix, cfg.network_alpha
+            )
+            for prefix, module in targets
+        }
+
+        buckets: dict[str, dict[str, torch.Tensor]] = {prefix: {} for prefix, _ in targets}
+        skipped: list[str] = []
+        for kohya_key, tensor in state.items():
+            if kohya_key.endswith(".alpha"):
+                continue
+            for prefix, _module in targets:
+                peft_key = key_maps[prefix].get(kohya_key)
+                if peft_key is None:
+                    continue
+                buckets[prefix][peft_key] = tensor
+                break
+            else:
+                skipped.append(kohya_key)
+
+        if not any(buckets.values()):
+            raise ValueError(
+                f"no LoRA tensors in {source} match this SDXL LoRA layout "
+                f"(network_dim={cfg.network_dim}); is it a LoRA for a different base model?"
+            )
+
+        loaded = 0
+        for prefix, module in targets:
+            loaded += _load_into_module(module, buckets[prefix], source=source)
+        if loaded == 0:
+            raise ValueError(
+                f"checkpoint {source} has LoRA tensors but none map onto this model's "
+                f"adapter parameters; refusing to continue with unloaded weights"
+            )
+
+        if skipped:
+            preview = ", ".join(sorted(skipped)[:5])
+            logger.warning(
+                "Resume: skipped %d checkpoint tensors that this LoRA does not use (e.g. %s)",
+                len(skipped),
+                preview,
+            )
+
+        checkpoint_alpha = _parse_int(metadata.get("ss_network_alpha"))
+        if checkpoint_alpha is not None and checkpoint_alpha != int(cfg.network_alpha):
+            logger.warning(
+                "Resume: checkpoint alpha=%s differs from network_alpha=%s; the checkpoint's "
+                "alpha scalars are ignored, this run uses network_alpha.",
+                checkpoint_alpha,
+                cfg.network_alpha,
+            )
+
+        step = _parse_int(metadata.get("ss_steps"))
+        epoch = _parse_int(metadata.get("ss_epoch"))
+        # stderr: start_train.sh keeps stdout free for the IPC-less launcher filter.
+        print(
+            f"Resume: loaded {loaded} tensors from {source} "
+            f"(skipped={len(skipped)}, checkpoint step={step} epoch={epoch}). "
+            f"This run restarts step/epoch counting at 0.",
+            file=sys.stderr,
+        )
+        return {
+            "path": str(source),
+            "filename": source.name,
+            "step": step,
+            "epoch": epoch,
+            "loaded": loaded,
+            "skipped": len(skipped),
+        }
 
     def build_noise_scheduler(self, pipe: Any, cfg: Any) -> Any:
         scheduler_kwargs: dict[str, Any] = {}

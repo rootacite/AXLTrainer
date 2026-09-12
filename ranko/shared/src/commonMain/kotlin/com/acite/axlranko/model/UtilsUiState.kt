@@ -42,7 +42,8 @@ enum class ConfigSection(
             "max_grad_norm",
             "epoch",
             "save_every_n_epochs",
-            "save_every_n_steps"
+            "save_every_n_steps",
+            "resume_lora_path"
         )
     ),
     Network(
@@ -140,7 +141,11 @@ data class UtilsUiState(
     val form: TrainingConfigForm = TrainingConfigForm(),
     val savedForm: TrainingConfigForm = TrainingConfigForm(),
     val fieldErrors: Map<String, String> = emptyMap(),
-    val leftWeight: Float = 0.22f
+    val leftWeight: Float = 0.22f,
+    val checkpointPickerOpen: Boolean = false,
+    val isLoadingCheckpoints: Boolean = false,
+    val checkpoints: List<CheckpointItem> = emptyList(),
+    val checkpointError: String? = null
 ) {
     val isDirty: Boolean get() = form != savedForm
 
@@ -152,6 +157,7 @@ data class UtilsUiState(
             val bs = form.trainBatchSize.toIntOrNull()
             val ga = form.gradientAccumulationSteps.toIntOrNull()
             val batch = if (bs != null && ga != null) "${bs}×$ga" else "?"
-            return "$name · ${reso}px · $ep epochs · batch $batch"
+            val resume = if (form.resumeLoraPath.isBlank()) "" else " · resume"
+            return "$name · ${reso}px · $ep epochs · batch $batch$resume"
         }
 }

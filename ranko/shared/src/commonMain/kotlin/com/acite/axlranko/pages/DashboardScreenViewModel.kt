@@ -178,6 +178,7 @@ class DashboardScreenViewModel(
                     errorMessage = null,
                     connected = true,
                     config = dashboard.config,
+                    runId = dashboard.runId,
                     latestStats = dashboard.latestStats,
                     metrics = dashboard.metrics,
                     samples = samples.samples,

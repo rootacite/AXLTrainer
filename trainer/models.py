@@ -144,6 +144,12 @@ def safe_output_name(name: str) -> str:
     return cleaned or "lora"
 
 
+def artifact_root(cfg: TrainConfig) -> Path:
+    """Run-scoped artifact directory (falls back to output_dir outside a run)."""
+    run_dir = getattr(cfg, "run_dir", "")
+    return Path(run_dir) if run_dir else Path(cfg.output_dir)
+
+
 def lora_checkpoint_file(
     cfg: TrainConfig,
     global_step: int,
@@ -152,9 +158,9 @@ def lora_checkpoint_file(
 ) -> Path:
     name = safe_output_name(cfg.output_name)
     if final:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_final"
+        out_dir = artifact_root(cfg) / f"{cfg.output_name}_final"
     elif epoch is not None:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_e{epoch:03d}_s{global_step:06d}"
+        out_dir = artifact_root(cfg) / f"{cfg.output_name}_e{epoch:03d}_s{global_step:06d}"
     else:
-        out_dir = Path(cfg.output_dir) / f"{cfg.output_name}_s{global_step:06d}"
+        out_dir = artifact_root(cfg) / f"{cfg.output_name}_s{global_step:06d}"
     return out_dir / f"{name}.safetensors"

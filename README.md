@@ -87,8 +87,8 @@ Four pieces cooperate. Ranko never talks to the GPU; it only spawns `api.py` and
 │  │ (IPC helper) │  stdin/   │         │  trainer/control.py          │
 │  └──────┬───────┘  stdout   │         │  state.json / command.json / │
 │         │                   │         │  train.lock  (runtime dir)   │
-│         └── reads ── TensorBoard logs (logging_dir)                  │
-│         └── reads ── sample PNGs (output_dir/*_samples)              │
+│         └── reads ── TensorBoard logs (logging_dir/{run_id})         │
+│         └── reads ── sample PNGs (output_dir/{run_id}/*_samples)     │
 └─────────────────────────────┘
 ```
 

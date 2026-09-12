@@ -61,6 +61,7 @@ fun TrainControlCard(
     pendingCommand: String? = null,
     outputDir: String,
     loggingDir: String,
+    resumeFrom: String? = null,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -136,6 +137,33 @@ fun TrainControlCard(
                     CompactMetric("Elapsed", formatElapsed(status.startedAt, phase))
                     CompactMetric("Alive", if (status.alive) "yes" else "no")
                 }
+            }
+
+            val resumedFrom = status.resume
+            val resumeLine = when {
+                resumedFrom != null -> buildString {
+                    append("Resumed from ")
+                    append(resumedFrom.filename.ifBlank { resumedFrom.path })
+                    resumedFrom.step?.let { append(" · checkpoint step $it") }
+                    if (resumedFrom.loaded > 0) append(" · ${resumedFrom.loaded} tensors")
+                }
+                terminal && !resumeFrom.isNullOrBlank() ->
+                    "Will resume from ${resumeFrom.trimEnd('/').substringAfterLast('/')}"
+                else -> null
+            }
+            val runLine = listOfNotNull(
+                status.runId?.takeIf { it.isNotBlank() }?.let { "run $it" },
+                resumeLine,
+            ).joinToString("   ")
+
+            if (runLine.isNotEmpty()) {
+                Text(
+                    text = runLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             status.detail?.takeIf { it.isNotBlank() }?.let { detail ->
@@ -269,23 +297,38 @@ fun TrainControlCard(
     }
 
     if (confirmReset) {
+        val runId = status.runId?.takeIf { it.isNotBlank() }
         AlertDialog(
             onDismissRequest = { confirmReset = false },
             title = { Text("Reset this run?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Clears the Finished / Error state so Start can launch a new run. " +
-                            "Sample images and TensorBoard logs for \"$runName\" will be deleted."
+                        if (runId != null) {
+                            "Clears the Finished / Error state so Start can launch a new run. " +
+                                "Sample images and TensorBoard logs of run \"$runId\" will be deleted."
+                        } else {
+                            "Clears the Finished / Error state so Start can launch a new run. " +
+                                "There is no run directory to delete."
+                        }
                     )
-                    Text(
-                        "Logs: $loggingDir/$runName\nSamples: $outputDir/${runName}_samples",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (runId != null) {
+                        Text(
+                            "Logs: $loggingDir/$runId\n" +
+                                "Samples: $outputDir/$runId/${runName}_samples",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = deleteWeights, onCheckedChange = { deleteWeights = it })
-                        Text("Also delete LoRA checkpoints under $outputDir/${runName}_*")
+                        Text(
+                            if (runId != null) {
+                                "Also delete LoRA checkpoints under $outputDir/$runId/${runName}_*"
+                            } else {
+                                "Also delete LoRA checkpoints (nothing to delete)"
+                            }
+                        )
                     }
                 }
             },

@@ -14,6 +14,7 @@ data class MetricPoint(
 @Serializable
 data class DashboardResponse(
     val config: JsonObject = JsonObject(emptyMap()),
+    @SerialName("run_id") val runId: String? = null,
     @SerialName("latest_stats") val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
 )
@@ -27,7 +28,29 @@ data class SampleItem(
 
 @Serializable
 data class SamplesResponse(
+    @SerialName("run_id") val runId: String? = null,
     val samples: Map<String, List<SampleItem>> = emptyMap(),
+)
+
+@Serializable
+data class CheckpointItem(
+    val path: String = "",
+    @SerialName("run_id") val runId: String = "",
+    val dir: String = "",
+    val filename: String = "",
+    val step: Int? = null,
+    val epoch: Int? = null,
+    val final: Boolean = false,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    val modified: Double = 0.0,
+    @SerialName("network_dim") val networkDim: Int? = null,
+    @SerialName("network_alpha") val networkAlpha: Int? = null,
+    @SerialName("output_name") val outputName: String = "",
+)
+
+@Serializable
+data class CheckpointsResponse(
+    val checkpoints: List<CheckpointItem> = emptyList(),
 )
 
 @Serializable
@@ -84,6 +107,16 @@ data class TrainSampling(
 )
 
 @Serializable
+data class TrainResume(
+    val path: String = "",
+    val filename: String = "",
+    val step: Int? = null,
+    val epoch: Int? = null,
+    val loaded: Int = 0,
+    val skipped: Int = 0,
+)
+
+@Serializable
 data class TrainStatus(
     val schema: Int = 1,
     val pid: Int? = null,
@@ -92,6 +125,8 @@ data class TrainStatus(
     val status: String = "idle",
     @SerialName("paused_from") val pausedFrom: String? = null,
     @SerialName("output_name") val outputName: String? = null,
+    @SerialName("run_id") val runId: String? = null,
+    val resume: TrainResume? = null,
     val encoding: TrainEncoding = TrainEncoding(),
     val training: TrainTrainingProgress = TrainTrainingProgress(),
     val sampling: TrainSampling = TrainSampling(),
@@ -112,6 +147,7 @@ data class DashboardUiState(
     val sampleThumbSize: Float = 260f,
     val previewIndex: Int? = null,
     val config: JsonObject = JsonObject(emptyMap()),
+    val runId: String? = null,
     val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
     val samples: Map<String, List<SampleItem>> = emptyMap(),

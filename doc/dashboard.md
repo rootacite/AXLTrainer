@@ -53,6 +53,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 - A validated, structured editor for `trainer/config.toml` — no hand-editing TOML.
 - Environment section includes **Auto-tag dataset**: a confidence slider / threshold (default `0.35`) and a **Tag dataset** button. That calls IPC `dataset_tag`, which runs `tagger/main.py` on GPU (MIGraphX) against the current train data directory and overwrites sidecar `.txt` captions. When it finishes, Images and Statistics reload from disk.
+- Training section ends with **Resume from LoRA checkpoint**: a path field with **Browse** (file picker — a checkpoint file or its directory), **Pick from run checkpoints** (a dialog listing `list_checkpoints` results for the current output name: run id, step, `r/α`, size, newest first), and **Clear**. Saving writes `[training].resume_lora_path`; the summary line then shows `· resume`. Selecting from the dialog only fills the field — save to apply.
 - Left: the ten config sections (Environment, Model Spec, Training, Network, Bucketing, Optimization, UNet Optimizer, Text Encoder, Infrastructure, Validation), with a warning badge on sections containing invalid fields.
 - Right: fields per section — path fields with a **Browse** button (file chooser), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio).
 - Header shows the config path, a summary line (`name · resolution · epochs · batch`), and an **Unsaved** indicator. **Save** validates the whole form (auto-jumping to the first invalid section), then patches the TOML in place, preserving comments and formatting. **Reload** is blocked while the form is dirty.
@@ -66,9 +67,10 @@ The heart of the app. It spawns `api.py` on first use and polls it (every 1 s wh
 - **Header**: connected/disconnected indicator, auto-refresh switch, Refresh button, dataset / target / base-model compact metrics, and sliders for **Curve Smoothing** (EMA 0–0.99), **Chart Line** (stroke 1–8), and **Sample Size** (80–360 px thumbnails).
 - **Training control card**:
   - Status chip (idle / starting / encoding / training / sampling / pausing / paused / resuming / stopping / finished / error), plus transient **gpu-out** / **gpu-in** chips with swap progress while offloading/loading.
-  - Run info: output name, PID, elapsed time, alive flag, and the run's `detail` / `error` lines.
+  - Run info: output name, run id, PID, elapsed time, alive flag, and the run's `detail` / `error` lines. When `[training].resume_lora_path` is set, the card also shows what the next run will resume from, or — while running — the checkpoint this run was seeded from (`Resumed from … · checkpoint step N · M tensors`).
   - Three phase progress bars: **latent encode** (`encoding.current/total`), **training** (step/total, epoch, loss, avg-loss), **sampling** (image r/R, denoise step d/D).
-  - Buttons: **Start** (enabled only when terminal: idle/finished/error), **Pause** / **Resume** (with in-flight spinner states), **Early Stop** (phase-aware confirmation dialog — warns whether a checkpoint will be saved), and **Reset** (clears Finished/Error state; deletes this run's samples + TensorBoard logs with exact paths shown; optional checkbox to also delete LoRA checkpoints under `{output_dir}/{name}_*`).
+  - Buttons: **Start** (enabled only when terminal: idle/finished/error), **Pause** / **Resume** (with in-flight spinner states), **Early Stop** (phase-aware confirmation dialog — warns whether a checkpoint will be saved), and **Reset** (clears Finished/Error state; deletes the resolved run's samples + TensorBoard logs with exact paths shown; optional checkbox to also delete that run's LoRA checkpoints).
+- **Path chips**: current run id, `{logging_dir}/{run_id}`, `{output_dir}/{run_id}` — `—` when no run directory resolves yet.
 - **Metric cards**: Current Step, Latest Loss, UNet LR, TE Effective LR.
 - **Training charts**: Train/Avg_Loss, Train/Loss, UNet/LR/Effective_Actual_LR, TE/LR/Base_Scheduled, TE/LR/Effective_Actual_LR — interactive line charts (see interactions below).
 - **Generated samples**: thumbnails grouped by step (newest first). Click to open a fullscreen dark preview with prev/next, keyboard (Esc closes, ←/→ navigate), and drag/swipe paging.
@@ -80,7 +82,7 @@ If the helper process can't be reached (and no data has loaded), a full-screen e
 1. **Discovery** — `TrainerRepo.findRoot()` walks up from the app's executable and `user.dir` looking for `api.py` or `trainer/config.toml`.
 2. **Spawn** — Ranko runs `$AXL_PYTHON` (if set) or `python3 -u api.py` with the working directory at the repo root, stderr inherited, `PYTHONUNBUFFERED=1`. A JVM shutdown hook kills the helper on exit.
 3. **Protocol** — newline-delimited JSON on the helper's stdin/stdout: requests are `{"id": n, "method": "...", "params": {...}}`, responses are `{"id": n, "ok": true, "result": {...}}` or `{"id": n, "ok": false, "error": "..."}`. Calls are serialized (one in flight), and the helper is lazily restarted if it dies.
-4. **Methods** — `ping`, `dashboard` (metrics + config), `list_samples`, `train_status`, `train_start`, `train_pause`, `train_resume`, `train_stop`, `train_reset`. Full reference: [API.md](../API.md).
+4. **Methods** — `ping`, `dashboard` (metrics + config, optional `run_id`), `list_samples`, `list_checkpoints`, `train_status`, `train_start`, `train_pause`, `train_resume`, `train_stop`, `train_reset`. Full reference: [API.md](../API.md).
 
 **Important**: `train_start` spawns the trainer **detached** (`setsid`). Closing Ranko does not stop training; use Pause/Early Stop (or the runtime `command.json`) to control it.
 

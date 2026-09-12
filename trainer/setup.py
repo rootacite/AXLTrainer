@@ -42,6 +42,7 @@ class TrainArtifacts:
     denoise_optimizer: Any
     te_optimizer: Any
     te_scheduler: Any
+    resume: dict[str, Any]
 
 
 def maybe_enable_amp_backends() -> None:
@@ -122,6 +123,8 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
     modules.vae.requires_grad_(False)
     modules.denoise.requires_grad_(False)
     modules = family.apply_lora(cfg, modules)
+    # Resume weights must land before accelerator.prepare wraps the modules.
+    resume = family.load_lora(cfg, modules)
 
     # Encoding only needs the VAE on GPU. TEs stay on CPU until accelerator.prepare
     # after the latent cache (otherwise CLIP-G + VAE encode OOMs a 16GB card).
@@ -145,4 +148,5 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
         denoise_optimizer=denoise_optimizer,
         te_optimizer=te_optimizer,
         te_scheduler=te_scheduler,
+        resume=resume,
     )

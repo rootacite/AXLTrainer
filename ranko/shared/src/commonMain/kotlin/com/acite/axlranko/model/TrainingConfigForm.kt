@@ -29,6 +29,8 @@ data class TrainingConfigForm(
     val saveEveryNEpochs: String = "",
     val saveEveryNSteps: String = "",
 
+    val resumeLoraPath: String = "",
+
     val networkDim: String = "",
     val networkAlpha: String = "",
     val networkDropout: String = "",
@@ -221,7 +223,8 @@ data class TrainingConfigForm(
                 "max_grad_norm" to f(maxGradNorm),
                 "epoch" to n(epoch),
                 "save_every_n_epochs" to n(saveEveryNEpochs),
-                "save_every_n_steps" to n(saveEveryNSteps)
+                "save_every_n_steps" to n(saveEveryNSteps),
+                "resume_lora_path" to q(resumeLoraPath.trim())
             ),
             "network" to mapOf(
                 "network_dim" to n(networkDim),
@@ -337,6 +340,7 @@ data class TrainingConfigForm(
                 epoch = train.epoch.toString(),
                 saveEveryNEpochs = train.saveEveryNEpochs.toString(),
                 saveEveryNSteps = train.saveEveryNSteps.toString(),
+                resumeLoraPath = train.resumeLoraPath,
                 networkDim = net.networkDim.toString(),
                 networkAlpha = net.networkAlpha.toString(),
                 networkDropout = formatNumber(net.networkDropout),

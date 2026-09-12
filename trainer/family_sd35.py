@@ -29,6 +29,11 @@ class Sd35Family:
     def apply_lora(self, cfg: Any, modules: FamilyModules) -> FamilyModules:
         self._raise()
 
+    def load_lora(self, cfg: Any, modules: FamilyModules) -> dict[str, Any]:
+        if not str(getattr(cfg, "resume_lora_path", "") or "").strip():
+            return {}
+        self._raise()
+
     def build_noise_scheduler(self, pipe: Any, cfg: Any) -> Any:
         self._raise()
 

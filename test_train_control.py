@@ -125,19 +125,45 @@ class ControlTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.dispatch("train_start")
 
+    def test_begin_run_records_run_id(self):
+        control.begin_run(4242, "rein", run_id="rein_20260911_120000")
+        loaded = control.read_state()
+        self.assertEqual(loaded["run_id"], "rein_20260911_120000")
+        self.assertEqual(loaded["status"], "starting")
+        self.assertIsNone(loaded["resume"])
+
+    def test_set_resume_roundtrip(self):
+        control.begin_run(4242, "rein", run_id="rein_20260911_120000")
+        control.set_resume({"path": "/tmp/rein.safetensors", "step": 300, "loaded": 42})
+        loaded = control.read_state()
+        self.assertEqual(loaded["resume"]["step"], 300)
+        self.assertEqual(loaded["resume"]["loaded"], 42)
+        control.set_resume({})
+        self.assertIsNone(control.read_state()["resume"])
+
     def test_reset_clears_finished_and_logs(self):
         out = Path(self.tmp.name) / "out"
         logs = Path(self.tmp.name) / "logs"
-        samples = out / "rein_samples"
-        tb = logs / "rein"
-        weights = out / "rein_s000100"
+        run_id = "rein_20260911_120000"
+        run_dir = out / run_id
+        samples = run_dir / "rein_samples"
+        tb = logs / run_id
+        weights = run_dir / "rein_s000100"
         samples.mkdir(parents=True)
         (samples / "a.png").write_bytes(b"x")
         tb.mkdir(parents=True)
         (tb / "events.out.tfevents.1").write_bytes(b"e")
         weights.mkdir(parents=True)
         (weights / "rein.safetensors").write_bytes(b"w")
-        control.write_state({"status": "finished", "pid": None, "output_name": "rein"}, force=True)
+        control.write_state(
+            {
+                "status": "finished",
+                "pid": None,
+                "output_name": "rein",
+                "run_id": run_id,
+            },
+            force=True,
+        )
         orig = api._train_config_dict
         api._train_config_dict = lambda: {
             "output_dir": str(out),
@@ -150,6 +176,7 @@ class ControlTest(unittest.TestCase):
             api._train_config_dict = orig
         self.assertEqual(result["status"], "idle")
         self.assertIsNone(result.get("pid"))
+        self.assertEqual(result["run_id"], run_id)
         self.assertFalse(samples.exists())
         self.assertFalse(tb.exists())
         self.assertTrue(weights.exists())
@@ -158,9 +185,14 @@ class ControlTest(unittest.TestCase):
     def test_reset_can_delete_weights(self):
         out = Path(self.tmp.name) / "out"
         logs = Path(self.tmp.name) / "logs"
-        weights = out / "rein_final"
+        run_id = "rein_20260911_120000"
+        weights = out / run_id / "rein_final"
         weights.mkdir(parents=True)
-        logs.mkdir(parents=True)
+        (weights / "rein.safetensors").write_bytes(b"w")
+        control.write_state(
+            {"status": "finished", "pid": None, "output_name": "rein", "run_id": run_id},
+            force=True,
+        )
         orig = api._train_config_dict
         api._train_config_dict = lambda: {
             "output_dir": str(out),
@@ -172,6 +204,7 @@ class ControlTest(unittest.TestCase):
         finally:
             api._train_config_dict = orig
         self.assertFalse(weights.exists())
+        self.assertFalse((out / run_id).exists())
 
     def test_reset_refuses_live_pid(self):
         control.write_state({"status": "training", "pid": os.getpid()}, force=True)
@@ -210,6 +243,17 @@ class FilenameTest(unittest.TestCase):
         final = lora_checkpoint_file(Cfg(), 12, final=True)
         self.assertEqual(final.name, "rein.safetensors")
         self.assertEqual(final.parent.name, "rein_final")
+
+    def test_checkpoint_file_follows_run_dir(self):
+        class Cfg:
+            output_dir = "/tmp/out"
+            output_name = "rein"
+            run_dir = "/tmp/out/rein_20260911_120000"
+
+        path = lora_checkpoint_file(Cfg(), 100)
+        self.assertEqual(path.parent.parent.name, "rein_20260911_120000")
+        final = lora_checkpoint_file(Cfg(), 12, final=True)
+        self.assertEqual(final.parent.parent.name, "rein_20260911_120000")
 
 
 class OptimizerSwapTest(unittest.TestCase):

@@ -89,6 +89,8 @@ def default_state() -> dict[str, Any]:
         "status": STATUS_IDLE,
         "paused_from": None,
         "output_name": None,
+        "run_id": None,
+        "resume": None,
         "encoding": {"current": 0, "total": 0, "done": False},
         "training": {
             "step": 0,
@@ -262,7 +264,7 @@ def _on_exit() -> None:
         end_run(STATUS_ERROR, error="process exited")
 
 
-def begin_run(pid: int, output_name: str) -> None:
+def begin_run(pid: int, output_name: str, run_id: Optional[str] = None) -> None:
     global _atexit_registered, _ended, _last_cmd_seq, _state
     if not try_acquire_lock():
         raise RuntimeError("another training run holds the lock")
@@ -277,6 +279,7 @@ def begin_run(pid: int, output_name: str) -> None:
             "started_at": started_at or time.time(),
             "status": STATUS_STARTING,
             "output_name": output_name,
+            "run_id": run_id,
             "error": None,
             "detail": None,
             "swap": None,
@@ -286,6 +289,12 @@ def begin_run(pid: int, output_name: str) -> None:
     if not _atexit_registered:
         atexit.register(_on_exit)
         _atexit_registered = True
+
+
+def set_resume(info: Optional[dict[str, Any]]) -> None:
+    """Publish which checkpoint this run was seeded from (None = fresh run)."""
+    write_state({"resume": info or None}, force=True)
+
 
 
 def reset_to_idle() -> dict[str, Any]:

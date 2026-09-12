@@ -19,10 +19,10 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | Key | Example | Meaning |
 | --- | --- | --- |
 | `pretrained_model_name_or_path` | `"/opt/models/diffusers/waillu_170"` | SDXL base model. A diffusers directory, or a single-file checkpoint path (`from_single_file`). |
-| `output_dir` | `"/home/acite/LLM/axltrainer/outputs"` | Where LoRA checkpoints and sample images are saved. Created if missing. |
-| `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Where TensorBoard event files go (`{logging_dir}/{output_name}/`). Created if missing. |
+| `output_dir` | `"/home/acite/LLM/axltrainer/outputs"` | Root for run directories: each run writes `{output_dir}/{output_name}_{YYYYMMDD_HHMMSS}/…`. Created if missing. |
+| `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
 | `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. |
-| `output_name` | `"rein"` | Run name; used in every artifact path and as the TensorBoard project name. Sanitized to `[A-Za-z0-9._-]`. |
+| `output_name` | `"rein"` | Run name; prefix of every artifact path, of the run directory, and of the TensorBoard project. Sanitized to `[A-Za-z0-9._-]` in the run id and checkpoint filename. |
 
 ### `[model_spec]` — base-model family + checkpoint metadata
 
@@ -49,9 +49,12 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `lr_scheduler` | `"cosine"` | One of: `cosine`, `cosine_with_restarts`, `linear`, `constant`, `constant_with_warmup`, `polynomial`, `adafactor`. |
 | `lr_warmup_steps` | `100` | Warmup applied to the text-encoder scheduler (Schedule-Free AdamW handles its own warmup via `unet_warmup_steps`). |
 | `max_grad_norm` | `1.0` | UNet gradient clipping. |
-| `epoch` | `16` | Total epochs. |
+| `epoch` | `16` | Total epochs for this run. |
 | `save_every_n_epochs` | `1` | **Defined but not used**; checkpoints are driven by `save_every_n_steps`. |
 | `save_every_n_steps` | `100` | Save a LoRA checkpoint + generate samples every N steps. |
+| `resume_lora_path` | `""` | Optional. kohya LoRA `.safetensors` (or a checkpoint directory holding exactly one) loaded into the UNet + both text encoders **before** training. Weights only: step/epoch counting still starts at 0 and the run gets its own timestamped directory, so earlier runs are never overwritten. `network_dim` / `network_alpha` must match the checkpoint. See [Training → Resuming from a checkpoint](training.md#resuming-from-a-checkpoint). |
+
+`run_dir` is **not** a config key you should write: the trainer fills it in at runtime with the absolute run directory created for that run.
 
 ### `[network]` — LoRA network
 

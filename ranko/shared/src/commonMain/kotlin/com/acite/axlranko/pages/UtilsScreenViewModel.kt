@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.TrainerIpcClient
+import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
@@ -116,6 +117,62 @@ class UtilsScreenViewModel(
     fun browseDirectory(current: String, update: TrainingConfigForm.(String) -> TrainingConfigForm) {
         val selected = pickPath(current, directoriesOnly = true) ?: return
         updateForm { update(selected) }
+    }
+
+    fun browseCheckpointPath() {
+        val selected = pickPath(_uiState.value.form.resumeLoraPath, directoriesOnly = false) ?: return
+        updateForm { copy(resumeLoraPath = selected) }
+    }
+
+    fun clearCheckpoint() {
+        updateForm { copy(resumeLoraPath = "") }
+    }
+
+    fun openCheckpointPicker() {
+        _uiState.update { it.copy(checkpointPickerOpen = true, checkpointError = null) }
+        loadCheckpoints()
+    }
+
+    fun closeCheckpointPicker() {
+        _uiState.update { it.copy(checkpointPickerOpen = false) }
+    }
+
+    fun loadCheckpoints() {
+        val state = _uiState.value
+        if (state.isLoadingCheckpoints) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingCheckpoints = true, checkpointError = null) }
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    ipc.listCheckpoints(
+                        name = state.form.outputName.trim().ifBlank { null },
+                        outputDir = state.form.outputDir.trim().ifBlank { null }
+                    )
+                }
+                _uiState.update {
+                    it.copy(isLoadingCheckpoints = false, checkpoints = response.checkpoints)
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoadingCheckpoints = false,
+                        checkpointError = e.message ?: "Failed to list checkpoints"
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectCheckpoint(checkpoint: CheckpointItem) {
+        _uiState.update { state ->
+            state.copy(
+                checkpointPickerOpen = false,
+                form = state.form.copy(resumeLoraPath = checkpoint.path),
+                fieldErrors = emptyMap(),
+                errorMessage = null,
+                statusMessage = "Resume checkpoint selected · save to apply"
+            )
+        }
     }
 
     fun updateTagThreshold(value: String) {

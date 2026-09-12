@@ -48,7 +48,8 @@ data class TrainingConfig(
     @SerialName("max_grad_norm") val maxGradNorm: Double,
     val epoch: Int,
     @SerialName("save_every_n_epochs") val saveEveryNEpochs: Int,
-    @SerialName("save_every_n_steps") val saveEveryNSteps: Int
+    @SerialName("save_every_n_steps") val saveEveryNSteps: Int,
+    @SerialName("resume_lora_path") val resumeLoraPath: String = ""
 )
 
 @Serializable

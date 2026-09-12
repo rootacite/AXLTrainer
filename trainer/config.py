@@ -53,6 +53,12 @@ class TrainConfig:
     save_every_n_epochs: int = get_val("save_every_n_epochs", 1)
     save_every_n_steps: int = get_val("save_every_n_steps", 100)
 
+    # Resume: kohya LoRA .safetensors (or its directory) to load before training
+    resume_lora_path: str = get_val("resume_lora_path", "")
+    # Run-scoped artifact directory, filled in at runtime by main.py.
+    # Do not set this in config.toml: every run would reuse the same directory.
+    run_dir: str = get_val("run_dir", "")
+
     # Network Dimensions
     network_dim: int = get_val("network_dim", 48)
     network_alpha: int = get_val("network_alpha", 24)
