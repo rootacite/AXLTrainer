@@ -45,6 +45,13 @@ import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.ui.components.CapsuleButton
+import com.acite.axlranko.ui.components.CapsuleChoice
+import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.components.RankoChoiceRow
+import com.acite.axlranko.ui.components.rankoFieldColors
+import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 
@@ -59,12 +66,9 @@ public fun UtilsScreen(
             modifier = Modifier.fillMaxSize().padding(32.dp),
             contentAlignment = Alignment.Center
         ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                shape = RoundedCornerShape(16.dp)
-            ) {
+            PorcelainCard {
                 Column(
-                    modifier = Modifier.padding(32.dp),
+                    modifier = Modifier.padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
@@ -72,17 +76,15 @@ public fun UtilsScreen(
                         Icons.Default.Warning,
                         contentDescription = "Error",
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.error
+                        tint = rankoColors.qualityRed
                     )
                     Text(
                         text = uiState.errorMessage!!,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        color = rankoColors.text,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
-                    Button(onClick = { viewModel.loadConfig() }) {
-                        Text("Retry")
-                    }
+                    CapsuleButton(text = "Retry", onClick = { viewModel.loadConfig() }, emphasized = true)
                 }
             }
         }
@@ -96,10 +98,9 @@ public fun UtilsScreen(
         return
     }
 
+    val colors = rankoColors
     BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+        modifier = Modifier.fillMaxSize()
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
 
@@ -126,7 +127,7 @@ public fun UtilsScreen(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                VerticalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
             }
 
             Column(
@@ -135,7 +136,7 @@ public fun UtilsScreen(
                     .weight(1f - uiState.leftWeight)
             ) {
                 ConfigHeader(uiState = uiState, viewModel = viewModel)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     val scroll = rememberScrollState()
                     Column(
@@ -153,7 +154,7 @@ public fun UtilsScreen(
                         Text(
                             text = uiState.selectedSection.description,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = rankoColors.textDim
                         )
                         SectionFields(uiState = uiState, viewModel = viewModel)
                     }
@@ -215,41 +216,48 @@ private fun ConfigHeader(
                 Text(
                     text = uiState.configPath.ifBlank { "config.toml" },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = rankoColors.textDim,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = uiState.summaryLine,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = rankoColors.accentPink
                 )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+                CapsuleButton(
+                    text = "Reload",
                     onClick = { viewModel.loadConfig() },
-                    enabled = !uiState.isDirty && !uiState.isSaving && !uiState.isTagging
+                    enabled = !uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+                    compact = true,
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Reload")
+                    Text("Reload", fontWeight = FontWeight.SemiBold)
                 }
-                OutlinedButton(
+                CapsuleButton(
+                    text = "Reset",
                     onClick = { viewModel.resetForm() },
-                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging
+                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+                    compact = true,
                 ) {
                     Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Reset")
+                    Text("Reset", fontWeight = FontWeight.SemiBold)
                 }
-                Button(
+                CapsuleButton(
+                    text = "Save",
                     onClick = { viewModel.saveConfig() },
-                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging
+                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+                    compact = true,
+                    emphasized = true,
                 ) {
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Save")
+                    Text("Save", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -265,16 +273,17 @@ private fun ConfigHeader(
 
 @Composable
 private fun StatusBanner(message: String, isError: Boolean) {
+    val colors = rankoColors
     val container =
-        if (isError) MaterialTheme.colorScheme.errorContainer
-        else MaterialTheme.colorScheme.secondaryContainer
+        if (isError) colors.qualityRed.copy(alpha = 0.18f)
+        else colors.accentBlue.copy(alpha = 0.16f)
     val content =
-        if (isError) MaterialTheme.colorScheme.onErrorContainer
-        else MaterialTheme.colorScheme.onSecondaryContainer
+        if (isError) colors.qualityRed
+        else colors.accentLilac
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(container, RoundedCornerShape(8.dp))
+            .background(container, rankoTokens.panel)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -302,48 +311,38 @@ private fun SectionNav(
         items(ConfigSection.entries.toList(), key = { it.name }) { section ->
             val selected = uiState.selectedSection == section
             val hasError = section.fieldKeys.any { it in uiState.fieldErrors }
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSelect(section) },
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant
-                )
+            val colors = rankoColors
+            RankoChoiceRow(
+                selected = selected,
+                onClick = { onSelect(section) },
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        imageVector = section.icon(),
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = when {
-                            hasError -> MaterialTheme.colorScheme.error
-                            selected -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                    Text(
-                        text = section.title,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (hasError) {
-                        Icon(
-                            Icons.Default.Warning,
-                            contentDescription = "Invalid fields",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                Icon(
+                    imageVector = section.icon(),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = when {
+                        hasError -> colors.qualityRed
+                        selected -> colors.accentPink
+                        else -> colors.textDim
                     }
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = section.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (selected) colors.accentPink else colors.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (hasError) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Invalid fields",
+                        modifier = Modifier.size(16.dp),
+                        tint = colors.qualityRed
+                    )
                 }
             }
         }
@@ -443,13 +442,8 @@ private fun AutoTagCard(
     viewModel: UtilsScreenViewModel
 ) {
     val thresholdValue = uiState.tagThreshold.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.35f
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(12.dp)
-    ) {
+    PorcelainCard {
         Column(
-            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
@@ -460,7 +454,7 @@ private fun AutoTagCard(
             Text(
                 text = "Runs the WD ONNX tagger on GPU (MIGraphX) and overwrites every sidecar .txt in the train data directory. Images and Statistics reload when it finishes.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
             Text(
                 text = "Confidence  ${"%.2f".format(thresholdValue)}",
@@ -486,9 +480,12 @@ private fun AutoTagCard(
                     onValueChange = viewModel::updateTagThreshold,
                     modifier = Modifier.weight(1f)
                 )
-                Button(
+                CapsuleButton(
+                    text = if (uiState.isTagging) "Tagging…" else "Tag dataset",
                     onClick = { viewModel.runAutoTag() },
-                    enabled = !uiState.isTagging && !uiState.isSaving && uiState.form.trainDataDir.isNotBlank()
+                    enabled = !uiState.isTagging && !uiState.isSaving && uiState.form.trainDataDir.isNotBlank(),
+                    compact = true,
+                    emphasized = true,
                 ) {
                     if (uiState.isTagging) {
                         CircularProgressIndicator(
@@ -499,7 +496,10 @@ private fun AutoTagCard(
                         Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text(if (uiState.isTagging) "Tagging…" else "Tag dataset")
+                    Text(
+                        if (uiState.isTagging) "Tagging…" else "Tag dataset",
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
         }
@@ -585,17 +585,17 @@ private fun TrainingFields(
             modifier = Modifier.weight(1f)
         )
     }
-    Text("Mixed precision", style = MaterialTheme.typography.labelLarge)
-    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-        TrainingConfigForm.mixedPrecisionOptions.forEachIndexed { index, option ->
-            SegmentedButton(
+    Text("Mixed precision", style = MaterialTheme.typography.labelLarge, color = rankoColors.text)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        TrainingConfigForm.mixedPrecisionOptions.forEach { option ->
+            CapsuleChoice(
+                text = option,
                 selected = form.mixedPrecision == option,
                 onClick = { viewModel.updateForm { copy(mixedPrecision = option) } },
-                shape = SegmentedButtonDefaults.itemShape(
-                    index = index,
-                    count = TrainingConfigForm.mixedPrecisionOptions.size
-                )
-            ) { Text(option) }
+            )
         }
     }
     ChoiceChips(
@@ -670,13 +670,8 @@ private fun ResumeCheckpointCard(
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(12.dp)
-    ) {
+    PorcelainCard {
         Column(
-            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
@@ -690,7 +685,7 @@ private fun ResumeCheckpointCard(
                     "timestamped run directory, so earlier runs are never overwritten. " +
                     "The checkpoint's network_dim / network_alpha must match this config.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
             ConfigPathField(
                 label = "Checkpoint file or its directory",
@@ -705,21 +700,25 @@ private fun ResumeCheckpointCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedButton(onClick = { viewModel.openCheckpointPicker() }) {
+                CapsuleButton(
+                    text = "Pick from run checkpoints",
+                    onClick = { viewModel.openCheckpointPicker() },
+                    compact = true,
+                ) {
                     Icon(
                         Icons.Default.FolderOpen,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Pick from run checkpoints")
+                    Text("Pick from run checkpoints", fontWeight = FontWeight.SemiBold)
                 }
-                OutlinedButton(
+                CapsuleButton(
+                    text = "Clear",
                     onClick = { viewModel.clearCheckpoint() },
-                    enabled = form.resumeLoraPath.isNotBlank()
-                ) {
-                    Text("Clear")
-                }
+                    enabled = form.resumeLoraPath.isNotBlank(),
+                    compact = true,
+                )
             }
         }
     }
@@ -743,7 +742,7 @@ private fun CheckpointPickerDialog(
                     text = "Checkpoints written by earlier runs of \"${uiState.form.outputName}\"." +
                         " Selecting one only fills the path field — save the config to apply it.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = rankoColors.textDim
                 )
                 when {
                     uiState.isLoadingCheckpoints -> Row(
@@ -755,7 +754,7 @@ private fun CheckpointPickerDialog(
                     }
                     uiState.checkpointError != null -> Text(
                         text = uiState.checkpointError,
-                        color = MaterialTheme.colorScheme.error,
+                        color = rankoColors.qualityRed,
                         style = MaterialTheme.typography.bodyMedium
                     )
                     checkpoints.isEmpty() -> Text(
@@ -787,15 +786,8 @@ private fun CheckpointRow(
     checkpoint: CheckpointItem,
     onSelect: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { onSelect() },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
+    RankoChoiceRow(selected = false, onClick = onSelect) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
             Text(
                 text = checkpoint.dir.ifBlank { checkpoint.filename },
                 style = MaterialTheme.typography.bodyLarge,
@@ -806,12 +798,12 @@ private fun CheckpointRow(
             Text(
                 text = checkpointSubtitle(checkpoint),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
             Text(
                 text = checkpoint.path,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = rankoColors.textDim,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -962,6 +954,18 @@ private fun OptimizationFields(
         checked = form.cacheLatentsToDisk,
         description = "Persist latent cache across runs (uses disk next to the dataset)",
         onChecked = { viewModel.updateForm { copy(cacheLatentsToDisk = it) } }
+    )
+    ConfigSwitch(
+        label = "UNet gradient checkpointing",
+        checked = form.gradientCheckpointingUnet,
+        description = "Recompute UNet activations in backward to save VRAM; turn off for faster steps if you have headroom",
+        onChecked = { viewModel.updateForm { copy(gradientCheckpointingUnet = it) } }
+    )
+    ConfigSwitch(
+        label = "Text encoder gradient checkpointing",
+        checked = form.gradientCheckpointingTe,
+        description = "Same for CLIP-L / CLIP-G after PEFT wrap; also enables input grads on frozen embeddings",
+        onChecked = { viewModel.updateForm { copy(gradientCheckpointingTe = it) } }
     )
     ConfigSwitch(
         label = "Shuffle caption",
@@ -1226,7 +1230,9 @@ private fun ConfigDropdown(
             supportingText = {
                 val text = error ?: supporting
                 if (text != null) Text(text)
-            }
+            },
+            shape = rankoTokens.panel,
+            colors = rankoFieldColors(),
         )
         ExposedDropdownMenu(
             expanded = expanded,
@@ -1271,7 +1277,9 @@ private fun ConfigTextField(
         },
         singleLine = singleLine,
         minLines = if (singleLine) 1 else minLines,
-        trailingIcon = trailingIcon
+        trailingIcon = trailingIcon,
+        shape = rankoTokens.panel,
+        colors = rankoFieldColors(),
     )
 }
 
@@ -1319,7 +1327,7 @@ private fun ConfigSwitch(
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = rankoColors.textDim
                 )
             }
         }
@@ -1341,17 +1349,17 @@ private fun ChoiceChips(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             options.forEach { option ->
-                FilterChip(
+                CapsuleChoice(
+                    text = option,
                     selected = value == option,
                     onClick = { onChange(option) },
-                    label = { Text(option) }
                 )
             }
             if (value.isNotBlank() && value !in options) {
-                FilterChip(
+                CapsuleChoice(
+                    text = value,
                     selected = true,
                     onClick = {},
-                    label = { Text(value) }
                 )
             }
         }

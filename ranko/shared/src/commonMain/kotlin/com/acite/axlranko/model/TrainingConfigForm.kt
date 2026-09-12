@@ -46,6 +46,8 @@ data class TrainingConfigForm(
 
     val cacheLatents: Boolean = true,
     val cacheLatentsToDisk: Boolean = true,
+    val gradientCheckpointingUnet: Boolean = true,
+    val gradientCheckpointingTe: Boolean = true,
     val shuffleCaption: Boolean = true,
     val keepTokens: String = "",
     val captionExtension: String = ".txt",
@@ -244,6 +246,8 @@ data class TrainingConfigForm(
             "optimization" to mapOf(
                 "cache_latents" to b(cacheLatents),
                 "cache_latents_to_disk" to b(cacheLatentsToDisk),
+                "gradient_checkpointing_unet" to b(gradientCheckpointingUnet),
+                "gradient_checkpointing_te" to b(gradientCheckpointingTe),
                 "shuffle_caption" to b(shuffleCaption),
                 "keep_tokens" to n(keepTokens),
                 "caption_extension" to q(captionExtension.trim()),
@@ -354,6 +358,8 @@ data class TrainingConfigForm(
                 maxBucketReso = bucket.maxBucketReso.toString(),
                 cacheLatents = opt.cacheLatents,
                 cacheLatentsToDisk = opt.cacheLatentsToDisk,
+                gradientCheckpointingUnet = opt.gradientCheckpointingUnet,
+                gradientCheckpointingTe = opt.gradientCheckpointingTe,
                 shuffleCaption = opt.shuffleCaption,
                 keepTokens = opt.keepTokens.toString(),
                 captionExtension = opt.captionExtension,

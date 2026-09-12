@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,9 +20,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.ui.components.FrostedSurface
+import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 
 @Composable
 fun DashboardSectionHeader(title: String) {
+    val colors = rankoColors
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -34,39 +35,37 @@ fun DashboardSectionHeader(title: String) {
             modifier = Modifier
                 .width(4.dp)
                 .height(20.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.primary)
+                .clip(rankoTokens.capsule)
+                .background(colors.accentPink)
         )
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
+            fontWeight = FontWeight.SemiBold,
+            color = colors.text
         )
     }
 }
 
 @Composable
 fun PathChip(label: String, path: String) {
-    Card(
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
+    val colors = rankoColors
+    FrostedSurface {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                color = colors.accentPink,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
                 text = path,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colors.textDim,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -81,11 +80,8 @@ fun MetricCard(
     accentColor: Color,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
+    val colors = rankoColors
+    FrostedSurface(modifier = modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -96,7 +92,7 @@ fun MetricCard(
             Text(
                 title,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = colors.textDim
             )
             Spacer(Modifier.height(6.dp))
             Text(
@@ -115,7 +111,7 @@ fun CompactMetric(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = rankoColors.textDim
         )
         Text(
             text = value,

@@ -14,24 +14,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
@@ -51,6 +44,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.TrainStatus
+import com.acite.axlranko.ui.components.CapsuleButton
+import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.util.formatFourDecimals
 import kotlin.math.roundToInt
 
@@ -92,16 +88,8 @@ fun TrainControlCard(
     val canReset = !commandInFlight && actual in setOf("idle", "finished", "error", "stopping")
     val runName = status.outputName?.takeIf { it.isNotBlank() } ?: "—"
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (swapping) MaterialTheme.colorScheme.tertiaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
+    PorcelainCard {
         Column(
-            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -160,7 +148,7 @@ fun TrainControlCard(
                 Text(
                     text = runLine,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = rankoColors.accentPink,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -170,14 +158,14 @@ fun TrainControlCard(
                 Text(
                     text = detail.replace('_', ' '),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = rankoColors.textDim
                 )
             }
             status.error?.takeIf { it.isNotBlank() }?.let { message ->
                 Text(
                     text = message,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = rankoColors.qualityRed
                 )
             }
 
@@ -216,7 +204,7 @@ fun TrainControlCard(
                     enabled = canStart,
                     onClick = onStart,
                     modifier = Modifier.weight(1f),
-                    tonal = true,
+                    emphasized = true,
                 )
                 ControlButton(
                     text = if (phase == "pausing") "Pausing" else "Pause",
@@ -233,21 +221,16 @@ fun TrainControlCard(
                     inFlight = phase == "resuming",
                     onClick = onResume,
                     modifier = Modifier.weight(1f),
-                    tonal = true,
+                    emphasized = true,
                 )
-                Button(
-                    onClick = { confirmStop = true },
+                ControlButton(
+                    text = "Early Stop",
+                    icon = Icons.Default.Stop,
                     enabled = canStop,
+                    onClick = { confirmStop = true },
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError,
-                    )
-                ) {
-                    Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Early Stop")
-                }
+                    danger = true,
+                )
                 ControlButton(
                     text = "Reset",
                     icon = Icons.Default.RestartAlt,
@@ -317,7 +300,7 @@ fun TrainControlCard(
                             "Logs: $loggingDir/$runId\n" +
                                 "Samples: $outputDir/$runId/${runName}_samples",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = rankoColors.textDim
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -378,7 +361,7 @@ private fun PhaseBar(
     detail: String,
     active: Boolean,
     pulsing: Boolean = false,
-    accent: Color = MaterialTheme.colorScheme.primary,
+    accent: Color = rankoColors.accentPink,
 ) {
     val fraction = if (total > 0) (current.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
     val pulse = if (pulsing) rememberPulseAlpha() else 1f
@@ -391,27 +374,27 @@ private fun PhaseBar(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                color = if (active) accent else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (active) accent else rankoColors.textDim
             )
             Text(
                 text = if (total > 0) "$current / $total" else detail.ifBlank { "idle" },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
         }
         if (pulsing) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().height(8.dp),
-                color = if (active) accent else MaterialTheme.colorScheme.outline,
-                trackColor = MaterialTheme.colorScheme.surface,
+                color = if (active) accent else rankoColors.stroke,
+                trackColor = rankoColors.bgApp,
                 strokeCap = StrokeCap.Round,
             )
         } else {
             LinearProgressIndicator(
                 progress = { if (total > 0) fraction else 0f },
                 modifier = Modifier.fillMaxWidth().height(8.dp),
-                color = if (active) accent else MaterialTheme.colorScheme.outline,
-                trackColor = MaterialTheme.colorScheme.surface,
+                color = if (active) accent else rankoColors.stroke,
+                trackColor = rankoColors.bgApp,
                 strokeCap = StrokeCap.Round,
             )
         }
@@ -419,7 +402,7 @@ private fun PhaseBar(
             Text(
                 text = detail,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
         }
     }
@@ -448,43 +431,45 @@ private fun ControlButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     inFlight: Boolean = false,
-    tonal: Boolean = false,
+    emphasized: Boolean = false,
+    danger: Boolean = false,
 ) {
-    val content: @Composable () -> Unit = {
+    CapsuleButton(
+        text = text,
+        onClick = onClick,
+        enabled = enabled,
+        emphasized = emphasized,
+        danger = danger,
+        modifier = modifier,
+        compact = true,
+    ) {
         if (inFlight) {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
         } else {
             Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
         }
         Spacer(Modifier.width(6.dp))
-        Text(text)
-    }
-    if (tonal) {
-        FilledTonalButton(onClick = onClick, enabled = enabled, modifier = modifier) {
-            content()
-        }
-    } else {
-        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier) {
-            content()
-        }
+        Text(text, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 
+@Composable
 private fun statusStyle(status: String): Pair<String, Color> {
+    val colors = rankoColors
     return when (status) {
-        "starting" -> "Starting" to Color(0xFF0068C9)
-        "encoding" -> "Encoding" to Color(0xFF0D9488)
-        "training" -> "Training" to Color(0xFF0068C9)
-        "sampling" -> "Sampling" to Color(0xFF7B61FF)
-        "pausing" -> "Pausing" to Color(0xFFB45309)
-        "paused" -> "Paused" to Color(0xFFB45309)
-        "resuming" -> "Resuming" to Color(0xFFB45309)
-        "stopping" -> "Stopping" to Color(0xFFFF4B4B)
-        "finished" -> "Finished" to Color(0xFF0D9488)
-        "error" -> "Error" to Color(0xFFFF4B4B)
-        "gpu-out" -> "Offloading GPU" to Color(0xFFB45309)
-        "gpu-in" -> "Reloading GPU" to Color(0xFFB45309)
-        else -> "Idle" to Color(0xFF6B7280)
+        "starting" -> "Starting" to colors.accentBlue
+        "encoding" -> "Encoding" to colors.accentPink
+        "training" -> "Training" to colors.accentBlue
+        "sampling" -> "Sampling" to colors.accentLilac
+        "pausing" -> "Pausing" to colors.qualityOrange
+        "paused" -> "Paused" to colors.qualityOrange
+        "resuming" -> "Resuming" to colors.qualityOrange
+        "stopping" -> "Stopping" to colors.qualityRed
+        "finished" -> "Finished" to colors.qualityMint
+        "error" -> "Error" to colors.qualityRed
+        "gpu-out" -> "Offloading GPU" to colors.qualityOrange
+        "gpu-in" -> "Reloading GPU" to colors.qualityOrange
+        else -> "Idle" to colors.textDim
     }
 }
 

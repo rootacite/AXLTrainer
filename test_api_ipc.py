@@ -318,5 +318,165 @@ class DatasetTagIpcTest(unittest.TestCase):
         self.assertEqual(args[1], 0.4)
 
 
+class HardwareStatusTest(unittest.TestCase):
+    def setUp(self):
+        from trainer import hardware as hw
+
+        hw.reset_cpu_tracker()
+        self.hw = hw
+
+    def tearDown(self):
+        self.hw.reset_cpu_tracker()
+
+    def _write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_parse_nvtop_metric_strings(self):
+        self.assertEqual(self.hw.parse_metric_number("92%"), 92.0)
+        self.assertEqual(self.hw.parse_metric_number("303W"), 303.0)
+        self.assertEqual(self.hw.parse_metric_number("72C"), 72.0)
+        self.assertEqual(self.hw.parse_metric_number("2165MHz"), 2165.0)
+        self.assertEqual(self.hw.parse_bytes("17095983104"), 17095983104)
+        self.assertIsNone(self.hw.parse_metric_number("N/A"))
+        self.assertIsNone(self.hw.parse_metric_number(None))
+
+    def test_collect_parses_snapshot_and_drops_processes(self):
+        snapshot = [
+            {
+                "device_name": "AMD Radeon RX 9070 XT",
+                "gpu_clock": "2165MHz",
+                "mem_clock": "2500MHz",
+                "temp": "72C",
+                "fan_speed": "30%",
+                "power_draw": "303W",
+                "gpu_util": "92%",
+                "mem_util": "76%",
+                "mem_total": "17095983104",
+                "mem_used": "13000000000",
+                "mem_free": "4095983104",
+                "processes": [{"pid": "1", "cmdline": "x" * 5000}],
+            }
+        ]
+        result = self.hw.collect_hardware_status(
+            nvtop_runner=lambda: snapshot,
+            drm_root="/tmp/axl-missing-drm",
+            proc_stat="/tmp/axl-missing-stat",
+            proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+            thermal_root="/tmp/axl-missing-thermal",
+            now=1710000000.12,
+        )
+        self.assertTrue(result["available"])
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["ts"], 1710000000.12)
+        gpu = result["gpus"][0]
+        self.assertNotIn("processes", gpu)
+        self.assertEqual(gpu["name"], "AMD Radeon RX 9070 XT")
+        self.assertEqual(gpu["gpu_util_pct"], 92.0)
+        self.assertEqual(gpu["power_w"], 303.0)
+        self.assertEqual(gpu["temp_edge_c"], 72.0)
+        self.assertIsNone(gpu["temp_junction_c"])
+        self.assertEqual(gpu["mem_used_bytes"], 13000000000)
+        json.dumps(result)
+
+    def test_missing_nvtop_is_unavailable_not_an_ipc_error(self):
+        def boom():
+            raise FileNotFoundError("nvtop not found on PATH")
+
+        forced = self.hw.collect_hardware_status(
+            nvtop_runner=boom,
+            drm_root="/tmp/axl-missing-drm",
+            proc_stat="/tmp/axl-missing-stat",
+            proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+            thermal_root="/tmp/axl-missing-thermal",
+        )
+        self.assertFalse(forced["available"])
+        self.assertIn("nvtop", forced["error"])
+        self.assertEqual(forced["gpus"], [])
+        self.assertIn("cpu", forced)
+        self.assertIn("hardware_status", api._HANDLERS)
+
+    def test_hwmon_fills_edge_and_junction(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            hwmon = root / "card1" / "device" / "hwmon" / "hwmon2"
+            self._write(hwmon / "temp1_label", "edge\n")
+            self._write(hwmon / "temp1_input", "72000\n")
+            self._write(hwmon / "temp2_label", "junction\n")
+            self._write(hwmon / "temp2_input", "85000\n")
+            self._write(hwmon / "temp3_label", "mem\n")
+            self._write(hwmon / "temp3_input", "80000\n")
+            snapshot = [
+                {
+                    "device_name": "AMD Radeon RX 9070 XT",
+                    "temp": "70C",
+                    "gpu_util": "10%",
+                    "power_draw": "50W",
+                    "mem_total": "100",
+                    "mem_used": "40",
+                    "mem_free": "60",
+                }
+            ]
+            result = self.hw.collect_hardware_status(
+                nvtop_runner=lambda: snapshot,
+                drm_root=root,
+                proc_stat="/tmp/axl-missing-stat",
+                proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+                thermal_root="/tmp/axl-missing-thermal",
+            )
+            gpu = result["gpus"][0]
+            self.assertEqual(gpu["temp_edge_c"], 72.0)
+            self.assertEqual(gpu["temp_c"], 72.0)
+            self.assertEqual(gpu["temp_junction_c"], 85.0)
+            self.assertEqual(gpu["temp_mem_c"], 80.0)
+
+    def test_cpu_util_is_proc_stat_delta_and_prefers_pkg_temp(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            stat_path = root / "stat"
+            cpuinfo = root / "cpuinfo"
+            thermal = root / "thermal"
+            self._write(cpuinfo, "processor\t: 0\nmodel name\t: Test CPU\n")
+            self._write(thermal / "thermal_zone0" / "type", "acpitz\n")
+            self._write(thermal / "thermal_zone0" / "temp", "27800\n")
+            self._write(thermal / "thermal_zone1" / "type", "iwlwifi_1\n")
+            self._write(thermal / "thermal_zone1" / "temp", "57000\n")
+            self._write(thermal / "thermal_zone2" / "type", "x86_pkg_temp\n")
+            self._write(thermal / "thermal_zone2" / "temp", "41000\n")
+
+            def snapshot():
+                return [{"device_name": "GPU", "gpu_util": "1%", "temp": "40C"}]
+
+            self._write(stat_path, "cpu  100 0 50 850 0 0 0 0 0 0\n")
+            first = self.hw.collect_hardware_status(
+                nvtop_runner=snapshot,
+                drm_root=root / "missing-drm",
+                proc_stat=stat_path,
+                proc_cpuinfo=cpuinfo,
+                thermal_root=thermal,
+            )
+            self.assertIsNone(first["cpu"]["util_pct"])
+            self.assertEqual(first["cpu"]["name"], "Test CPU")
+            self.assertEqual(first["cpu"]["temp_c"], 41.0)
+
+            # 50 more busy, 50 more idle → 50% util
+            self._write(stat_path, "cpu  150 0 50 900 0 0 0 0 0 0\n")
+            second = self.hw.collect_hardware_status(
+                nvtop_runner=snapshot,
+                drm_root=root / "missing-drm",
+                proc_stat=stat_path,
+                proc_cpuinfo=cpuinfo,
+                thermal_root=thermal,
+            )
+            self.assertAlmostEqual(second["cpu"]["util_pct"], 50.0)
+
+    def test_dispatch_hardware_status_never_raises(self):
+        result = api.dispatch("hardware_status", {})
+        self.assertIn("available", result)
+        self.assertIn("gpus", result)
+        self.assertIn("cpu", result)
+        json.dumps(result)
+
+
 if __name__ == "__main__":
     unittest.main()

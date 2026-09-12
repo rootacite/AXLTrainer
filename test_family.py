@@ -131,6 +131,50 @@ class TeCheckpointHelperTest(unittest.TestCase):
         module = torch.nn.Linear(4, 4)
         enable_te_gradient_checkpointing(module)
 
+    def test_apply_lora_skips_checkpointing_when_disabled(self):
+        family = SdxlFamily(CATALOG["sdxl_base_v1-0"])
+        te = mock.Mock(name="te")
+        denoise = mock.Mock(name="denoise")
+        modules = FamilyModules(
+            pipe=None,
+            vae=None,
+            denoise=denoise,
+            tokenizers=[],
+            text_encoders=[te],
+        )
+        cfg = TrainConfig(
+            gradient_checkpointing_unet=False,
+            gradient_checkpointing_te=False,
+        )
+        with mock.patch("trainer.family_sdxl.get_peft_model", side_effect=lambda module, _cfg: module), \
+             mock.patch("trainer.family_sdxl.enable_flash_attention"), \
+             mock.patch("trainer.family_sdxl.enable_te_gradient_checkpointing") as te_ckpt:
+            family.apply_lora(cfg, modules)
+        te_ckpt.assert_not_called()
+        denoise.enable_gradient_checkpointing.assert_not_called()
+
+    def test_apply_lora_enables_checkpointing_by_default(self):
+        family = SdxlFamily(CATALOG["sdxl_base_v1-0"])
+        te = mock.Mock(name="te")
+        denoise = mock.Mock(name="denoise")
+        modules = FamilyModules(
+            pipe=None,
+            vae=None,
+            denoise=denoise,
+            tokenizers=[],
+            text_encoders=[te],
+        )
+        cfg = TrainConfig(
+            gradient_checkpointing_unet=True,
+            gradient_checkpointing_te=True,
+        )
+        with mock.patch("trainer.family_sdxl.get_peft_model", side_effect=lambda module, _cfg: module), \
+             mock.patch("trainer.family_sdxl.enable_flash_attention"), \
+             mock.patch("trainer.family_sdxl.enable_te_gradient_checkpointing") as te_ckpt:
+            family.apply_lora(cfg, modules)
+        te_ckpt.assert_called_once_with(te)
+        denoise.enable_gradient_checkpointing.assert_called_once_with()
+
 
 class MetadataPredictionTypeTest(unittest.TestCase):
     def test_epsilon_when_not_vpred(self):

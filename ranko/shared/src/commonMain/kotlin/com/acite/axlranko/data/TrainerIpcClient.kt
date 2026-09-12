@@ -3,6 +3,7 @@ package com.acite.axlranko.data
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
+import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
@@ -150,6 +151,11 @@ class TrainerIpcClient {
                 batchSize?.let { put("batch_size", it) }
             },
         )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun hardwareStatus(): HardwareStatus {
+        val result = call("hardware_status", JsonObject(emptyMap()))
         return json.decodeFromJsonElement(result)
     }
 

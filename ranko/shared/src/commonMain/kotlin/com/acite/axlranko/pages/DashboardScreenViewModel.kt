@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.DashboardUiState
+import com.acite.axlranko.model.HardwareHistory
+import com.acite.axlranko.model.HardwareStatus
+import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
@@ -33,12 +36,15 @@ class DashboardScreenViewModel(
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
     private var pollingJob: Job? = null
+    private var hardwareJob: Job? = null
+    private var hardwareStep = 0
     private var entered = false
 
     fun onEnter() {
         if (!entered) {
             entered = true
             startPolling()
+            startHardwarePolling()
         } else {
             refreshNow()
         }
@@ -48,8 +54,10 @@ class DashboardScreenViewModel(
         _uiState.update { it.copy(autoRefresh = enabled) }
         if (enabled) {
             startPolling()
+            startHardwarePolling()
         } else {
             pollingJob?.cancel()
+            hardwareJob?.cancel()
         }
     }
 
@@ -83,6 +91,7 @@ class DashboardScreenViewModel(
 
     fun refreshNow() {
         viewModelScope.launch { fetchOnce() }
+        viewModelScope.launch { fetchHardwareOnce() }
     }
 
     fun startTraining() = runTrainCommand { ipc.trainStart() }
@@ -132,8 +141,14 @@ class DashboardScreenViewModel(
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             try {
                 ipc.restart()
+                hardwareStep = 0
+                _uiState.update { it.copy(hardware = HardwareStatus(), hardwareHistory = HardwareHistory()) }
                 fetchOnce()
-                if (_uiState.value.autoRefresh) startPolling()
+                fetchHardwareOnce()
+                if (_uiState.value.autoRefresh) {
+                    startPolling()
+                    startHardwarePolling()
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isLoading = false, connected = false, errorMessage = e.message ?: e.toString())
@@ -153,6 +168,43 @@ class DashboardScreenViewModel(
                 } else {
                     break
                 }
+            }
+        }
+    }
+
+    private fun startHardwarePolling() {
+        hardwareJob?.cancel()
+        hardwareJob = viewModelScope.launch {
+            while (isActive) {
+                fetchHardwareOnce()
+                if (_uiState.value.autoRefresh) {
+                    delay(1_000L.milliseconds)
+                } else {
+                    break
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchHardwareOnce() {
+        try {
+            val snapshot = withContext(Dispatchers.IO) { ipc.hardwareStatus() }
+            _uiState.update { state ->
+                val step = hardwareStep
+                hardwareStep += 1
+                state.copy(
+                    hardware = snapshot,
+                    hardwareHistory = appendHardwareHistory(state.hardwareHistory, snapshot, step),
+                )
+            }
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(
+                    hardware = it.hardware.copy(
+                        available = false,
+                        error = e.message ?: e.toString(),
+                    ),
+                )
             }
         }
     }
@@ -235,4 +287,31 @@ internal fun flattenSamples(samples: Map<String, List<SampleItem>>): List<Sample
     return samples.entries
         .sortedByDescending { it.key.toIntOrNull() ?: Int.MIN_VALUE }
         .flatMap { it.value }
+}
+
+private const val HARDWARE_HISTORY_CAP = 360
+private const val BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0
+
+internal fun appendHardwareHistory(
+    history: HardwareHistory,
+    snapshot: HardwareStatus,
+    step: Int,
+): HardwareHistory {
+    val gpu = snapshot.gpus.firstOrNull()
+    val cpu = snapshot.cpu
+    val vramGiB = gpu?.memUsedBytes?.let { it.toDouble() / BYTES_PER_GIB }
+    return HardwareHistory(
+        gpuUtil = appendHardwarePoint(history.gpuUtil, step, gpu?.gpuUtilPct),
+        vramGiB = appendHardwarePoint(history.vramGiB, step, vramGiB),
+        powerW = appendHardwarePoint(history.powerW, step, gpu?.powerW),
+        tempEdge = appendHardwarePoint(history.tempEdge, step, gpu?.tempEdgeC ?: gpu?.tempC),
+        tempJunction = appendHardwarePoint(history.tempJunction, step, gpu?.tempJunctionC),
+        cpuUtil = appendHardwarePoint(history.cpuUtil, step, cpu.utilPct),
+        cpuTemp = appendHardwarePoint(history.cpuTemp, step, cpu.tempC),
+    )
+}
+
+private fun appendHardwarePoint(points: List<MetricPoint>, step: Int, value: Double?): List<MetricPoint> {
+    if (value == null || !value.isFinite()) return points
+    return (points + MetricPoint(step = step, value = value.toFloat())).takeLast(HARDWARE_HISTORY_CAP)
 }

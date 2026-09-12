@@ -74,6 +74,8 @@ class TomlFloatEncodingTest {
         assertEquals("0.0", form.toTomlSections()["network"]!!["network_dropout"])
         assertEquals("0.0", form.toTomlSections()["optimization"]!!["noise_offset"])
         assertEquals("true", form.toTomlSections()["optimization"]!!["flush_memory_every_step"])
+        assertEquals("true", form.toTomlSections()["optimization"]!!["gradient_checkpointing_unet"])
+        assertEquals("true", form.toTomlSections()["optimization"]!!["gradient_checkpointing_te"])
         assertEquals("6.0", form.toTomlSections()["validation"]!!["guidance_scale"])
     }
 
@@ -89,6 +91,19 @@ class TomlFloatEncodingTest {
             resumed.toTomlSections()["training"]!!["resume_lora_path"],
         )
         assertTrue("resume_lora_path" in ConfigSection.Training.fieldKeys)
+    }
+
+    @Test
+    fun formRoundTripsGradientCheckpointingFlags() {
+        val base = TrainingConfigForm.from(wholeValuedFloatConfig())
+        assertEquals(true, base.gradientCheckpointingUnet)
+        assertEquals(true, base.gradientCheckpointingTe)
+        val off = base.copy(gradientCheckpointingUnet = false, gradientCheckpointingTe = false)
+        val opt = off.toTomlSections()["optimization"]!!
+        assertEquals("false", opt["gradient_checkpointing_unet"])
+        assertEquals("false", opt["gradient_checkpointing_te"])
+        assertTrue("gradient_checkpointing_unet" in ConfigSection.Optimization.fieldKeys)
+        assertTrue("gradient_checkpointing_te" in ConfigSection.Optimization.fieldKeys)
     }
 }
 

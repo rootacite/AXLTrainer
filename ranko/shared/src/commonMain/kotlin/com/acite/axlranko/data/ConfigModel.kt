@@ -75,6 +75,8 @@ data class BucketingConfig(
 data class OptimizationConfig(
     @SerialName("cache_latents") val cacheLatents: Boolean,
     @SerialName("cache_latents_to_disk") val cacheLatentsToDisk: Boolean,
+    @SerialName("gradient_checkpointing_unet") val gradientCheckpointingUnet: Boolean = true,
+    @SerialName("gradient_checkpointing_te") val gradientCheckpointingTe: Boolean = true,
     @SerialName("shuffle_caption") val shuffleCaption: Boolean,
     @SerialName("keep_tokens") val keepTokens: Int,
     @SerialName("caption_extension") val captionExtension: String,

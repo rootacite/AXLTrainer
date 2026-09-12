@@ -64,7 +64,7 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `network_alpha` | `24` | LoRA alpha. Scale ≈ `alpha / dim` (0.5 here). |
 | `network_dropout` | `0.25` | LoRA dropout (`0.0`–`1.0`), regularization / overfitting control. |
 | `clip_skip` | `1` | Hidden-state index used from the text encoders. |
-| `max_token_length` | `225` | Prompt budget; prompts are chunked into `model_max_length − 2` pieces and padded, so values above 77 enable long prompts. |
+| `max_token_length` | `225` | Upper bound on prompt tokens. Captions longer than CLIP's 75 content tokens are split into `model_max_length − 2` chunks; a batch is padded only to the longest caption in that batch (not always to this cap). Sampling still uses as many chunks as the sample prompt needs, up to this value. |
 
 ### `[bucketing]` — aspect-ratio buckets
 
@@ -83,6 +83,8 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | --- | --- | --- |
 | `cache_latents` | `true` | Pre-encode all images to latents before training. |
 | `cache_latents_to_disk` | `true` | Persist encoded latents to `<train_data_dir>/.latents_cache/` (SHA1-keyed `.pt` files, atomic writes). Reused across runs. |
+| `gradient_checkpointing_unet` | `true` | After PEFT wrap, call `enable_gradient_checkpointing()` on the UNet. Saves VRAM by recomputing activations in backward; turn off for faster steps if the GPU has headroom. |
+| `gradient_checkpointing_te` | `true` | Same for both text encoders (`gradient_checkpointing_enable` / `enable_gradient_checkpointing`, plus `enable_input_require_grads` because embeddings stay frozen). |
 | `shuffle_caption` | `true` | Shuffle caption tokens after `keep_tokens`, deterministically per epoch. |
 | `keep_tokens` | `2` | Number of leading caption tokens kept in place when shuffling. |
 | `caption_extension` | `".txt"` | Caption file extension. |

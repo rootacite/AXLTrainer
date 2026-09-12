@@ -26,6 +26,29 @@ def _chunk_ids(
     ]
 
 
+def _empty_chunk_ids(tokenizer: CLIPTokenizer) -> List[int]:
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    ids = [tokenizer.bos_token_id, tokenizer.eos_token_id]
+    pad_n = tokenizer.model_max_length - len(ids)
+    if pad_n > 0:
+        ids = ids + [pad_id] * pad_n
+    else:
+        ids = ids[: tokenizer.model_max_length]
+        ids[-1] = tokenizer.eos_token_id
+    return ids
+
+
+def _pad_chunk_ids(chunk: List[int], tokenizer: CLIPTokenizer) -> List[int]:
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    ids = [tokenizer.bos_token_id] + chunk + [tokenizer.eos_token_id]
+    if len(ids) < tokenizer.model_max_length:
+        ids = ids + [pad_id] * (tokenizer.model_max_length - len(ids))
+    else:
+        ids = ids[: tokenizer.model_max_length]
+        ids[-1] = tokenizer.eos_token_id
+    return ids
+
+
 def tokenize_long_prompt(
         text: str,
         tokenizer: CLIPTokenizer,
@@ -33,6 +56,7 @@ def tokenize_long_prompt(
         target_num_chunks: Optional[int] = None,
 ) -> Tuple[torch.Tensor, int]:
     chunk_size = tokenizer.model_max_length - 2
+    cap_chunks = max(1, math.ceil(max_token_length / chunk_size))
 
     token_ids = tokenizer(
         text,
@@ -48,9 +72,10 @@ def tokenize_long_prompt(
     )
 
     if target_num_chunks is not None:
-        max_chunks = target_num_chunks
+        max_chunks = max(1, int(target_num_chunks))
     else:
-        max_chunks = max(1, math.ceil(max_token_length / chunk_size))
+        max_chunks = max(1, len(chunks))
+        max_chunks = min(max_chunks, cap_chunks)
 
     while len(chunks) < max_chunks:
         chunks.append([])
@@ -58,27 +83,7 @@ def tokenize_long_prompt(
     if len(chunks) > max_chunks:
         chunks = chunks[:max_chunks]
 
-    seqs = []
-
-    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
-
-    for chunk in chunks:
-        ids = (
-                [tokenizer.bos_token_id]
-                + chunk
-                + [tokenizer.eos_token_id]
-        )
-
-        if len(ids) < tokenizer.model_max_length:
-            ids = ids + [pad_id] * (
-                    tokenizer.model_max_length - len(ids)
-            )
-        else:
-            ids = ids[: tokenizer.model_max_length]
-            ids[-1] = tokenizer.eos_token_id
-
-        seqs.append(torch.tensor(ids, dtype=torch.long))
-
+    seqs = [torch.tensor(_pad_chunk_ids(chunk, tokenizer), dtype=torch.long) for chunk in chunks]
     return torch.stack(seqs, dim=0), max_chunks
 
 
@@ -90,6 +95,29 @@ def _get_pooled_output(output) -> torch.Tensor:
         return output.pooler_output
 
     return output.last_hidden_state[:, 0]
+
+
+def _pad_chunk_stack(
+        ids_list: Sequence[torch.Tensor],
+        n_chunks: int,
+        tokenizer: CLIPTokenizer,
+) -> torch.Tensor:
+    empty = torch.tensor(_empty_chunk_ids(tokenizer), dtype=torch.long)
+    padded: List[torch.Tensor] = []
+    for ids in ids_list:
+        if ids.shape[0] >= n_chunks:
+            padded.append(ids[:n_chunks])
+            continue
+        extra = empty.unsqueeze(0).expand(n_chunks - ids.shape[0], -1)
+        padded.append(torch.cat([ids, extra], dim=0))
+    return torch.stack(padded, dim=0)
+
+
+def _hidden_for_clip_skip(output, clip_skip: int) -> torch.Tensor:
+    # clip_skip=0 must use last_hidden_state (final layer norm), not hidden_states[-1].
+    if clip_skip > 0:
+        return output.hidden_states[-(clip_skip + 1)]
+    return output.last_hidden_state
 
 
 def encode_prompt_batch(
@@ -104,92 +132,68 @@ def encode_prompt_batch(
         dtype: torch.dtype,
         target_num_chunks: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
-    prompt_embeds_out: List[torch.Tensor] = []
-    pooled_out: List[torch.Tensor] = []
+    ids_1_list: List[torch.Tensor] = []
+    ids_2_list: List[torch.Tensor] = []
 
     used_num_chunks = target_num_chunks
 
     for prompt in prompts:
-
         ids_1, chunks_1 = tokenize_long_prompt(
             prompt,
             tokenizer_1,
             max_token_length,
             target_num_chunks,
         )
-        ids_1 = ids_1.to(device)
-
         ids_2, chunks_2 = tokenize_long_prompt(
             prompt,
             tokenizer_2,
             max_token_length,
             target_num_chunks,
         )
-        ids_2 = ids_2.to(device)
-
-        if used_num_chunks is None:
-            used_num_chunks = chunks_1
-
-        if len(ids_1) != len(ids_2):
+        if ids_1.shape[0] != ids_2.shape[0]:
             raise RuntimeError(
                 f"Tokenizer chunk mismatch: "
-                f"{len(ids_1)} vs {len(ids_2)}"
+                f"{ids_1.shape[0]} vs {ids_2.shape[0]}"
             )
+        ids_1_list.append(ids_1)
+        ids_2_list.append(ids_2)
+        if used_num_chunks is None:
+            used_num_chunks = max(chunks_1, chunks_2)
+        else:
+            used_num_chunks = max(used_num_chunks, chunks_1, chunks_2)
 
-        chunk_embeds_1 = []
-        chunk_embeds_2 = []
-        pooled_chunks = []
+    if used_num_chunks is None:
+        used_num_chunks = 1
 
-        for c1, c2 in zip(ids_1, ids_2):
+    ids_1 = _pad_chunk_stack(ids_1_list, used_num_chunks, tokenizer_1).to(device)
+    ids_2 = _pad_chunk_stack(ids_2_list, used_num_chunks, tokenizer_2).to(device)
 
-            c1 = c1.unsqueeze(0)
-            c2 = c2.unsqueeze(0)
+    batch_size, n_chunks, seq_len = ids_1.shape
+    flat_1 = ids_1.reshape(batch_size * n_chunks, seq_len)
+    flat_2 = ids_2.reshape(batch_size * n_chunks, seq_len)
 
-            out1 = text_encoder_1(
-                c1,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-
-            out2 = text_encoder_2(
-                c2,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-
-            if clip_skip > 0:
-                hs1 = out1.hidden_states[-(clip_skip + 1)]
-                hs2 = out2.hidden_states[-(clip_skip + 1)]
-            else:
-                hs1 = out1.last_hidden_state
-                hs2 = out2.last_hidden_state
-
-            pooled = _get_pooled_output(out2)
-
-            chunk_embeds_1.append(hs1)
-            chunk_embeds_2.append(hs2)
-            pooled_chunks.append(pooled)
-
-        emb1 = torch.cat(chunk_embeds_1, dim=1)
-        emb2 = torch.cat(chunk_embeds_2, dim=1)
-
-        prompt_embeds = torch.cat(
-            [emb1, emb2],
-            dim=-1,
-        )
-
-        pooled_prompt_embeds = pooled_chunks[0]
-
-        prompt_embeds_out.append(
-            prompt_embeds.squeeze(0).to(dtype)
-        )
-
-        pooled_out.append(
-            pooled_prompt_embeds.squeeze(0).to(dtype)
-        )
-
-    return (
-        torch.stack(prompt_embeds_out, dim=0),
-        torch.stack(pooled_out, dim=0),
-        used_num_chunks if used_num_chunks is not None else 0
+    out1 = text_encoder_1(
+        flat_1,
+        output_hidden_states=True,
+        return_dict=True,
     )
+    out2 = text_encoder_2(
+        flat_2,
+        output_hidden_states=True,
+        return_dict=True,
+    )
+
+    hs1 = _hidden_for_clip_skip(out1, clip_skip)
+    hs2 = _hidden_for_clip_skip(out2, clip_skip)
+    pooled = _get_pooled_output(out2)
+
+    hs1 = hs1.view(batch_size, n_chunks, seq_len, hs1.shape[-1])
+    hs2 = hs2.view(batch_size, n_chunks, seq_len, hs2.shape[-1])
+    prompt_embeds = torch.cat(
+        [hs1.reshape(batch_size, n_chunks * seq_len, -1), hs2.reshape(batch_size, n_chunks * seq_len, -1)],
+        dim=-1,
+    ).to(dtype)
+
+    pooled_prompt_embeds = pooled.view(batch_size, n_chunks, pooled.shape[-1])[:, 0, :].to(dtype)
+
+    return prompt_embeds, pooled_prompt_embeds, used_num_chunks

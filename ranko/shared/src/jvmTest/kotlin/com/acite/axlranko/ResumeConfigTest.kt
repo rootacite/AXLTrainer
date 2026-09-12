@@ -29,6 +29,11 @@ class ResumeConfigTest {
         assertEquals("", config.training.resumeLoraPath)
         assertEquals(3, config.training.trainBatchSize)
         assertEquals("haruko", config.environment.outputName)
+        assertEquals(true, config.optimization.gradientCheckpointingUnet)
+        assertEquals(true, config.optimization.gradientCheckpointingTe)
+        val form = TrainingConfigForm.from(config)
+        assertEquals(true, form.gradientCheckpointingUnet)
+        assertEquals(true, form.gradientCheckpointingTe)
     }
 
     @Test

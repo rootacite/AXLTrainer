@@ -28,12 +28,19 @@ except ImportError:
 _loss_recorder = LossRecorder()
 
 
+def _batch_int(values: Any, idx: int) -> int:
+    item = values[idx]
+    if torch.is_tensor(item):
+        return int(item.item())
+    return int(item)
+
+
 def group_indices_by_bucket(batch: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
     """Group batch items by spatial bucket to keep tensor shapes consistent."""
     groups: dict[tuple[int, int], list[int]] = defaultdict(list)
     for idx in range(len(batch["caption"])):
-        bw = int(batch["bucket_w"][idx].item())
-        bh = int(batch["bucket_h"][idx].item())
+        bw = _batch_int(batch["bucket_w"], idx)
+        bh = _batch_int(batch["bucket_h"], idx)
         groups[(bw, bh)].append(idx)
     return groups
 
@@ -51,9 +58,8 @@ def encode_latent_for_item(
     img_type = batch["img_type"][item_index]
     cache_path = Path(batch["cache_path"][item_index])
     img_data = batch["img_data"][item_index]
-
     if img_type == "latent":
-        return img_data.to(device=device, dtype=weight_dtype)
+        return img_data.to(device=device, dtype=weight_dtype, non_blocking=True)
 
     pixel_values = img_data.unsqueeze(0).to(device=device, dtype=weight_dtype)
     with torch.no_grad():
@@ -84,33 +90,34 @@ def build_group_inputs(
 ) -> tuple[list[str], torch.Tensor, dict[str, torch.Tensor]]:
     """Build prompts, latents, and family-specific extra cond for one bucket group."""
     prompts = [batch["caption"][i] for i in indices]
-    latents_list: list[torch.Tensor] = []
     extras: list[dict[str, torch.Tensor]] = []
-
     for i in indices:
-        src_w = int(batch["src_w"][i].item())
-        src_h = int(batch["src_h"][i].item())
-        bucket_w = int(batch["bucket_w"][i].item())
-        bucket_h = int(batch["bucket_h"][i].item())
-
-        latent = encode_latent_for_item(
-            item_index=i,
-            batch=batch,
-            vae=vae,
-            cfg=cfg,
-            device=device,
-            weight_dtype=weight_dtype,
-        )
-        latents_list.append(latent)
         extras.append(
             family.extra_cond(
-                src_wh=(src_w, src_h),
-                bucket_wh=(bucket_w, bucket_h),
+                src_wh=(_batch_int(batch["src_w"], i), _batch_int(batch["src_h"], i)),
+                bucket_wh=(_batch_int(batch["bucket_w"], i), _batch_int(batch["bucket_h"], i)),
                 device=device,
                 dtype=weight_dtype,
             )
         )
 
+    img_data = batch["img_data"]
+    if torch.is_tensor(img_data):
+        latents = img_data[indices].to(device=device, dtype=weight_dtype, non_blocking=True)
+        return prompts, latents, _stack_extra(extras)
+
+    latents_list: list[torch.Tensor] = []
+    for i in indices:
+        latents_list.append(
+            encode_latent_for_item(
+                item_index=i,
+                batch=batch,
+                vae=vae,
+                cfg=cfg,
+                device=device,
+                weight_dtype=weight_dtype,
+            )
+        )
     latents = torch.stack(latents_list, dim=0).to(device=device, dtype=weight_dtype)
     return prompts, latents, _stack_extra(extras)
 
@@ -195,6 +202,14 @@ def train_one_epoch(
     for te in text_encoders:
         te.train()
 
+    denoise_clip_params = [p for p in denoise.parameters() if p.requires_grad]
+    te_clip_params = [
+        p
+        for te in text_encoders
+        for p in te.parameters()
+        if p.requires_grad
+    ]
+
     epoch_step = 0
     epoch_index = max(0, int(cfg._current_epoch) - 1)
 
@@ -202,8 +217,9 @@ def train_one_epoch(
         with accelerator.accumulate(denoise, *text_encoders):
             groups = group_indices_by_bucket(batch)
 
-            batch_loss_sum = 0.0
+            batch_loss_sum: torch.Tensor | None = None
             batch_item_count = 0
+            n_caption = len(batch["caption"])
 
             for _, indices in groups.items():
                 prompts, latents, extra = build_group_inputs(
@@ -226,20 +242,13 @@ def train_one_epoch(
                     dtype=weight_dtype,
                 )
 
-                scaled_loss = loss * (len(indices) / len(batch["caption"]))
+                scaled_loss = loss * (len(indices) / n_caption)
                 accelerator.backward(scaled_loss)
-                batch_loss_sum += loss.item() * len(indices)
+                weighted = loss.detach() * len(indices)
+                batch_loss_sum = weighted if batch_loss_sum is None else batch_loss_sum + weighted
                 batch_item_count += len(indices)
 
             if accelerator.sync_gradients:
-                denoise_clip_params = [p for p in denoise.parameters() if p.requires_grad]
-                te_clip_params = [
-                    p
-                    for te in text_encoders
-                    for p in te.parameters()
-                    if p.requires_grad
-                ]
-
                 accelerator.clip_grad_norm_(denoise_clip_params, cfg.max_grad_norm)
                 accelerator.clip_grad_norm_(te_clip_params, cfg.te_max_grad_norm)
                 denoise_optimizer.step()
@@ -250,7 +259,10 @@ def train_one_epoch(
 
         if accelerator.sync_gradients:
             global_step += 1
-            avg_loss = batch_loss_sum / max(1, batch_item_count)
+            if batch_loss_sum is None:
+                avg_loss = 0.0
+            else:
+                avg_loss = float((batch_loss_sum / max(1, batch_item_count)).item())
             _loss_recorder.add(epoch=epoch_index, step=epoch_step, loss=avg_loss)
             _maybe_log_and_sample.last_loss = avg_loss
             _maybe_log_and_sample.last_avg_loss = _loss_recorder.moving_average

@@ -13,8 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,6 +44,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.acite.axlranko.model.MetricPoint
+import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.theme.rankoColors
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.ln
@@ -174,6 +174,14 @@ private fun lttbDownsample(points: List<ChartPoint>, maxPoints: Int): List<Chart
     return sampled
 }
 
+data class ChartSeries(
+    val label: String,
+    val points: List<MetricPoint>,
+    val color: Color,
+    val domainMin: Float? = null,
+    val domainMax: Float? = null,
+)
+
 @Composable
 fun ChartCard(
     title: String,
@@ -185,32 +193,85 @@ fun ChartCard(
     strokeWidth: Float = 3f,
     chartHeight: Dp = 220.dp,
 ) {
-    Card(
-        modifier = modifier.height(chartHeight),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(color)
-                )
+    MultiSeriesChartCard(
+        title = title,
+        series = listOf(ChartSeries(label = title, points = points, color = color)),
+        smoothing = smoothing,
+        modifier = modifier,
+        outlierClip = outlierClip,
+        strokeWidth = strokeWidth,
+        chartHeight = chartHeight,
+        showLegend = false,
+    )
+}
+
+@Composable
+fun MultiSeriesChartCard(
+    title: String,
+    series: List<ChartSeries>,
+    smoothing: Float,
+    modifier: Modifier = Modifier,
+    outlierClip: Float = 0.15f,
+    strokeWidth: Float = 3f,
+    chartHeight: Dp = 220.dp,
+    showLegend: Boolean = true,
+) {
+    val hasData = series.any { it.points.isNotEmpty() }
+    val colors = rankoColors
+    PorcelainCard(modifier = modifier.height(chartHeight)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (showLegend) {
                 Text(
                     title,
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    series.forEach { item ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(item.color)
+                            )
+                            Text(
+                                item.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.textDim,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    series.firstOrNull()?.let { item ->
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(item.color)
+                        )
+                    }
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    )
+                }
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            if (points.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            if (hasData) {
                 InteractiveLineChart(
-                    points = points,
-                    color = color,
+                    series = series,
                     smoothing = smoothing,
                     outlierClip = outlierClip,
                     strokeWidth = strokeWidth,
@@ -220,7 +281,7 @@ fun ChartCard(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         "No Data",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = colors.textDim,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -231,60 +292,87 @@ fun ChartCard(
 
 private const val MAX_DRAW_POINTS = 500
 
+private fun mapSeriesY(value: Float, series: ChartSeries): Float {
+    val lo = series.domainMin
+    val hi = series.domainMax
+    if (lo == null || hi == null) return value
+    val span = hi - lo
+    if (span <= 1e-9f) return 0f
+    return ((value - lo) / span) * 100f
+}
+
+private fun smoothPoints(points: List<ChartPoint>, smoothing: Float): List<ChartPoint> {
+    if (smoothing <= 0f || points.isEmpty()) return points
+    val out = ArrayList<ChartPoint>(points.size)
+    var ema = points.first().value
+    for (p in points) {
+        ema = ema * smoothing + (1f - smoothing) * p.value
+        out += ChartPoint(p.step, ema)
+    }
+    return out
+}
+
+private data class PreparedSeries(
+    val color: Color,
+    val raw: List<ChartPoint>,
+    val smooth: List<ChartPoint>,
+)
+
 @Composable
 private fun InteractiveLineChart(
-    points: List<MetricPoint>,
-    color: Color,
+    series: List<ChartSeries>,
     smoothing: Float,
     outlierClip: Float,
     strokeWidth: Float,
     modifier: Modifier = Modifier,
 ) {
-    val rawPoints = remember(points) {
-        points.map { ChartPoint(it.step.toFloat(), it.value) }.sortedBy { it.step }
-    }
-    if (rawPoints.isEmpty()) return
-
-    val smoothedPoints = remember(rawPoints, smoothing) {
-        if (smoothing <= 0f) return@remember rawPoints
-        val out = ArrayList<ChartPoint>(rawPoints.size)
-        var ema = rawPoints.first().value
-        for (p in rawPoints) {
-            ema = ema * smoothing + (1f - smoothing) * p.value
-            out += ChartPoint(p.step, ema)
+    val prepared = remember(series, smoothing) {
+        series.mapNotNull { item ->
+            if (item.points.isEmpty()) return@mapNotNull null
+            val raw = item.points
+                .map { ChartPoint(it.step.toFloat(), mapSeriesY(it.value, item)) }
+                .sortedBy { it.step }
+            PreparedSeries(color = item.color, raw = raw, smooth = smoothPoints(raw, smoothing))
         }
-        out
     }
+    if (prepared.isEmpty()) return
 
-    val fullBounds = remember(rawPoints) {
-        val sortedY = rawPoints.map { it.value }.sorted()
+    val allRaw = remember(prepared) { prepared.flatMap { it.raw } }
+    val normalized = series.any { it.domainMin != null && it.domainMax != null }
+
+    val fullBounds = remember(allRaw, normalized) {
         Viewport(
-            xMin = rawPoints.minOf { it.step },
-            xMax = rawPoints.maxOf { it.step },
-            yMin = sortedY.first(),
-            yMax = sortedY.last(),
+            xMin = allRaw.minOf { it.step },
+            xMax = allRaw.maxOf { it.step },
+            yMin = if (normalized) 0f else allRaw.minOf { it.value },
+            yMax = if (normalized) 100f else allRaw.maxOf { it.value },
         )
     }
 
-    val initialViewport = remember(rawPoints, outlierClip, fullBounds) {
-        val sortedY = rawPoints.map { it.value }.sorted()
-        val half = (outlierClip / 2f).coerceIn(0f, 0.49f)
-        val yLo = sortedY.percentile(half)
-        val yHi = sortedY.percentile(1f - half)
-        val yPad = ((yHi - yLo) * 0.05f).coerceAtLeast(abs(yHi) * 0.01f)
-        Viewport(
-            xMin = fullBounds.xMin,
-            xMax = fullBounds.xMax,
-            yMin = yLo - yPad,
-            yMax = yHi + yPad,
-        )
+    val initialViewport = remember(allRaw, outlierClip, fullBounds, normalized) {
+        if (normalized) {
+            fullBounds
+        } else {
+            val sortedY = allRaw.map { it.value }.sorted()
+            val half = (outlierClip / 2f).coerceIn(0f, 0.49f)
+            val yLo = sortedY.percentile(half)
+            val yHi = sortedY.percentile(1f - half)
+            val yPad = ((yHi - yLo) * 0.05f).coerceAtLeast(abs(yHi) * 0.01f)
+            Viewport(
+                xMin = fullBounds.xMin,
+                xMax = fullBounds.xMax,
+                yMin = yLo - yPad,
+                yMax = yHi + yPad,
+            )
+        }
     }
 
     var viewport by remember(initialViewport) { mutableStateOf(initialViewport) }
 
-    val avgStepGap = remember(rawPoints) {
-        if (rawPoints.size < 2) 0f
-        else (rawPoints.last().step - rawPoints.first().step) / (rawPoints.size - 1).toFloat()
+    val avgStepGap = remember(allRaw) {
+        val xs = allRaw.map { it.step }.distinct().sorted()
+        if (xs.size < 2) 0f
+        else (xs.last() - xs.first()) / (xs.size - 1).toFloat()
     }
     val minXRange = remember(fullBounds, avgStepGap) {
         maxOf(fullBounds.xRange * 0.01f, avgStepGap * 4f)
@@ -296,6 +384,7 @@ private fun InteractiveLineChart(
     }
 
     fun visibleSlice(all: List<ChartPoint>, vp: Viewport): List<ChartPoint> {
+        if (all.isEmpty()) return emptyList()
         val lo = vp.xMin - vp.xRange * 0.05f
         val hi = vp.xMax + vp.xRange * 0.05f
         val first = all.indexOfFirst { it.step >= lo }.let { if (it > 0) it - 1 else 0 }
@@ -304,25 +393,23 @@ private fun InteractiveLineChart(
         return all.subList(first, last + 1)
     }
 
-    data class VisiblePoints(
-        val raw: List<ChartPoint>,
-        val smooth: List<ChartPoint>,
-    )
-
-    val visiblePoints: VisiblePoints by remember(rawPoints, smoothedPoints) {
+    val visibleSeries by remember(prepared) {
         derivedStateOf {
             val vp = viewport
-            VisiblePoints(
-                raw = lttbDownsample(visibleSlice(rawPoints, vp), MAX_DRAW_POINTS),
-                smooth = lttbDownsample(visibleSlice(smoothedPoints, vp), MAX_DRAW_POINTS),
-            )
+            prepared.map { item ->
+                item.copy(
+                    raw = lttbDownsample(visibleSlice(item.raw, vp), MAX_DRAW_POINTS),
+                    smooth = lttbDownsample(visibleSlice(item.smooth, vp), MAX_DRAW_POINTS),
+                )
+            }
         }
     }
 
+    val colors = rankoColors
     val textMeasurer = rememberTextMeasurer()
-    val labelStyle = TextStyle(fontSize = 9.sp, color = Color.Gray.copy(alpha = 0.7f))
-    val gridColor = Color.Gray.copy(alpha = 0.12f)
-    val axisColor = Color.Gray.copy(alpha = 0.3f)
+    val labelStyle = TextStyle(fontSize = 9.sp, color = colors.textDim.copy(alpha = 0.85f))
+    val gridColor = colors.stroke.copy(alpha = 0.45f)
+    val axisColor = colors.stroke
 
     val gestureModifier = modifier
         .pointerInput(fullBounds) {
@@ -435,14 +522,24 @@ private fun InteractiveLineChart(
         )
 
         clipRect(left = leftPad, top = 0f, right = w, bottom = plotH) {
-            val vp2 = visiblePoints
             val rawStroke = (strokeWidth * 0.5f).coerceAtLeast(0.8f)
-            drawPath(buildPath(vp2.raw, ::dataToScreen), color.copy(alpha = 0.20f), style = Stroke(width = rawStroke))
-            drawPath(buildPath(vp2.smooth, ::dataToScreen), color, style = Stroke(width = strokeWidth))
-            visiblePoints.smooth.lastOrNull()?.let { last ->
-                val pt = dataToScreen(last.step, last.value)
-                drawCircle(color, radius = strokeWidth * 1.6f, center = pt)
-                drawCircle(Color.White, radius = strokeWidth * 0.8f, center = pt)
+            for (item in visibleSeries) {
+                if (item.raw.isEmpty() && item.smooth.isEmpty()) continue
+                drawPath(
+                    buildPath(item.raw, ::dataToScreen),
+                    item.color.copy(alpha = 0.20f),
+                    style = Stroke(width = rawStroke),
+                )
+                drawPath(
+                    buildPath(item.smooth, ::dataToScreen),
+                    item.color,
+                    style = Stroke(width = strokeWidth),
+                )
+                item.smooth.lastOrNull()?.let { last ->
+                    val pt = dataToScreen(last.step, last.value)
+                    drawCircle(item.color, radius = strokeWidth * 1.6f, center = pt)
+                    drawCircle(Color.White, radius = strokeWidth * 0.8f, center = pt)
+                }
             }
         }
     }

@@ -24,6 +24,7 @@ from trainer.control import (
     reset_to_idle,
     status_payload,
 )
+from trainer.hardware import collect_hardware_status
 from trainer.runs import find_latest_run
 
 _TAG_BLOCKED = frozenset(
@@ -361,6 +362,11 @@ def run_tagger_process(
     return payload
 
 
+def handle_hardware_status(_params: dict[str, Any]) -> dict[str, Any]:
+    """nvtop -s snapshot plus sysfs CPU/GPU temps. Never raises; Ranko keeps training UI up."""
+    return _json_safe(collect_hardware_status())
+
+
 def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
     current = reconcile()
     if current.get("status") in _TAG_BLOCKED and is_pid_alive(current.get("pid")):
@@ -404,6 +410,7 @@ _HANDLERS = {
     "train_stop": handle_train_stop,
     "train_reset": handle_train_reset,
     "dataset_tag": handle_dataset_tag,
+    "hardware_status": handle_hardware_status,
 }
 
 

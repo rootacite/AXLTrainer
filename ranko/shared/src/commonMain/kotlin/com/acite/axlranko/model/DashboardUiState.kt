@@ -117,6 +117,52 @@ data class TrainResume(
 )
 
 @Serializable
+data class HardwareGpu(
+    val index: Int = 0,
+    val name: String = "",
+    @SerialName("gpu_clock_mhz") val gpuClockMhz: Double? = null,
+    @SerialName("mem_clock_mhz") val memClockMhz: Double? = null,
+    @SerialName("fan_pct") val fanPct: Double? = null,
+    @SerialName("gpu_util_pct") val gpuUtilPct: Double? = null,
+    @SerialName("mem_util_pct") val memUtilPct: Double? = null,
+    @SerialName("power_w") val powerW: Double? = null,
+    @SerialName("temp_c") val tempC: Double? = null,
+    @SerialName("temp_edge_c") val tempEdgeC: Double? = null,
+    @SerialName("temp_junction_c") val tempJunctionC: Double? = null,
+    @SerialName("temp_mem_c") val tempMemC: Double? = null,
+    @SerialName("mem_total_bytes") val memTotalBytes: Long? = null,
+    @SerialName("mem_used_bytes") val memUsedBytes: Long? = null,
+    @SerialName("mem_free_bytes") val memFreeBytes: Long? = null,
+)
+
+@Serializable
+data class HardwareCpu(
+    val name: String = "",
+    @SerialName("n_logical") val nLogical: Int = 0,
+    @SerialName("util_pct") val utilPct: Double? = null,
+    @SerialName("temp_c") val tempC: Double? = null,
+)
+
+@Serializable
+data class HardwareStatus(
+    val available: Boolean = false,
+    val error: String? = null,
+    val ts: Double = 0.0,
+    val gpus: List<HardwareGpu> = emptyList(),
+    val cpu: HardwareCpu = HardwareCpu(),
+)
+
+data class HardwareHistory(
+    val gpuUtil: List<MetricPoint> = emptyList(),
+    val vramGiB: List<MetricPoint> = emptyList(),
+    val powerW: List<MetricPoint> = emptyList(),
+    val tempEdge: List<MetricPoint> = emptyList(),
+    val tempJunction: List<MetricPoint> = emptyList(),
+    val cpuUtil: List<MetricPoint> = emptyList(),
+    val cpuTemp: List<MetricPoint> = emptyList(),
+)
+
+@Serializable
 data class TrainStatus(
     val schema: Int = 1,
     val pid: Int? = null,
@@ -154,4 +200,6 @@ data class DashboardUiState(
     val trainStatus: TrainStatus = TrainStatus(),
     val commandInFlight: Boolean = false,
     val pendingCommand: String? = null,
+    val hardware: HardwareStatus = HardwareStatus(),
+    val hardwareHistory: HardwareHistory = HardwareHistory(),
 )

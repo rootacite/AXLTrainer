@@ -23,21 +23,22 @@ except ImportError:
 
 
 def _prepare_artifacts(artifacts) -> None:
+    # Do not prepare the dataloader: Accelerate would device-place metadata
+    # tensors and may wrap/replace the bucket batch sampler. This trainer is
+    # single-process; latents move to GPU in the train loop.
     n_te = len(artifacts.modules.text_encoders)
     prepared = artifacts.accelerator.prepare(
         artifacts.modules.denoise,
         *artifacts.modules.text_encoders,
         artifacts.denoise_optimizer,
         artifacts.te_optimizer,
-        artifacts.dataloader,
         artifacts.te_scheduler,
     )
     artifacts.modules.denoise = prepared[0]
     artifacts.modules.text_encoders = list(prepared[1 : 1 + n_te])
     artifacts.denoise_optimizer = prepared[1 + n_te]
     artifacts.te_optimizer = prepared[2 + n_te]
-    artifacts.dataloader = prepared[3 + n_te]
-    artifacts.te_scheduler = prepared[4 + n_te]
+    artifacts.te_scheduler = prepared[3 + n_te]
 
 
 def main() -> None:
@@ -128,6 +129,9 @@ def main() -> None:
 
         for epoch in range(cfg.epoch):
             artifacts.train_dataset.set_epoch(epoch)
+            sampler = getattr(artifacts.dataloader, "batch_sampler", None)
+            if sampler is not None and hasattr(sampler, "set_epoch"):
+                sampler.set_epoch(epoch)
             cfg._current_epoch = epoch + 1
 
             global_step = train_one_epoch(

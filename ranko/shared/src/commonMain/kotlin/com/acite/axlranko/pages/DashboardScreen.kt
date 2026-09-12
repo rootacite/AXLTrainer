@@ -32,9 +32,6 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -78,9 +75,14 @@ import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.ChartCard
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
+import com.acite.axlranko.pages.components.HardwareSection
 import com.acite.axlranko.pages.components.MetricCard
 import com.acite.axlranko.pages.components.PathChip
 import com.acite.axlranko.pages.components.TrainControlCard
+import com.acite.axlranko.ui.components.CapsuleButton
+import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.formatFourDecimals
 import com.acite.axlranko.util.formatScientificTwoDecimals
 import dev.zacsweers.metrox.viewmodel.metroViewModel
@@ -102,12 +104,9 @@ fun DashboardScreen(
             modifier = Modifier.fillMaxSize().padding(32.dp),
             contentAlignment = Alignment.Center
         ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                shape = RoundedCornerShape(16.dp)
-            ) {
+            PorcelainCard {
                 Column(
-                    modifier = Modifier.padding(32.dp),
+                    modifier = Modifier.padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
@@ -115,17 +114,15 @@ fun DashboardScreen(
                         Icons.Default.Warning,
                         contentDescription = "Error",
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.error
+                        tint = rankoColors.qualityRed
                     )
                     Text(
                         text = uiState.errorMessage!!,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        color = rankoColors.text,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
-                    Button(onClick = { viewModel.retry() }) {
-                        Text("Retry")
-                    }
+                    CapsuleButton(text = "Retry", onClick = { viewModel.retry() }, emphasized = true)
                 }
             }
         }
@@ -139,14 +136,10 @@ fun DashboardScreen(
         return
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             DashboardHeader(uiState = uiState, viewModel = viewModel)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            HorizontalDivider(color = rankoColors.stroke.copy(alpha = 0.55f))
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 val listState = rememberLazyListState()
@@ -174,6 +167,12 @@ fun DashboardScreen(
                     }
 
                     item {
+                        DashboardSectionHeader("Hardware")
+                        Spacer(Modifier.height(4.dp))
+                        HardwareSection(uiState)
+                    }
+
+                    item {
                         PathRow(uiState.config, uiState.runId)
                     }
 
@@ -198,17 +197,11 @@ fun DashboardScreen(
 
                     if (grouped.isEmpty()) {
                         item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
+                            PorcelainCard {
                                 Text(
                                     "No sample images generated yet.",
-                                    modifier = Modifier.padding(20.dp),
-                                    style = MaterialTheme.typography.bodyMedium
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = rankoColors.textDim,
                                 )
                             }
                         }
@@ -283,8 +276,8 @@ private fun DashboardHeader(
                 Text(
                     text = if (uiState.connected) "Helper connected" else "Helper disconnected",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (uiState.connected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error
+                    color = if (uiState.connected) rankoColors.accentPink
+                    else rankoColors.qualityRed
                 )
             }
 
@@ -299,18 +292,23 @@ private fun DashboardHeader(
                     Text(
                         text = if (uiState.autoRefresh) "3s ON" else "OFF",
                         style = MaterialTheme.typography.labelLarge,
-                        color = if (uiState.autoRefresh) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (uiState.autoRefresh) rankoColors.accentPink
+                        else rankoColors.textDim
                     )
                     Switch(
                         checked = uiState.autoRefresh,
                         onCheckedChange = { viewModel.toggleAutoRefresh(it) }
                     )
                 }
-                Button(onClick = { viewModel.refreshNow() }) {
+                CapsuleButton(
+                    text = "Refresh",
+                    onClick = { viewModel.refreshNow() },
+                    compact = true,
+                    emphasized = true,
+                ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Refresh")
+                    Text("Refresh", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -353,14 +351,10 @@ private fun DashboardHeader(
         }
 
         uiState.errorMessage?.let { message ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                shape = RoundedCornerShape(8.dp)
-            ) {
+            PorcelainCard {
                 Text(
                     text = message,
-                    modifier = Modifier.padding(12.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    color = rankoColors.qualityRed,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -384,15 +378,11 @@ private fun PathRow(config: JsonObject, runId: String?) {
 private fun MetricsSection(uiState: DashboardUiState) {
     val stats = uiState.latestStats
     if (stats.isEmpty()) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            shape = RoundedCornerShape(8.dp)
-        ) {
+        PorcelainCard {
             Text(
                 "No TensorBoard logs found yet. Waiting for training to start...",
-                modifier = Modifier.padding(20.dp),
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = rankoColors.textDim,
             )
         }
         return
@@ -405,24 +395,25 @@ private fun MetricsSection(uiState: DashboardUiState) {
     val teLr = stats["TE/LR/Effective_Actual_LR"]?.jsonPrimitive?.floatOrNull
         ?.let { formatScientificTwoDecimals(it) } ?: "-"
 
+    val colors = rankoColors
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val isWide = maxWidth > 720.dp
         if (isWide) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                MetricCard("Current Step", currentStep, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
-                MetricCard("Latest Loss", latestLoss, Color(0xFFFF4B4B), Modifier.weight(1f))
-                MetricCard("UNet LR", unetLr, Color(0xFF0068C9), Modifier.weight(1f))
-                MetricCard("TE Effective LR", teLr, Color(0xFF7B61FF), Modifier.weight(1f))
+                MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
+                MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
+                MetricCard("UNet LR", unetLr, colors.accentBlue, Modifier.weight(1f))
+                MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("Current Step", currentStep, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
-                    MetricCard("Latest Loss", latestLoss, Color(0xFFFF4B4B), Modifier.weight(1f))
+                    MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
+                    MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("UNet LR", unetLr, Color(0xFF0068C9), Modifier.weight(1f))
-                    MetricCard("TE Effective LR", teLr, Color(0xFF7B61FF), Modifier.weight(1f))
+                    MetricCard("UNet LR", unetLr, colors.accentBlue, Modifier.weight(1f))
+                    MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
                 }
             }
         }
@@ -434,13 +425,14 @@ private fun ChartsSection(uiState: DashboardUiState) {
     val metrics = uiState.metrics
     val smoothing = uiState.smoothing
     val stroke = uiState.chartStroke
+    val colors = rankoColors
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val isWide = maxWidth > 720.dp
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             ChartCard(
                 "Train / Avg Loss",
                 metrics["Train/Avg_Loss"].orEmpty(),
-                Color(0xFF0D9488),
+                colors.accentPink,
                 smoothing = 0f,
                 modifier = Modifier.fillMaxWidth(),
                 strokeWidth = stroke,
@@ -448,18 +440,18 @@ private fun ChartsSection(uiState: DashboardUiState) {
             )
             if (isWide) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    ChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), Color(0xFFFF4B4B), smoothing, Modifier.weight(1f), strokeWidth = stroke)
-                    ChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), Color(0xFF0068C9), smoothing, Modifier.weight(1f), strokeWidth = stroke)
+                    ChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, Modifier.weight(1f), strokeWidth = stroke)
+                    ChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), colors.accentBlue, smoothing, Modifier.weight(1f), strokeWidth = stroke)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    ChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), Color(0xFFF5A623), smoothing, Modifier.weight(1f), strokeWidth = stroke)
-                    ChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), Color(0xFF7B61FF), smoothing, Modifier.weight(1f), strokeWidth = stroke)
+                    ChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), colors.qualityOrange, smoothing, Modifier.weight(1f), strokeWidth = stroke)
+                    ChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), colors.accentLilac, smoothing, Modifier.weight(1f), strokeWidth = stroke)
                 }
             } else {
-                ChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), Color(0xFFFF4B4B), smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
-                ChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), Color(0xFF0068C9), smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
-                ChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), Color(0xFFF5A623), smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
-                ChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), Color(0xFF7B61FF), smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
+                ChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
+                ChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), colors.accentBlue, smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
+                ChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), colors.qualityOrange, smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
+                ChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), colors.accentLilac, smoothing, Modifier.fillMaxWidth(), strokeWidth = stroke)
             }
         }
     }
@@ -477,7 +469,7 @@ private fun HeaderSlider(
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = rankoColors.textDim
         )
         Slider(
             value = value,
@@ -509,7 +501,7 @@ private fun SampleGroup(
             Text(
                 text = "(${samples.size} images)",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = rankoColors.textDim
             )
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -517,8 +509,8 @@ private fun SampleGroup(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clip(rankoTokens.card)
+                        .background(rankoColors.bgCard.copy(alpha = 0.72f))
                         .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
                         .clickable { onOpen(sample) }
                         .padding(bottom = 8.dp)
@@ -530,13 +522,13 @@ private fun SampleGroup(
                         filterQuality = FilterQuality.Low,
                         modifier = Modifier
                             .height(thumbSize.dp)
-                            .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                            .clip(rankoTokens.panel)
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = sample.filename,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = rankoColors.textDim,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
@@ -569,7 +561,7 @@ private fun SamplePreviewOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.82f))
+            .background(rankoColors.bgApp.copy(alpha = 0.92f))
             .focusRequester(focusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
@@ -615,7 +607,7 @@ private fun SamplePreviewOverlay(
                 Text(
                     text = sample.filename,
                     style = MaterialTheme.typography.titleSmall,
-                    color = Color.White,
+                    color = rankoColors.text,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -624,10 +616,10 @@ private fun SamplePreviewOverlay(
                 Text(
                     text = "${index + 1} / ${samples.size}",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color.White.copy(alpha = 0.8f)
+                    color = rankoColors.textDim
                 )
                 IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = rankoColors.text)
                 }
             }
 
@@ -690,10 +682,10 @@ private fun PreviewNavButton(
         modifier = modifier
             .size(48.dp)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.45f))
+            .background(rankoColors.bgCard.copy(alpha = 0.72f))
             .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
     ) {
-        Icon(icon, contentDescription = description, tint = Color.White, modifier = Modifier.size(32.dp))
+        Icon(icon, contentDescription = description, tint = rankoColors.text, modifier = Modifier.size(32.dp))
     }
 }
 

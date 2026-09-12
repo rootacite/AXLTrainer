@@ -2,6 +2,8 @@
 
 Ranko ("AxlRanko") is the desktop GUI, built with Kotlin Multiplatform + Compose Multiplatform (JVM desktop target). It is a **controller, not a trainer**: it manages the dataset, edits the config, and drives the detached Python training process through the IPC helper (`api.py`).
 
+The chrome is the same **Sky & Sakura** night palette as KataHana (deep purple, sakura pink, sky blue, Nunito, porcelain cards). It is not a user-switchable appearance.
+
 ![Dashboard — live training run](screenshots/dashboard-training.png)
 
 ## Requirements
@@ -62,7 +64,7 @@ See [Configuration](configuration.md) for the meaning of every field.
 
 ### Dashboard — training monitor & control
 
-The heart of the app. It spawns `api.py` on first use and polls it (every 1 s while a run is live, otherwise 3 s).
+The heart of the app. It spawns `api.py` on first use and polls it (every 1 s while a run is live, otherwise 3 s). The hardware panel polls `hardware_status` on its own 1 s cadence while the tab is visible.
 
 - **Header**: connected/disconnected indicator, auto-refresh switch, Refresh button, dataset / target / base-model compact metrics, and sliders for **Curve Smoothing** (EMA 0–0.99), **Chart Line** (stroke 1–8), and **Sample Size** (80–360 px thumbnails).
 - **Training control card**:
@@ -70,6 +72,7 @@ The heart of the app. It spawns `api.py` on first use and polls it (every 1 s wh
   - Run info: output name, run id, PID, elapsed time, alive flag, and the run's `detail` / `error` lines. When `[training].resume_lora_path` is set, the card also shows what the next run will resume from, or — while running — the checkpoint this run was seeded from (`Resumed from … · checkpoint step N · M tensors`).
   - Three phase progress bars: **latent encode** (`encoding.current/total`), **training** (step/total, epoch, loss, avg-loss), **sampling** (image r/R, denoise step d/D).
   - Buttons: **Start** (enabled only when terminal: idle/finished/error), **Pause** / **Resume** (with in-flight spinner states), **Early Stop** (phase-aware confirmation dialog — warns whether a checkpoint will be saved), and **Reset** (clears Finished/Error state; deletes the resolved run's samples + TensorBoard logs with exact paths shown; optional checkbox to also delete that run's LoRA checkpoints).
+- **Hardware**: live GPU / CPU panel under Training Control. GPU numbers come from `nvtop -s` (JSON snapshot); AMD edge/junction temps from DRM hwmon; CPU util/temp from `/proc` and thermal zones. Info line + current-value cards + occupancy / VRAM / power / temp / CPU charts. Ranko keeps a ~6 minute ring buffer. Missing nvtop shows an error on this section only — training controls and TensorBoard charts keep working.
 - **Path chips**: current run id, `{logging_dir}/{run_id}`, `{output_dir}/{run_id}` — `—` when no run directory resolves yet.
 - **Metric cards**: Current Step, Latest Loss, UNet LR, TE Effective LR.
 - **Training charts**: Train/Avg_Loss, Train/Loss, UNet/LR/Effective_Actual_LR, TE/LR/Base_Scheduled, TE/LR/Effective_Actual_LR — interactive line charts (see interactions below).
@@ -82,7 +85,7 @@ If the helper process can't be reached (and no data has loaded), a full-screen e
 1. **Discovery** — `TrainerRepo.findRoot()` walks up from the app's executable and `user.dir` looking for `api.py` or `trainer/config.toml`.
 2. **Spawn** — Ranko runs `$AXL_PYTHON` (if set) or `python3 -u api.py` with the working directory at the repo root, stderr inherited, `PYTHONUNBUFFERED=1`. A JVM shutdown hook kills the helper on exit.
 3. **Protocol** — newline-delimited JSON on the helper's stdin/stdout: requests are `{"id": n, "method": "...", "params": {...}}`, responses are `{"id": n, "ok": true, "result": {...}}` or `{"id": n, "ok": false, "error": "..."}`. Calls are serialized (one in flight), and the helper is lazily restarted if it dies.
-4. **Methods** — `ping`, `dashboard` (metrics + config, optional `run_id`), `list_samples`, `list_checkpoints`, `train_status`, `train_start`, `train_pause`, `train_resume`, `train_stop`, `train_reset`. Full reference: [API.md](../API.md).
+4. **Methods** — `ping`, `dashboard` (metrics + config, optional `run_id`), `list_samples`, `list_checkpoints`, `train_status`, `train_start`, `train_pause`, `train_resume`, `train_stop`, `train_reset`, `hardware_status` (nvtop snapshot + CPU). Full reference: [API.md](../API.md).
 
 **Important**: `train_start` spawns the trainer **detached** (`setsid`). Closing Ranko does not stop training; use Pause/Early Stop (or the runtime `command.json`) to control it.
 

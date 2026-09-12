@@ -9,11 +9,11 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.PointerIcon
@@ -23,6 +23,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
+import com.acite.axlranko.ui.components.CapsuleButton
+import com.acite.axlranko.ui.components.rankoFieldColors
+import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 import java.io.File
@@ -33,10 +37,10 @@ public fun ImagesScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
+    val colors = rankoColors
+    val tokens = rankoTokens
     BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+        modifier = Modifier.fillMaxSize()
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
 
@@ -52,19 +56,21 @@ public fun ImagesScreen(
                         val isSelected = uiState.selectedItem?.imagePath == item.imagePath
                         val isDirty = item.isDirty
 
-                        Card(
+                        val borderColor = when {
+                            isDirty -> colors.qualityRed
+                            isSelected -> colors.accentPink.copy(alpha = 0.28f)
+                            else -> Color.White.copy(alpha = 0.08f)
+                        }
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(tokens.panel)
+                                .background(
+                                    if (isSelected) colors.accentPink.copy(alpha = 0.16f)
+                                    else colors.bgCard.copy(alpha = 0.55f)
+                                )
+                                .border(1.dp, borderColor, tokens.panel)
                                 .clickable { viewModel.selectItem(item) }
-                                .then(
-                                    if (isDirty) Modifier.border(2.dp, Color.Red, RoundedCornerShape(8.dp))
-                                    else Modifier
-                                ),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.surfaceVariant
-                            )
                         ) {
                             AspectLockedAsyncImage(
                                 file = File(item.imagePath),
@@ -94,7 +100,7 @@ public fun ImagesScreen(
             ) {
                 VerticalDivider(
                     thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant
+                    color = colors.stroke.copy(alpha = 0.55f)
                 )
             }
 
@@ -121,7 +127,7 @@ public fun ImagesScreen(
                         } ?: run {
                             Text(
                                 text = "Select an image to edit tags",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = colors.textDim
                             )
                         }
                     }
@@ -143,7 +149,7 @@ public fun ImagesScreen(
                     ) {
                         HorizontalDivider(
                             thickness = 1.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant
+                            color = colors.stroke.copy(alpha = 0.55f)
                         )
                     }
 
@@ -158,7 +164,9 @@ public fun ImagesScreen(
                             onValueChange = { viewModel.updateEditorText(it) },
                             modifier = Modifier.weight(1f).fillMaxWidth(),
                             enabled = uiState.selectedItem != null,
-                            label = { Text("Tags") }
+                            label = { Text("Tags") },
+                            shape = tokens.panel,
+                            colors = rankoFieldColors(),
                         )
                         Row(
                             modifier = Modifier
@@ -166,19 +174,20 @@ public fun ImagesScreen(
                                 .padding(top = 8.dp),
                             horizontalArrangement = Arrangement.End
                         ) {
-                            Button(
+                            CapsuleButton(
+                                text = "Reset",
                                 onClick = { viewModel.resetEditorText() },
                                 enabled = uiState.selectedItem?.isDirty == true,
-                                modifier = Modifier.padding(end = 8.dp)
-                            ) {
-                                Text("Reset")
-                            }
-                            Button(
+                                compact = true,
+                                modifier = Modifier.padding(end = 8.dp),
+                            )
+                            CapsuleButton(
+                                text = "Save",
                                 onClick = { viewModel.saveTags() },
-                                enabled = uiState.selectedItem?.isDirty == true
-                            ) {
-                                Text("Save")
-                            }
+                                enabled = uiState.selectedItem?.isDirty == true,
+                                compact = true,
+                                emphasized = true,
+                            )
                         }
                     }
                 }

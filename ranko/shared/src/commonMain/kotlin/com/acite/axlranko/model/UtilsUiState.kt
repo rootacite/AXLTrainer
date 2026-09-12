@@ -71,10 +71,12 @@ enum class ConfigSection(
     ),
     Optimization(
         title = "Optimization",
-        description = "Latent cache, caption shuffle, noise offset, and step-end GPU flush",
+        description = "Latent cache, gradient checkpointing, caption shuffle, noise offset, and step-end GPU flush",
         fieldKeys = setOf(
             "cache_latents",
             "cache_latents_to_disk",
+            "gradient_checkpointing_unet",
+            "gradient_checkpointing_te",
             "shuffle_caption",
             "keep_tokens",
             "caption_extension",

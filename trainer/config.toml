@@ -57,6 +57,10 @@ max_bucket_reso = 1280
 [optimization]
 cache_latents = true
 cache_latents_to_disk = true
+# Recompute activations in backward to save VRAM. Turn off for faster steps
+# if the GPU has headroom (UNet is the bigger win; TE is smaller).
+gradient_checkpointing_unet = true
+gradient_checkpointing_te = false
 shuffle_caption = true
 keep_tokens = 2
 caption_extension = ".txt"
@@ -64,7 +68,7 @@ noise_offset = 0.05
 flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 5.0E-5
+unet_learning_rate = 1.0E-4
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -72,7 +76,7 @@ unet_eps = 1.0E-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 5.0E-6
+te_learning_rate = 1.0E-5
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99

@@ -157,6 +157,7 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs`. torch-free. |
 | `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
 | `trainer/env.py` | MIGraphX cache dir, `flush_memory`. |
+| `trainer/hardware.py` | Ranko hardware panel: nvtop snapshot, AMD edge/junction, CPU util/temp. |
 | `trainer/utils.py` | Image list, caption shuffle, bucket math, `build_time_ids`. |
 | `text_processing.py` | **Repo root**, not under `trainer/`. Long-prompt chunking + dual CLIP encode. `family_sdxl.py` adds `os.getcwd()` to `sys.path` to import it. |
 
@@ -182,7 +183,7 @@ When adding a trainer module, support **both** import styles, or you will pass C
 - Mixed precision default **bf16**.
 - Dual optimizers: **Schedule-Free AdamW** on UNet (no LR scheduler), **AdamW** on TE1+TE2 with cosine/warmup via Accelerator.
 - LoRA targets: UNet `to_q/to_k/to_v/to_out.0`; TE `q_proj/k_proj/v_proj/out_proj` (`setup.apply_lora_modules`).
-- UNet and both TEs enable gradient checkpointing after PEFT wrap (TEs also `enable_input_require_grads` because embeddings stay frozen).
+- When `[optimization].gradient_checkpointing_unet` / `gradient_checkpointing_te` are true (the defaults), UNet and both TEs enable gradient checkpointing after PEFT wrap (TEs also `enable_input_require_grads` because embeddings stay frozen).
 - Batches are **regrouped by `(bucket_w, bucket_h)`** before stacking — never stack mixed spatial sizes.
 - `at_safe_point` is called every step (and during cache/sample). New long GPU work must call it or pause/stop will hang until the phase ends.
 - VAE is moved to CPU after latent warm-cache; on-demand encode during training is the fallback.
@@ -235,6 +236,7 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | `train_pause` / `train_resume` / `train_stop` | write `command.json` |
 | `train_reset` | `run_cleanup` (resolved run) + `reset_to_idle` |
 | `dataset_tag` | spawn `tagger/main.py` (GPU ONNX); overwrites sidecar `.txt` |
+| `hardware_status` | `nvtop -s` JSON + DRM hwmon temps + `/proc` CPU (read-only) |
 
 `dashboard` synthesizes `Train/Avg_Loss` from `Train/Loss` via `synthesize_avg_loss` when the tag is missing (old runs). Do not rename TensorBoard tags without updating Ranko chart cards.
 
@@ -244,12 +246,14 @@ Kotlin client: one request at a time (`Mutex` in `TrainerIpcClient`). `ignoreUnk
 
 ## 7. Ranko (`ranko/`)
 
-Compose Multiplatform **desktop JVM only** (not Android/iOS). Kotlin 2.4, Compose 1.11.1, Material 3, Metro DI, ktoml, Coil 3.
+Compose Multiplatform **desktop JVM only** (not Android/iOS). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura** (fixed; no appearance switcher): `RankoTheme` + Nunito + porcelain cards over glow orbs (`dev.chrisbanes.haze`). Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
 
 | Path | Role |
 | --- | --- |
 | `ranko/desktopApp/…/main.kt` | Window; `createGraph<AppGraph>()` |
 | `ranko/shared/src/commonMain/…/App.kt`, `Stage.kt` | Shell + four screens |
+| `…/ui/theme/` | Sky & Sakura palette, tokens, Nunito, `RankoTheme` |
+| `…/ui/components/` | Backdrop, porcelain/frosted surfaces, capsule controls |
 | `…/pages/*Screen.kt` + `*ViewModel.kt` | UI + state |
 | `…/data/TrainerIpcClient.kt` | NDJSON child process |
 | `…/data/TrainerRepo.kt` | Repo-root discovery |
@@ -329,7 +333,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 
 | Suite | Command | Covers |
 | --- | --- | --- |
-| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag, run-scoped dashboard/samples/checkpoints/reset |
+| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset |
 | Tagger | `python -m unittest test_tagger` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
 | Runs | `python -m unittest test_runs` | run id format/collision, run dir creation, latest-run lookup, run listing |

@@ -1,8 +1,9 @@
 package com.acite.axlranko
 
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import com.acite.axlranko.ui.components.RankoBackdrop
+import com.acite.axlranko.ui.theme.RankoTheme
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
 
@@ -10,9 +11,11 @@ import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
 fun App(
     metroVmf: MetroViewModelFactory,
 ) {
-    MaterialTheme {
+    RankoTheme {
         CompositionLocalProvider(LocalMetroViewModelFactory provides metroVmf) {
-            Stage()
+            RankoBackdrop {
+                Stage()
+            }
         }
     }
 }

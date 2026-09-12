@@ -5,6 +5,7 @@ import com.acite.axlranko.data.IpcResponse
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
+import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
@@ -189,6 +190,69 @@ class DashboardIpcTest {
         val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
         assertEquals("list_checkpoints", decoded.method)
         assertEquals("/out", decoded.params["output_dir"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun hardwareStatusParsesNvtopSnapshot() {
+        val raw = """
+            {
+              "available": true,
+              "error": null,
+              "ts": 1710000000.12,
+              "gpus": [
+                {
+                  "index": 0,
+                  "name": "AMD Radeon RX 9070 XT",
+                  "gpu_clock_mhz": 2165.0,
+                  "mem_clock_mhz": 2500.0,
+                  "fan_pct": 30.0,
+                  "gpu_util_pct": 92.0,
+                  "mem_util_pct": 76.0,
+                  "power_w": 303.0,
+                  "temp_c": 72.0,
+                  "temp_edge_c": 72.0,
+                  "temp_junction_c": 85.0,
+                  "temp_mem_c": 80.0,
+                  "mem_total_bytes": 17095983104,
+                  "mem_used_bytes": 13000000000,
+                  "mem_free_bytes": 4095983104
+                }
+              ],
+              "cpu": {
+                "name": "Test CPU",
+                "n_logical": 28,
+                "util_pct": 41.2,
+                "temp_c": 41.0
+              }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(HardwareStatus.serializer(), raw)
+        assertEquals(true, parsed.available)
+        assertEquals(null, parsed.error)
+        assertEquals("AMD Radeon RX 9070 XT", parsed.gpus.first().name)
+        assertEquals(92.0, parsed.gpus.first().gpuUtilPct)
+        assertEquals(85.0, parsed.gpus.first().tempJunctionC)
+        assertEquals(17095983104L, parsed.gpus.first().memTotalBytes)
+        assertEquals(28, parsed.cpu.nLogical)
+        assertEquals(41.2, parsed.cpu.utilPct)
+    }
+
+    @Test
+    fun hardwareStatusUnavailableStillParses() {
+        val raw = """
+            {
+              "available": false,
+              "error": "nvtop not found on PATH",
+              "ts": 1.0,
+              "gpus": [],
+              "cpu": { "name": "", "n_logical": 8, "util_pct": null, "temp_c": null }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(HardwareStatus.serializer(), raw)
+        assertEquals(false, parsed.available)
+        assertEquals("nvtop not found on PATH", parsed.error)
+        assertTrue(parsed.gpus.isEmpty())
+        assertEquals(null, parsed.cpu.utilPct)
     }
 
     @Test

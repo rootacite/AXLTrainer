@@ -35,23 +35,35 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
+import com.acite.axlranko.ui.components.CapsuleButton
+import com.acite.axlranko.ui.components.CapsuleChoice
+import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.components.rankoFieldColors
+import com.acite.axlranko.ui.theme.RankoPalette
+import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.ui.graphics.lerp
 import com.acite.axlranko.Screen
 import com.acite.axlranko.StageViewModel
 import com.acite.axlranko.model.StatisticsUiState
 
-/**
- * Map color based on absolute frequency. 0% Blue -> 50% Green -> 100% Red
- */
-private fun getFrequencyColor(frequency: Float): Color {
-    val normalized = (frequency / 100f).coerceIn(0f, 1f)
-    // Hue ranges from 240 (Blue) down to 0 (Red)
-    val hue = 240f * (1f - normalized)
-    return Color.hsv(hue = hue, saturation = 0.65f, value = 0.85f)
+private fun frequencyColor(frequency: Float, colors: RankoPalette): Color {
+    val t = (frequency / 100f).coerceIn(0f, 1f)
+    val stops = listOf(
+        colors.accentBlue,
+        colors.qualityMint,
+        colors.qualityYellow,
+        colors.qualityOrange,
+        colors.qualityRed,
+    )
+    val scaled = t * (stops.lastIndex)
+    val index = scaled.toInt().coerceIn(0, stops.lastIndex - 1)
+    return lerp(stops[index], stops[index + 1], scaled - index)
 }
 
 @Composable
@@ -68,12 +80,9 @@ fun StatisticsScreen(
             modifier = Modifier.fillMaxSize().padding(32.dp),
             contentAlignment = Alignment.Center
         ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                shape = RoundedCornerShape(16.dp)
-            ) {
+            PorcelainCard {
                 Column(
-                    modifier = Modifier.padding(32.dp),
+                    modifier = Modifier.padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
@@ -81,11 +90,11 @@ fun StatisticsScreen(
                         Icons.Default.Warning,
                         contentDescription = "Error",
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.error
+                        tint = rankoColors.qualityRed
                     )
                     Text(
                         text = uiState.errorMessage!!,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        color = rankoColors.text,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -104,10 +113,10 @@ fun StatisticsScreen(
     }
 
     // 3. Main Interface Layout
+    val colors = rankoColors
+    val tokens = rankoTokens
     BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+        modifier = Modifier.fillMaxSize()
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
 
@@ -130,7 +139,9 @@ fun StatisticsScreen(
                             .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                         placeholder = { Text("Search tags...") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                        singleLine = true
+                        singleLine = true,
+                        shape = tokens.panel,
+                        colors = rankoFieldColors(),
                     )
 
                     val listState = rememberLazyListState()
@@ -154,7 +165,7 @@ fun StatisticsScreen(
                                     targetValue = if (isSelected) 16.dp else 0.dp,
                                     animationSpec = tween(300)
                                 )
-                                val barColor = getFrequencyColor(stat.frequency)
+                                val barColor = frequencyColor(stat.frequency, colors)
 
                                 Box(
                                     modifier = Modifier
@@ -162,9 +173,9 @@ fun StatisticsScreen(
                                         .height(36.dp)
                                         .animateItem()
                                         .offset(x = offsetX)
-                                        .clip(RoundedCornerShape(4.dp))
+                                        .clip(tokens.panel)
                                         .background(
-                                            if (isSelected) MaterialTheme.colorScheme.surfaceVariant
+                                            if (isSelected) colors.accentPink.copy(alpha = 0.16f)
                                             else Color.Transparent
                                         )
                                         .clickable { viewModel.toggleTagSelection(stat.tag) }
@@ -186,12 +197,12 @@ fun StatisticsScreen(
                                             text = stat.tag,
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                            color = if (isSelected) colors.accentPink else colors.text
                                         )
                                         Text(
                                             text = "${stat.count} (%.1f%%)".format(stat.frequency),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                            color = colors.text.copy(alpha = 0.7f)
                                         )
                                     }
                                 }
@@ -202,7 +213,7 @@ fun StatisticsScreen(
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
                                     text = "No tags match \"${uiState.tagSearchQuery.trim()}\"",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.textDim
                                 )
                             }
                         }
@@ -236,7 +247,7 @@ fun StatisticsScreen(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                VerticalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
             }
 
             // Right Panel: Thumbnails Grid + Control Panel
@@ -251,7 +262,7 @@ fun StatisticsScreen(
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
                                     text = if (uiState.selectedTags.isEmpty()) "Please select tags on the left" else "No images match the logical conditions",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.textDim
                                 )
                             }
                         } else {
@@ -266,7 +277,10 @@ fun StatisticsScreen(
                                 items(filteredItems, key = { it.txtFile.absolutePath }) { item ->
                                     Card(
                                         modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                                        shape = RoundedCornerShape(8.dp),
+                                        shape = tokens.panel,
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = colors.bgCard.copy(alpha = 0.72f)
+                                        ),
                                         onClick = {
                                             smViewModel.currentScreen = Screen.Images
                                             iviewModel.selectItemByTxtPath(item.txtFile.absolutePath)
@@ -300,7 +314,7 @@ fun StatisticsScreen(
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                        HorizontalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
                     }
 
                     // Bottom Right: Control Panel
@@ -327,35 +341,35 @@ fun ControlPanel(
     viewModel: StatisticsScreenViewModel,
     modifier: Modifier = Modifier
 ) {
+    val colors = rankoColors
+    val tokens = rankoTokens
     Column(
         modifier = modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Control Panel", style = MaterialTheme.typography.titleMedium)
+        Text("Control Panel", style = MaterialTheme.typography.titleMedium, color = colors.text)
 
         val hasSelection = uiState.selectedTags.isNotEmpty()
 
-        // 1. Logic Mode Switch & Basic Actions
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Logic Mode:")
+                Text("Logic Mode:", color = colors.text)
                 Spacer(Modifier.width(8.dp))
-                SingleChoiceSegmentedButtonRow {
-                    SegmentedButton(
-                        selected = uiState.isAndMode,
-                        onClick = { viewModel.updateFilterMode(true) },
-                        shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
-                    ) { Text("Intersection (AND)") }
-                    SegmentedButton(
-                        selected = !uiState.isAndMode,
-                        onClick = { viewModel.updateFilterMode(false) },
-                        shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp)
-                    ) { Text("Union (OR)") }
-                }
+                CapsuleChoice(
+                    text = "Intersection (AND)",
+                    selected = uiState.isAndMode,
+                    onClick = { viewModel.updateFilterMode(true) },
+                )
+                Spacer(Modifier.width(8.dp))
+                CapsuleChoice(
+                    text = "Union (OR)",
+                    selected = !uiState.isAndMode,
+                    onClick = { viewModel.updateFilterMode(false) },
+                )
 
                 Spacer(Modifier.width(12.dp))
                 Row(
@@ -366,30 +380,33 @@ fun ControlPanel(
                         checked = uiState.isNotMode,
                         onCheckedChange = { viewModel.updateNotMode(it) }
                     )
-                    Text("Not")
+                    Text("Not", color = colors.text)
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { viewModel.clearSelection() }) {
-                    Text("Clear Selection")
-                }
-                OutlinedButton(onClick = { viewModel.invertSelection() }) {
-                    Text("Invert Selection")
-                }
-                Button(
+                CapsuleButton(
+                    text = "Clear Selection",
+                    onClick = { viewModel.clearSelection() },
+                    compact = true,
+                )
+                CapsuleButton(
+                    text = "Invert Selection",
+                    onClick = { viewModel.invertSelection() },
+                    compact = true,
+                )
+                CapsuleButton(
+                    text = "Remove Selected",
                     onClick = { viewModel.removeSelectedTags() },
                     enabled = hasSelection && !uiState.isRefreshing && !uiState.isNotMode,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Text("Remove Selected")
-                }
+                    compact = true,
+                    danger = true,
+                )
             }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
 
-        // 2. Sample Dropping Section
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -400,18 +417,19 @@ fun ControlPanel(
                 onValueChange = { viewModel.updateDropRateText(it) },
                 label = { Text("Drop Rate r (0.0~1.0)") },
                 modifier = Modifier.weight(1f),
-                singleLine = true
+                singleLine = true,
+                shape = tokens.panel,
+                colors = rankoFieldColors(),
             )
-            Button(
+            CapsuleButton(
+                text = "Drop Selected Samples",
                 onClick = { viewModel.dropSamples() },
                 enabled = hasSelection && !uiState.isRefreshing && !uiState.isNotMode && (uiState.dropRateText.toFloatOrNull() ?: 0f) in 0.001f..1f,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-            ) {
-                Text("Drop Selected Samples")
-            }
+                compact = true,
+                danger = true,
+            )
         }
 
-        // 3. Append / Prepend Tag Section
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -422,7 +440,9 @@ fun ControlPanel(
                 onValueChange = { viewModel.updateNewTagText(it) },
                 label = { Text("New Tag Name") },
                 modifier = Modifier.weight(1f),
-                singleLine = true
+                singleLine = true,
+                shape = tokens.panel,
+                colors = rankoFieldColors(),
             )
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -430,21 +450,22 @@ fun ControlPanel(
                     selected = uiState.isAddStart,
                     onClick = { viewModel.updateAddPosition(true) }
                 )
-                Text("Prepend", modifier = Modifier.clickable { viewModel.updateAddPosition(true) })
+                Text("Prepend", color = colors.text, modifier = Modifier.clickable { viewModel.updateAddPosition(true) })
                 Spacer(Modifier.width(8.dp))
                 RadioButton(
                     selected = !uiState.isAddStart,
                     onClick = { viewModel.updateAddPosition(false) }
                 )
-                Text("Append", modifier = Modifier.clickable { viewModel.updateAddPosition(false) })
+                Text("Append", color = colors.text, modifier = Modifier.clickable { viewModel.updateAddPosition(false) })
             }
 
-            Button(
+            CapsuleButton(
+                text = "Batch Add",
                 onClick = { viewModel.addTagToTargets() },
-                enabled = hasSelection && !uiState.isRefreshing && uiState.newTagText.isNotBlank()
-            ) {
-                Text("Batch Add")
-            }
+                enabled = hasSelection && !uiState.isRefreshing && uiState.newTagText.isNotBlank(),
+                compact = true,
+                emphasized = true,
+            )
         }
     }
 }

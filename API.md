@@ -246,6 +246,49 @@ Result:
 
 Fails if the folder is missing, `threshold` is out of range, or a training process is in a GPU-using status (`starting` / `encoding` / `training` / `sampling` / `pausing` / `resuming` / `stopping`). Pause (`paused`) is allowed because weights are offloaded. The tagger is a child process so GPU memory is released when it exits.
 
+### `hardware_status`
+
+Read-only host snapshot for the Ranko Dashboard hardware panel. GPU fields come from `nvtop -s` (JSON snapshot mode in nvtop 3.3.2+). Process lists are dropped. AMD edge / junction / mem temperatures are filled from DRM hwmon when present. CPU util is a `/proc/stat` delta; CPU temp prefers `x86_pkg_temp` then `k10temp`.
+
+Params: `{}`
+
+Result:
+
+```json
+{
+  "available": true,
+  "error": null,
+  "ts": 1710000000.12,
+  "gpus": [
+    {
+      "index": 0,
+      "name": "AMD Radeon RX 9070 XT",
+      "gpu_clock_mhz": 2165.0,
+      "mem_clock_mhz": 2500.0,
+      "fan_pct": 30.0,
+      "gpu_util_pct": 92.0,
+      "mem_util_pct": 76.0,
+      "power_w": 303.0,
+      "temp_c": 72.0,
+      "temp_edge_c": 72.0,
+      "temp_junction_c": 85.0,
+      "temp_mem_c": 80.0,
+      "mem_total_bytes": 17095983104,
+      "mem_used_bytes": 13000000000,
+      "mem_free_bytes": 4095983104
+    }
+  ],
+  "cpu": {
+    "name": "Intel Core …",
+    "n_logical": 28,
+    "util_pct": 41.2,
+    "temp_c": 41.0
+  }
+}
+```
+
+`available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Ranko keeps the training UI up if hardware collection fails.
+
 ## Example
 
 ```bash

@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 try:
     from config import TrainConfig
-    from dataset import LoraImageDataset, make_collate_fn
+    from dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from models import (
         build_scheduler,
@@ -20,7 +20,7 @@ try:
     from env import setup_migraphx_cache
 except ImportError:
     from trainer.config import TrainConfig
-    from trainer.dataset import LoraImageDataset, make_collate_fn
+    from trainer.dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from trainer.family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from trainer.models import (
         build_scheduler,
@@ -66,17 +66,25 @@ def create_accelerator(cfg: TrainConfig) -> Accelerator:
 
 
 def build_dataloader(cfg: TrainConfig) -> tuple[LoraImageDataset, DataLoader]:
-    """Build dataset and dataloader."""
+    """Build dataset and a bucket-grouped dataloader.
+
+    One batch is one aspect-ratio bucket so the train loop can stack latents
+    at `train_batch_size` instead of splitting a shuffled mixed-reso batch.
+    """
     train_dataset = LoraImageDataset(cfg)
+    batch_sampler = BucketBatchSampler(
+        train_dataset.buckets,
+        batch_size=cfg.train_batch_size,
+        seed=cfg.seed,
+    )
+    n_workers = max(0, int(cfg.max_data_loader_n_workers))
     dataloader = DataLoader(
         train_dataset,
-        batch_size=cfg.train_batch_size,
-        shuffle=True,
-        num_workers=cfg.max_data_loader_n_workers,
+        batch_sampler=batch_sampler,
+        num_workers=n_workers,
         pin_memory=True,
-        persistent_workers=cfg.persistent_workers,
+        persistent_workers=bool(cfg.persistent_workers) and n_workers > 0,
         collate_fn=make_collate_fn(),
-        drop_last=True,
     )
     return train_dataset, dataloader
 

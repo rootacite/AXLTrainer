@@ -299,10 +299,12 @@ class SdxlFamily:
             target_modules=["to_q", "to_k", "to_v", "to_out.0"],
         )
         tes = [get_peft_model(te, te_lora_config()) for te in modules.text_encoders]
-        for te in tes:
-            enable_te_gradient_checkpointing(te)
+        if bool(getattr(cfg, "gradient_checkpointing_te", True)):
+            for te in tes:
+                enable_te_gradient_checkpointing(te)
         denoise = get_peft_model(modules.denoise, unet_lora_config)
-        denoise.enable_gradient_checkpointing()
+        if bool(getattr(cfg, "gradient_checkpointing_unet", True)):
+            denoise.enable_gradient_checkpointing()
         enable_flash_attention(denoise)
         modules.denoise = denoise
         modules.text_encoders = tes

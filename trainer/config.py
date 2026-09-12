@@ -77,6 +77,8 @@ class TrainConfig:
     # Optimization Features
     cache_latents: bool = get_val("cache_latents", True)
     cache_latents_to_disk: bool = get_val("cache_latents_to_disk", True)
+    gradient_checkpointing_unet: bool = get_val("gradient_checkpointing_unet", True)
+    gradient_checkpointing_te: bool = get_val("gradient_checkpointing_te", True)
     shuffle_caption: bool = get_val("shuffle_caption", True)
     keep_tokens: int = get_val("keep_tokens", 2)
     caption_extension: str = get_val("caption_extension", ".txt")

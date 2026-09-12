@@ -160,7 +160,7 @@ Details: [Installation](doc/installation.md#running-the-tests).
 
 **Python (engine + IPC).** Python 3.14 (3.11+ works; `tomllib` is used). Key pins in `environment.yml`: PyTorch `2.13.0+rocm10.0.0` (gfx1201 extra, AMD `whl-next` index), diffusers 0.40.0, transformers 5.16.1, peft 0.20.0, accelerate 1.14.0, schedulefree 1.4.1, safetensors, tensorboard. The primary target is **AMD ROCm** (MIOpen/MIGraphX). The training code is ordinary PyTorch/diffusers, so CUDA works with an equivalent `torch` build — see [Installation](doc/installation.md#nvidia--cuda-instead-of-rocm). You still need enough VRAM for SDXL LoRA at the resolution and batch size you chose.
 
-**Ranko.** JDK 17+ (the Gradle wrapper provisions a JDK 21 toolchain), Gradle 9.1.0 wrapper, Kotlin 2.4.0, Compose Multiplatform 1.11.1, Material 3, ktoml, kotlinx.serialization, Coil 3.
+**Ranko.** JDK 17+ (the Gradle wrapper provisions a JDK 21 toolchain), Gradle 9.1.0 wrapper, Kotlin 2.4.10, Compose Multiplatform 1.12.0, Material 3, ktoml, kotlinx.serialization, Coil 3.
 
 ### Author's development machine
 
