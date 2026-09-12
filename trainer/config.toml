@@ -61,7 +61,7 @@ shuffle_caption = true
 keep_tokens = 2
 caption_extension = ".txt"
 noise_offset = 0.05
-flush_memory_every_step = true
+flush_memory_every_step = false
 
 [unet_optimizer]
 unet_learning_rate = 5.0E-5
