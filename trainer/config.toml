@@ -33,7 +33,7 @@ lr_warmup_steps = 100
 max_grad_norm = 1.0
 epoch = 42
 save_every_n_epochs = 1
-save_every_n_steps = 10
+save_every_n_steps = 50
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
 # training starts. Weights only: step/epoch counting still starts at 0, and this
 # run writes into its own timestamped run directory.
@@ -83,7 +83,7 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "(haruko_character:1.1), masterpiece, best quality, newest, solo, 1girl, looking at viewer, large breasts, shy, blushing, school uniform, white blouse, navy blue blazer, plaid skirt, white thighhighs, indoors, classroom, desk, sitting on desk, legs slightly parted, blouse partially unbuttoned, cleavage, breasts partially exposed, soft lighting, opened eyes, empty classroom, after school, sunlight from window, one hand on desk, other hand holding skirt hem, skirt hiked up, panties pulled down hanging from one thigh, crotch covered by skirt, no genitals visible, blouse slipping off shoulder, nipples faintly outlined, embarrassed expression, biting lip, fidgeting"
+sample_prompts = "(kanae_style:1.1), masterpiece, best quality, newest, solo, 1girl, looking at viewer, large breasts, shy smile, soft blush, school uniform, white blouse, navy blue blazer, plaid skirt, white thighhighs, indoors, classroom, desk, sitting on the edge of desk, legs dangling and slightly together, blouse partially unbuttoned, cleavage, breasts partially exposed, soft lighting, opened eyes, empty classroom, after school, sunlight from window, one hand resting on desk, other hand holding skirt hem shyly, skirt slightly hiked up, panties pulled down hanging from one thigh, crotch covered by skirt, no genitals visible, blouse slipping off one shoulder, nipples faintly outlined, gentle embarrassed expression, head slightly tilted, fidgeting cutely"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1280
 sample_height = 720
