@@ -349,7 +349,7 @@ Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped whe
 | `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
 | `MIOPEN_*` / `AMD_LOG_LEVEL` | `start_train.sh` | Quiet ROCm, pin cache |
 
-Python: 3.12, PyTorch `2.14.0+rocm7.2` (CUDA torch also works if you swap the wheel). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
+Python: 3.12, PyTorch `2.12.0+rocm7.2` (CUDA torch also works if you swap the wheel). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
 
 Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD ROCm**, not NVIDIA.
 

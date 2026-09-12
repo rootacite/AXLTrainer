@@ -1,0 +1,61 @@
+### Training Stability Report: gfx1201 HIP caching-allocator page fault on first backward
+
+#### Problem
+
+On AMD RX 9070 XT (gfx1201) + ROCm 7.2 + PyTorch 2.14, training aborted on the first
+optimizer step with no Python traceback:
+
+    Memory access fault by GPU node-1 ... Reason: Page not present or supervisor privilege.
+    amdgpu: [gfxhub] page fault  client 10  GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B
+    Faulty UTCL2 client ID: TCP (0x8)  WALKER_ERROR:0x5  MAPPING_ERROR:0x1  RW:0x0
+
+Latent encoding finished. tqdm sat at 0%. `bucket_reso_steps` was already 128 and
+every kanae latent was 96x128 (divisible by 16) — this is not the fix1 bucket bug.
+
+#### Isolation
+
+Forward of the joint TE+UNet step succeeded (finite loss ~0.03). The abort was
+inside `loss.backward()` / `accelerator.backward()`.
+
+| Setup | Result |
+| --- | --- |
+| Isolated SDPA (flash / mem / math), LoRA-shaped GEMM | ok |
+| Isolated TE1 / TE2 LoRA + checkpointing backward | ok |
+| Isolated UNet LoRA + checkpointing backward (96x128, seq 231) | ok |
+| Joint TE+UNet forward | ok |
+| UNet backward with prompt embeds detached | ok |
+| TE-only backward of `encode_prompts` | ok |
+| Joint TE+UNet backward (plain or Accelerator) | **page fault** |
+| Same + math-only SDPA | page fault |
+| Same + `TORCH_BLAS_PREFER_HIPBLASLT=0` | page fault |
+| Same + `PYTORCH_NO_HIP_MEMORY_CACHING=1` | **5/5 steps ok** |
+
+The fault code matches ROCm Tensile GEMM OOB on gfx1201
+(rocm-libraries#7992). hipBLASLt vs rocBLAS does not matter; both Tensile
+paths can emit an unclamped `global_load_tr` that reads one page past a
+torch allocation. The HIP caching allocator packs those allocations so the
+overrun hits an unmapped GPU VM page and the KFD aborts the process.
+
+#### What does not fix it
+
+- Rolling back the aec104a pip bump (torch `2.14.0+rocm7.2` → `2.12.0+rocm7.2`,
+  transformers 5.16 → 4.57, diffusers 0.40 → 0.38). Both wheels report
+  `hip 7.2.53211`. Joint backward still page-faults on the first step.
+- Splitting TE backward from UNet backward, if prompt embeds still
+  `requires_grad` (UNet cross-attn d(encoder_hidden_states) is enough).
+- `TORCH_BLAS_PREFER_HIPBLASLT=0`, math-only SDPA, disabling TE checkpointing.
+
+#### Workarounds (neither is a real fix)
+
+- `PYTORCH_NO_HIP_MEMORY_CACHING=1` before importing torch: 5/5 optimizer
+  steps ok, but every alloc is `hipMalloc`. CPU pegs, GPU sits around 90 W.
+- Fully detach prompt embeds (do not train text-encoder LoRA): UNet-only
+  backward is stable with the caching allocator.
+
+The bug is in ROCm 7.2 gfx1201 Tensile GEMM, not in this repo's training loop.
+
+#### Related
+
+- `fixes/fix1.txt` — bucket step 64, latent dim not divisible by 16. Different bug, same dmesg family.
+- ROCm/rocm-libraries#7992 — gfx1201 Tensile MT64x64x* OOB, status 0x0080113B.
+- ROCm gfx1200 LoRA training: same mitigation (`PYTORCH_NO_HIP_MEMORY_CACHING=1`).

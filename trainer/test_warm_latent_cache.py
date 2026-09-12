@@ -269,7 +269,7 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
 
         cfg = make_cfg(root, enable_bucket=False, train_resolution=512)
         vae = AutoencoderKL.from_pretrained(
-            str(model_root), subfolder="vae", dtype=dtype
+            str(model_root), subfolder="vae", torch_dtype=dtype
         )
         orig_encode = vae.encode
         calls = {"n": 0}

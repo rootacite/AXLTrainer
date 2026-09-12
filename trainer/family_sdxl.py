@@ -192,7 +192,7 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
         )
         return loader_func(
             str(path_obj),
-            dtype=dtype,
+            torch_dtype=dtype,
             feature_extractor=None,
         )
 

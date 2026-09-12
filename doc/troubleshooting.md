@@ -12,6 +12,14 @@
 
 Details are documented in [`fixes/fix1.txt`](../fixes/fix1.txt).
 
+## Known issue: gfx1201 first-step backward page fault
+
+**Symptom:** encoding finishes, tqdm sits at `0/N`, then `Memory access fault by GPU node-1` / `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` (TCP). No Python traceback. Happens on the first `backward()` even with `bucket_reso_steps = 128`.
+
+**Root cause:** RX 9070 XT (gfx1201) + ROCm 7.2 Tensile GEMM reads past a torch allocation during UNet backward when prompt embeddings require grad (text-encoder LoRA). Isolated UNet backward with detached embeds is fine. Rolling torch `2.14.0+rocm7.2` back to `2.12.0+rocm7.2` does **not** help — both wheels use HIP `7.2.53211`.
+
+**Workaround:** `PYTORCH_NO_HIP_MEMORY_CACHING=1` avoids the abort but starves the GPU (CPU-bound `hipMalloc`). Do not leave that on as the default. Details: [`fixes/fix2.txt`](../fixes/fix2.txt).
+
 ## Common failure modes
 
 | Symptom | Cause / fix |
