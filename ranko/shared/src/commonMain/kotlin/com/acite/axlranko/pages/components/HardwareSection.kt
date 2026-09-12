@@ -26,7 +26,6 @@ fun HardwareSection(uiState: DashboardUiState) {
     val hardware = uiState.hardware
     val gpu = hardware.gpus.firstOrNull()
     val history = uiState.hardwareHistory
-    val smoothing = uiState.smoothing
     val stroke = uiState.chartStroke
 
     if (!hardware.available && gpu == null) {
@@ -51,7 +50,7 @@ fun HardwareSection(uiState: DashboardUiState) {
         }
         HardwareInfoRow(gpu, hardware.cpu)
         HardwareMetricCards(gpu, hardware.cpu)
-        HardwareCharts(history, smoothing, stroke, gpu)
+        HardwareCharts(history, stroke, gpu)
     }
 }
 
@@ -120,7 +119,6 @@ private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu) {
 @Composable
 private fun HardwareCharts(
     history: HardwareHistory,
-    smoothing: Float,
     stroke: Float,
     gpu: HardwareGpu?,
 ) {
@@ -142,7 +140,7 @@ private fun HardwareCharts(
                 ChartSeries("VRAM", history.vramGiB, colors.accentBlue, domainMin = 0f, domainMax = vramMax),
                 ChartSeries("Power", history.powerW, colors.qualityOrange, domainMin = 0f, domainMax = powerMax),
             ),
-            smoothing = smoothing,
+            smoothing = 0f,
             modifier = Modifier.weight(1f),
             outlierClip = 0f,
             strokeWidth = stroke,
@@ -153,7 +151,7 @@ private fun HardwareCharts(
                 ChartSeries("Edge", history.tempEdge, colors.qualityRed),
                 ChartSeries("Junction", history.tempJunction, colors.qualityPurple),
             ),
-            smoothing = smoothing,
+            smoothing = 0f,
             modifier = Modifier.weight(1f),
             outlierClip = 0f,
             strokeWidth = stroke,
@@ -164,7 +162,7 @@ private fun HardwareCharts(
                 ChartSeries("Util", history.cpuUtil, colors.accentLilac, domainMin = 0f, domainMax = 100f),
                 ChartSeries("Temp", history.cpuTemp, colors.star, domainMin = 0f, domainMax = cpuTempMax),
             ),
-            smoothing = smoothing,
+            smoothing = 0f,
             modifier = Modifier.weight(1f),
             outlierClip = 0f,
             strokeWidth = stroke,

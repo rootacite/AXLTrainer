@@ -128,7 +128,12 @@ enum class ConfigSection(
             "sample_repeat",
             "guidance_scale"
         )
-    )
+    ),
+    Appearance(
+        title = "Appearance",
+        description = "Background style, blur strength, and font/icon scale",
+        fieldKeys = emptySet(),
+    ),
 }
 
 data class UtilsUiState(
@@ -147,7 +152,8 @@ data class UtilsUiState(
     val checkpointPickerOpen: Boolean = false,
     val isLoadingCheckpoints: Boolean = false,
     val checkpoints: List<CheckpointItem> = emptyList(),
-    val checkpointError: String? = null
+    val checkpointError: String? = null,
+    val appearance: AppearanceSettings = AppearanceSettings(),
 ) {
     val isDirty: Boolean get() = form != savedForm
 

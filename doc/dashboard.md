@@ -2,7 +2,7 @@
 
 Ranko ("AxlRanko") is the desktop GUI, built with Kotlin Multiplatform + Compose Multiplatform (JVM desktop target). It is a **controller, not a trainer**: it manages the dataset, edits the config, and drives the detached Python training process through the IPC helper (`api.py`).
 
-The chrome is the same **Sky & Sakura** night palette as KataHana (deep purple, sakura pink, sky blue, Nunito, porcelain cards). It is not a user-switchable appearance.
+The chrome is the same **Sky & Sakura** night palette as KataHana (deep purple, sakura pink, sky blue, Nunito, porcelain cards). Utils → **Appearance** can switch the backdrop (solid / glow orbs / a local image), **card blur** vs **background blur** (independent; cards/nav vs the wallpaper in the gaps), font scale (text only), and icon scale (icons, padding, component size). Those prefs live in Java Preferences, not `config.toml`.
 
 ![Dashboard — live training run](screenshots/dashboard-training.png)
 
@@ -56,7 +56,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 - A validated, structured editor for `trainer/config.toml` — no hand-editing TOML.
 - Environment section includes **Auto-tag dataset**: a confidence slider / threshold (default `0.35`) and a **Tag dataset** button. That calls IPC `dataset_tag`, which runs `tagger/main.py` on GPU (MIGraphX) against the current train data directory and overwrites sidecar `.txt` captions. When it finishes, Images and Statistics reload from disk.
 - Training section ends with **Resume from LoRA checkpoint**: a path field with **Browse** (file picker — a checkpoint file or its directory), **Pick from run checkpoints** (a dialog listing `list_checkpoints` results for the current output name: run id, step, `r/α`, size, newest first), and **Clear**. Saving writes `[training].resume_lora_path`; the summary line then shows `· resume`. Selecting from the dialog only fills the field — save to apply.
-- Left: the ten config sections (Environment, Model Spec, Training, Network, Bucketing, Optimization, UNet Optimizer, Text Encoder, Infrastructure, Validation), with a warning badge on sections containing invalid fields.
+- Left: the config sections (Environment, Model Spec, Training, Network, Bucketing, Optimization, UNet Optimizer, Text Encoder, Infrastructure, Validation, Appearance), with a warning badge on sections containing invalid fields. Appearance is UI-only (not written to `config.toml`): Solid / Glow / Image backdrop, independent card/background blur, font scale, icon scale.
 - Right: fields per section — path fields with a **Browse** button (file chooser), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio).
 - Header shows the config path, a summary line (`name · resolution · epochs · batch`), and an **Unsaved** indicator. **Save** validates the whole form (auto-jumping to the first invalid section), then patches the TOML in place, preserving comments and formatting. **Reload** is blocked while the form is dirty.
 

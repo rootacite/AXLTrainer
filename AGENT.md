@@ -246,7 +246,9 @@ Kotlin client: one request at a time (`Mutex` in `TrainerIpcClient`). `ignoreUnk
 
 ## 7. Ranko (`ranko/`)
 
-Compose Multiplatform **desktop JVM only** (not Android/iOS). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura** (fixed; no appearance switcher): `RankoTheme` + Nunito + porcelain cards over glow orbs (`dev.chrisbanes.haze`). Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
+Compose Multiplatform **desktop JVM only** (not Android/iOS). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura**: `RankoTheme` + Nunito + porcelain cards. Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
+
+User-facing look-and-feel (background: Solid / Glow / Image, independent card vs background blur, font/icon scale) lives in the **Appearance** section of the Utils tab and is persisted by `AppearanceRepository` (Java Preferences, key `com/acite/axlranko/appearance`). `App.kt` consumes it and feeds `LocalDensity` so **font scale only affects sp** and **icon scale only affects dp** (`density * iconScale`, `fontScale * font / iconScale`). `RankoBackdrop` renders glow orbs for `Glow` and a cropped, dimmed photo for `Image`. A full-window haze layer uses `backgroundBlurRadiusDp` (gaps); `PorcelainCard` / `FrostedSurface` use `cardBlurRadiusDp`.
 
 | Path | Role |
 | --- | --- |

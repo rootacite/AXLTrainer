@@ -2,9 +2,12 @@ package com.acite.axlranko.pages
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.acite.axlranko.data.AppearanceRepository
 import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.TrainerIpcClient
+import com.acite.axlranko.model.AppearanceSettings
+import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.TrainingConfigForm
@@ -22,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
 
 @Inject
 @ViewModelKey
@@ -29,6 +33,7 @@ import javax.swing.JFileChooser
 class UtilsScreenViewModel(
     private val ipc: TrainerIpcClient,
     private val refreshHub: DatasetRefreshHub,
+    private val appearanceRepo: AppearanceRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UtilsUiState())
@@ -36,6 +41,57 @@ class UtilsScreenViewModel(
 
     init {
         loadConfig()
+        viewModelScope.launch {
+            appearanceRepo.settings.collect { value ->
+                _uiState.update { it.copy(appearance = value) }
+            }
+        }
+    }
+
+    fun updateBackground(style: BackgroundStyle) {
+        if (style == BackgroundStyle.Image &&
+            _uiState.value.appearance.backgroundImagePath.isBlank()
+        ) {
+            browseBackgroundImage()
+            return
+        }
+        appearanceRepo.update { it.copy(background = style) }
+    }
+
+    fun updateCardBlur(value: Float) {
+        appearanceRepo.update { it.copy(cardBlurRadiusDp = value) }
+    }
+
+    fun updateBackgroundBlur(value: Float) {
+        appearanceRepo.update { it.copy(backgroundBlurRadiusDp = value) }
+    }
+
+    fun updateFontScale(value: Float) {
+        appearanceRepo.update { it.copy(fontScale = value) }
+    }
+
+    fun updateIconScale(value: Float) {
+        appearanceRepo.update { it.copy(iconScale = value) }
+    }
+
+    fun browseBackgroundImage() {
+        val selected = pickImagePath(_uiState.value.appearance.backgroundImagePath) ?: return
+        appearanceRepo.update {
+            it.copy(background = BackgroundStyle.Image, backgroundImagePath = selected)
+        }
+    }
+
+    fun clearBackgroundImage() {
+        appearanceRepo.update { current ->
+            current.copy(
+                backgroundImagePath = "",
+                background = if (current.background == BackgroundStyle.Image) {
+                    BackgroundStyle.Solid
+                } else {
+                    current.background
+                },
+            )
+        }
     }
 
     fun reloadFromDiskSafely() {
@@ -279,6 +335,29 @@ class UtilsScreenViewModel(
         chooser.dialogTitle = if (directoriesOnly) "Select directory" else "Select path"
         val start = File(current)
         when {
+            start.isDirectory -> chooser.currentDirectory = start
+            start.parentFile?.isDirectory == true -> chooser.currentDirectory = start.parentFile
+        }
+        val result = chooser.showOpenDialog(null)
+        return if (result == JFileChooser.APPROVE_OPTION) {
+            chooser.selectedFile.absolutePath
+        } else {
+            null
+        }
+    }
+
+    private fun pickImagePath(current: String): String? {
+        val chooser = JFileChooser()
+        chooser.fileSelectionMode = JFileChooser.FILES_ONLY
+        chooser.dialogTitle = "Select background image"
+        chooser.fileFilter = FileNameExtensionFilter(
+            "Images (jpg, png, webp, bmp)",
+            "jpg", "jpeg", "png", "webp", "bmp",
+        )
+        chooser.isAcceptAllFileFilterUsed = true
+        val start = File(current)
+        when {
+            start.isFile -> chooser.currentDirectory = start.parentFile
             start.isDirectory -> chooser.currentDirectory = start
             start.parentFile?.isDirectory == true -> chooser.currentDirectory = start.parentFile
         }

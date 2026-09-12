@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
@@ -33,18 +34,23 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.model.AppearanceSettings
+import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -54,6 +60,8 @@ import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
+import java.io.File
+import kotlin.math.roundToInt
 
 @Composable
 public fun UtilsScreen(
@@ -360,6 +368,7 @@ private fun ConfigSection.icon(): ImageVector = when (this) {
     ConfigSection.TeOptimizer -> Icons.Default.TextFields
     ConfigSection.Infrastructure -> Icons.Default.Settings
     ConfigSection.Validation -> Icons.Default.Photo
+    ConfigSection.Appearance -> Icons.Default.Palette
 }
 
 @Composable
@@ -381,6 +390,7 @@ private fun SectionFields(
             ConfigSection.TeOptimizer -> TeFields(form, errors, viewModel)
             ConfigSection.Infrastructure -> InfrastructureFields(form, errors, viewModel)
             ConfigSection.Validation -> ValidationFields(form, errors, viewModel)
+            ConfigSection.Appearance -> AppearanceFields(uiState, viewModel)
         }
     }
 }
@@ -1396,3 +1406,219 @@ private fun sampleAspectHint(form: TrainingConfigForm): String? {
 }
 
 private tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) kotlin.math.abs(a) else gcd(b, a % b)
+
+@Composable
+private fun AppearanceFields(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel,
+) {
+    val settings = uiState.appearance
+    val colors = rankoColors
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                text = "Background",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "Solid is the flat purple night. Glow adds the three pink/blue/lilac orbs. Image fills the window with a photo (dimmed so cards stay readable).",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CapsuleChoice(
+                    text = "Solid",
+                    selected = settings.background == BackgroundStyle.Solid,
+                    onClick = { viewModel.updateBackground(BackgroundStyle.Solid) },
+                )
+                CapsuleChoice(
+                    text = "Glow",
+                    selected = settings.background == BackgroundStyle.Glow,
+                    onClick = { viewModel.updateBackground(BackgroundStyle.Glow) },
+                )
+                CapsuleChoice(
+                    text = "Image",
+                    selected = settings.background == BackgroundStyle.Image,
+                    onClick = { viewModel.updateBackground(BackgroundStyle.Image) },
+                )
+            }
+            BackgroundImagePicker(settings = settings, viewModel = viewModel)
+        }
+    }
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "Blur",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "Two independent radii, used when Glow or Image is on. Card blur frosts porcelain cards, the nav rail, and metric chips. Background blur frosts the wallpaper in the gaps between them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            BlurSlider(
+                label = "Card",
+                value = settings.cardBlurRadiusDp,
+                onChange = { viewModel.updateCardBlur(it) },
+            )
+            BlurSlider(
+                label = "Background",
+                value = settings.backgroundBlurRadiusDp,
+                onChange = { viewModel.updateBackgroundBlur(it) },
+            )
+        }
+    }
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Font scale",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "Text size only (0.50×–2.50×). Independent of icon scale.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Slider(
+                value = settings.fontScale,
+                onValueChange = { viewModel.updateFontScale(it) },
+                valueRange = AppearanceSettings.MIN_FONT_SCALE..AppearanceSettings.MAX_FONT_SCALE,
+            )
+            Text(
+                text = "${"%.2f".format(settings.fontScale)} ×",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.accentPink,
+            )
+        }
+    }
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Icon scale",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "Icons, padding, and component sizes (0.50×–2.50×). Does not change text size.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Slider(
+                value = settings.iconScale,
+                onValueChange = { viewModel.updateIconScale(it) },
+                valueRange = AppearanceSettings.MIN_ICON_SCALE..AppearanceSettings.MAX_ICON_SCALE,
+            )
+            Text(
+                text = "${"%.2f".format(settings.iconScale)} ×",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.accentPink,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BlurSlider(
+    label: String,
+    value: Float,
+    onChange: (Float) -> Unit,
+) {
+    val colors = rankoColors
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = colors.text)
+            Text(
+                text = "${value.roundToInt()} dp",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.accentPink,
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = AppearanceSettings.MIN_BLUR..AppearanceSettings.MAX_BLUR,
+        )
+    }
+}
+
+@Composable
+private fun BackgroundImagePicker(
+    settings: AppearanceSettings,
+    viewModel: UtilsScreenViewModel,
+) {
+    val colors = rankoColors
+    val tokens = rankoTokens
+    val path = settings.backgroundImagePath
+    val file = remember(path) { File(path).takeIf { path.isNotEmpty() && it.isFile } }
+    val missing = path.isNotEmpty() && file == null
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(tokens.panel)
+                .background(colors.bgCard.copy(alpha = 0.42f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (file != null) {
+                AsyncImage(
+                    model = file,
+                    contentDescription = "Background preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    Icons.Default.Photo,
+                    contentDescription = null,
+                    tint = colors.textDim,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = when {
+                    file != null -> file.name
+                    missing -> "Image not found"
+                    else -> "No image selected"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (missing) colors.qualityRed else colors.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = path.ifBlank { "jpg / png / webp / bmp" },
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        CapsuleButton(
+            text = "Browse",
+            onClick = { viewModel.browseBackgroundImage() },
+            compact = true,
+        )
+        if (path.isNotEmpty()) {
+            CapsuleButton(
+                text = "Clear",
+                onClick = { viewModel.clearBackgroundImage() },
+                compact = true,
+            )
+        }
+    }
+}

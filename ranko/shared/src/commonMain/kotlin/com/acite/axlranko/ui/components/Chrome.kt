@@ -19,11 +19,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
+import coil3.compose.AsyncImage
+import com.acite.axlranko.model.AppearanceSettings
+import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.chrisbanes.haze.HazeInput
@@ -34,8 +38,14 @@ import dev.chrisbanes.haze.blur.HazeColorEffect
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import java.io.File
 
-val LocalRankoHaze = staticCompositionLocalOf<HazeState?> { null }
+data class HazeContext(
+    val state: HazeState?,
+    val cardBlurRadiusDp: Float,
+)
+
+val LocalRankoHaze = staticCompositionLocalOf { HazeContext(state = null, cardBlurRadiusDp = 22f) }
 
 @Composable
 fun GlowOrbs(modifier: Modifier = Modifier) {
@@ -82,27 +92,78 @@ fun GlowOrbs(modifier: Modifier = Modifier) {
 
 @Composable
 fun RankoBackdrop(
+    settings: AppearanceSettings,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val hazeState = rememberHazeState()
     val colors = rankoColors
-    CompositionLocalProvider(LocalRankoHaze provides hazeState) {
+    val imageFile = remember(settings.background, settings.backgroundImagePath) {
+        settings.backgroundImageFile()
+    }
+    val showOrbs = settings.background == BackgroundStyle.Glow
+    val showImage = imageFile != null
+    val hasArtwork = showOrbs || showImage
+    val hazeState = rememberHazeState()
+    val hazeContext = HazeContext(
+        state = if (hasArtwork) hazeState else null,
+        cardBlurRadiusDp = settings.cardBlurRadiusDp,
+    )
+    CompositionLocalProvider(LocalRankoHaze provides hazeContext) {
         Box(
             modifier
                 .fillMaxSize()
                 .background(colors.bgApp),
         ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .hazeSource(hazeState),
-            ) {
-                GlowOrbs()
+            if (hasArtwork) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .hazeSource(hazeState),
+                ) {
+                    if (showImage && imageFile != null) {
+                        AsyncImage(
+                            model = imageFile,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            filterQuality = FilterQuality.Medium,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        Box(Modifier.fillMaxSize().background(colors.bgApp.copy(alpha = 0.48f)))
+                    }
+                    if (showOrbs) {
+                        GlowOrbs()
+                    }
+                }
+                if (settings.backgroundBlurRadiusDp > 0f) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .hazeBlur(
+                                input = HazeInput.Sources(
+                                    state = hazeState,
+                                    selection = HazeSourceSelection.All,
+                                ),
+                                style = HazeBlurStyle {
+                                    blurRadius(settings.backgroundBlurRadiusDp.dp)
+                                    backgroundColor(Color.Transparent)
+                                    noiseFactor(0.04f)
+                                    fallbackColorEffect(HazeColorEffect.tint(Color.Transparent))
+                                },
+                            ),
+                    )
+                }
             }
             content()
         }
     }
+}
+
+private fun AppearanceSettings.backgroundImageFile(): File? {
+    if (background != BackgroundStyle.Image) return null
+    val path = backgroundImagePath
+    if (path.isEmpty()) return null
+    val file = File(path)
+    return file.takeIf { it.isFile }
 }
 
 @Composable
@@ -113,27 +174,14 @@ fun PorcelainCard(
 ) {
     val tokens = rankoTokens
     val colors = rankoColors
-    val hazeState = LocalRankoHaze.current
+    val hazeContext = LocalRankoHaze.current
     val tint = colors.bgPanel.copy(alpha = 0.58f)
-    val frost = if (hazeState != null) {
-        Modifier.hazeBlur(
-            input = HazeInput.Sources(hazeState),
-            style = HazeBlurStyle {
-                blurRadius(22.dp)
-                backgroundColor(tint)
-                colorEffects(listOf(HazeColorEffect.tint(colors.bgCard.copy(alpha = 0.42f))))
-                noiseFactor(0.05f)
-                fallbackColorEffect(HazeColorEffect.tint(tint))
-            },
-        )
-    } else {
-        Modifier.background(tint)
-    }
+    val cardTint = colors.bgCard.copy(alpha = 0.42f)
     Column(
-        modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(tokens.card)
-            .then(frost)
+            .rankoCardBlur(hazeContext, tint, cardTint)
             .border(1.dp, Color.White.copy(alpha = 0.10f), tokens.card)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -149,42 +197,39 @@ fun PorcelainCard(
 @Composable
 fun FrostedSurface(
     modifier: Modifier = Modifier,
-    blurRadius: Dp = 24.dp,
     panelAlpha: Float = 0.58f,
-    cardAlpha: Float = 0.42f,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val tokens = rankoTokens
     val colors = rankoColors
-    val hazeState = LocalRankoHaze.current
+    val hazeContext = LocalRankoHaze.current
     val tint = colors.bgPanel.copy(alpha = panelAlpha)
-    val fallback = colors.bgPanel.copy(alpha = 0.78f)
-    val cardTint = colors.bgCard.copy(alpha = cardAlpha)
-    val blurStyle = remember(tint, fallback, cardTint, blurRadius) {
-        HazeBlurStyle {
-            blurRadius(blurRadius)
-            backgroundColor(tint)
-            colorEffects(listOf(HazeColorEffect.tint(cardTint)))
-            noiseFactor(0.05f)
-            fallbackColorEffect(HazeColorEffect.tint(fallback))
-        }
-    }
-    val frost = if (hazeState != null) {
-        Modifier.hazeBlur(
-            input = HazeInput.Sources(
-                state = hazeState,
-                selection = HazeSourceSelection.All,
-            ),
-            style = blurStyle,
-        )
-    } else {
-        Modifier.background(tint)
-    }
+    val cardTint = colors.bgCard.copy(alpha = 0.42f)
     Column(
         modifier
             .clip(tokens.card)
-            .then(frost)
+            .rankoCardBlur(hazeContext, tint, cardTint)
             .border(1.dp, Color.White.copy(alpha = 0.10f), tokens.card),
         content = content,
     )
+}
+
+private fun Modifier.rankoCardBlur(
+    hazeContext: HazeContext,
+    tint: Color,
+    cardTint: Color,
+): Modifier {
+    val state = hazeContext.state
+    val blurDp = hazeContext.cardBlurRadiusDp
+    if (state == null || blurDp <= 0f) return background(tint)
+    return hazeBlur(
+        input = HazeInput.Sources(state),
+        style = HazeBlurStyle {
+            blurRadius(blurDp.dp)
+            backgroundColor(tint)
+            colorEffects(listOf(HazeColorEffect.tint(cardTint)))
+            noiseFactor(0.05f)
+            fallbackColorEffect(HazeColorEffect.tint(tint))
+        },
+    ).background(tint)
 }

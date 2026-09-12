@@ -24,7 +24,7 @@ fun main() {
         ) {
             window.minimumSize = Dimension(350, 600)
 
-            App(appGraph.metroViewModelFactory)
+            App(appGraph.metroViewModelFactory, appGraph.appearanceRepository)
         }
     }
 }
