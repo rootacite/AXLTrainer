@@ -141,6 +141,8 @@ data class HardwareCpu(
     @SerialName("n_logical") val nLogical: Int = 0,
     @SerialName("util_pct") val utilPct: Double? = null,
     @SerialName("temp_c") val tempC: Double? = null,
+    @SerialName("mem_total_bytes") val memTotalBytes: Long? = null,
+    @SerialName("mem_used_bytes") val memUsedBytes: Long? = null,
 )
 
 @Serializable
@@ -160,6 +162,7 @@ data class HardwareHistory(
     val tempJunction: List<MetricPoint> = emptyList(),
     val cpuUtil: List<MetricPoint> = emptyList(),
     val cpuTemp: List<MetricPoint> = emptyList(),
+    val ramGiB: List<MetricPoint> = emptyList(),
 )
 
 @Serializable

@@ -222,7 +222,9 @@ class DashboardIpcTest {
                 "name": "Test CPU",
                 "n_logical": 28,
                 "util_pct": 41.2,
-                "temp_c": 41.0
+                "temp_c": 41.0,
+                "mem_total_bytes": 67108864000,
+                "mem_used_bytes": 22020096000
               }
             }
         """.trimIndent()
@@ -235,6 +237,7 @@ class DashboardIpcTest {
         assertEquals(17095983104L, parsed.gpus.first().memTotalBytes)
         assertEquals(28, parsed.cpu.nLogical)
         assertEquals(41.2, parsed.cpu.utilPct)
+        assertEquals(22020096000L, parsed.cpu.memUsedBytes)
     }
 
     @Test

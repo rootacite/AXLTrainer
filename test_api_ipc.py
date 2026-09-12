@@ -363,6 +363,7 @@ class HardwareStatusTest(unittest.TestCase):
             drm_root="/tmp/axl-missing-drm",
             proc_stat="/tmp/axl-missing-stat",
             proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+            proc_meminfo="/tmp/axl-missing-meminfo",
             thermal_root="/tmp/axl-missing-thermal",
             now=1710000000.12,
         )
@@ -377,6 +378,7 @@ class HardwareStatusTest(unittest.TestCase):
         self.assertEqual(gpu["temp_edge_c"], 72.0)
         self.assertIsNone(gpu["temp_junction_c"])
         self.assertEqual(gpu["mem_used_bytes"], 13000000000)
+        self.assertIsNone(result["cpu"]["mem_total_bytes"])
         json.dumps(result)
 
     def test_missing_nvtop_is_unavailable_not_an_ipc_error(self):
@@ -388,6 +390,7 @@ class HardwareStatusTest(unittest.TestCase):
             drm_root="/tmp/axl-missing-drm",
             proc_stat="/tmp/axl-missing-stat",
             proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+            proc_meminfo="/tmp/axl-missing-meminfo",
             thermal_root="/tmp/axl-missing-thermal",
         )
         self.assertFalse(forced["available"])
@@ -422,6 +425,7 @@ class HardwareStatusTest(unittest.TestCase):
                 drm_root=root,
                 proc_stat="/tmp/axl-missing-stat",
                 proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+                proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root="/tmp/axl-missing-thermal",
             )
             gpu = result["gpus"][0]
@@ -453,6 +457,7 @@ class HardwareStatusTest(unittest.TestCase):
                 drm_root=root / "missing-drm",
                 proc_stat=stat_path,
                 proc_cpuinfo=cpuinfo,
+                proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root=thermal,
             )
             self.assertIsNone(first["cpu"]["util_pct"])
@@ -466,9 +471,27 @@ class HardwareStatusTest(unittest.TestCase):
                 drm_root=root / "missing-drm",
                 proc_stat=stat_path,
                 proc_cpuinfo=cpuinfo,
+                proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root=thermal,
             )
             self.assertAlmostEqual(second["cpu"]["util_pct"], 50.0)
+
+    def test_cpu_meminfo_used_from_available(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            meminfo = root / "meminfo"
+            self._write(meminfo, "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n")
+
+            result = self.hw.collect_hardware_status(
+                nvtop_runner=lambda: [{"device_name": "GPU", "gpu_util": "1%", "temp": "40C"}],
+                drm_root=root / "missing-drm",
+                proc_stat="/tmp/axl-missing-stat",
+                proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+                proc_meminfo=meminfo,
+                thermal_root=root / "missing-thermal",
+            )
+            self.assertEqual(result["cpu"]["mem_total_bytes"], 16384000 * 1024)
+            self.assertEqual(result["cpu"]["mem_used_bytes"], 8192000 * 1024)
 
     def test_dispatch_hardware_status_never_raises(self):
         result = api.dispatch("hardware_status", {})

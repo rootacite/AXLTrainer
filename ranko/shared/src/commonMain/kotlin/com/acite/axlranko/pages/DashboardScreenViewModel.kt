@@ -300,6 +300,7 @@ internal fun appendHardwareHistory(
     val gpu = snapshot.gpus.firstOrNull()
     val cpu = snapshot.cpu
     val vramGiB = gpu?.memUsedBytes?.let { it.toDouble() / BYTES_PER_GIB }
+    val ramGiB = cpu.memUsedBytes?.let { it.toDouble() / BYTES_PER_GIB }
     return HardwareHistory(
         gpuUtil = appendHardwarePoint(history.gpuUtil, step, gpu?.gpuUtilPct),
         vramGiB = appendHardwarePoint(history.vramGiB, step, vramGiB),
@@ -308,6 +309,7 @@ internal fun appendHardwareHistory(
         tempJunction = appendHardwarePoint(history.tempJunction, step, gpu?.tempJunctionC),
         cpuUtil = appendHardwarePoint(history.cpuUtil, step, cpu.utilPct),
         cpuTemp = appendHardwarePoint(history.cpuTemp, step, cpu.tempC),
+        ramGiB = appendHardwarePoint(history.ramGiB, step, ramGiB),
     )
 }
 

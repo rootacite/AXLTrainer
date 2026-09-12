@@ -2,7 +2,8 @@
 
 nvtop 3.3.2 has no Unix socket; `-s/--snapshot` prints a JSON array of GPUs.
 Process lists are dropped (cmdlines are huge). Edge/junction come from DRM
-hwmon; CPU util is a /proc/stat delta and temp from thermal zones.
+hwmon; CPU util is a /proc/stat delta, temp from thermal zones, RAM from
+/proc/meminfo. CPU package power is not collected (RAPL/turbostat need root).
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ def collect_hardware_status(
     drm_root: str | Path = "/sys/class/drm",
     proc_stat: str | Path = "/proc/stat",
     proc_cpuinfo: str | Path = "/proc/cpuinfo",
+    proc_meminfo: str | Path = "/proc/meminfo",
     thermal_root: str | Path = "/sys/class/thermal",
     now: Optional[float] = None,
 ) -> dict[str, Any]:
@@ -104,6 +106,7 @@ def collect_hardware_status(
     cpu = read_cpu_snapshot(
         proc_stat=proc_stat,
         proc_cpuinfo=proc_cpuinfo,
+        proc_meminfo=proc_meminfo,
         thermal_root=thermal_root,
     )
     return {
@@ -212,16 +215,20 @@ def read_cpu_snapshot(
     *,
     proc_stat: str | Path = "/proc/stat",
     proc_cpuinfo: str | Path = "/proc/cpuinfo",
+    proc_meminfo: str | Path = "/proc/meminfo",
     thermal_root: str | Path = "/sys/class/thermal",
 ) -> dict[str, Any]:
     idle, total = _read_proc_stat(proc_stat)
     util = _cpu_util_from_delta(idle, total)
     n_logical = os.cpu_count() or 0
+    mem_total, mem_used = _read_meminfo(proc_meminfo)
     return {
         "name": _cpu_model_name(proc_cpuinfo),
         "n_logical": int(n_logical),
         "util_pct": util,
         "temp_c": _cpu_temp_c(thermal_root),
+        "mem_total_bytes": mem_total,
+        "mem_used_bytes": mem_used,
     }
 
 
@@ -255,6 +262,35 @@ def _read_proc_stat(path: str | Path) -> tuple[int, int]:
         total = sum(values[:8]) if len(values) >= 8 else sum(values)
         return idle, total
     return 0, 0
+
+
+def _read_meminfo(path: str | Path) -> tuple[int | None, int | None]:
+    """Return (mem_total_bytes, mem_used_bytes) from /proc/meminfo."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    fields: dict[str, int] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, _, rest = line.partition(":")
+        number = parse_metric_number(rest)
+        if number is None:
+            continue
+        fields[key.strip()] = int(number) * 1024
+    total = fields.get("MemTotal")
+    if total is None or total <= 0:
+        return None, None
+    available = fields.get("MemAvailable")
+    if available is not None:
+        used = max(0, total - available)
+        return total, used
+    free = fields.get("MemFree", 0)
+    buffers = fields.get("Buffers", 0)
+    cached = fields.get("Cached", 0)
+    used = max(0, total - free - buffers - cached)
+    return total, used
 
 
 def _cpu_model_name(path: str | Path) -> str:

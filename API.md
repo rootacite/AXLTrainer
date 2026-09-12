@@ -248,7 +248,7 @@ Fails if the folder is missing, `threshold` is out of range, or a training proce
 
 ### `hardware_status`
 
-Read-only host snapshot for the Ranko Dashboard hardware panel. GPU fields come from `nvtop -s` (JSON snapshot mode in nvtop 3.3.2+). Process lists are dropped. AMD edge / junction / mem temperatures are filled from DRM hwmon when present. CPU util is a `/proc/stat` delta; CPU temp prefers `x86_pkg_temp` then `k10temp`.
+Read-only host snapshot for the Ranko Dashboard hardware panel. GPU fields come from `nvtop -s` (JSON snapshot mode in nvtop 3.3.2+). Process lists are dropped. AMD edge / junction / mem temperatures are filled from DRM hwmon when present. CPU util is a `/proc/stat` delta; CPU temp prefers `x86_pkg_temp` then `k10temp`; RAM comes from `/proc/meminfo`. CPU package power is omitted (RAPL / turbostat need root).
 
 Params: `{}`
 
@@ -282,7 +282,9 @@ Result:
     "name": "Intel Core …",
     "n_logical": 28,
     "util_pct": 41.2,
-    "temp_c": 41.0
+    "temp_c": 41.0,
+    "mem_total_bytes": 67108864000,
+    "mem_used_bytes": 22020096000
   }
 }
 ```
