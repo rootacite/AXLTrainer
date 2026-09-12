@@ -16,9 +16,11 @@ Details are documented in [`fixes/fix1.txt`](../fixes/fix1.txt).
 
 **Symptom:** encoding finishes, tqdm sits at `0/N`, then `Memory access fault by GPU node-1` / `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` (TCP). No Python traceback. Happens on the first `backward()` even with `bucket_reso_steps = 128`.
 
-**Root cause:** RX 9070 XT (gfx1201) + ROCm 7.2 Tensile GEMM reads past a torch allocation during UNet backward when prompt embeddings require grad (text-encoder LoRA). Isolated UNet backward with detached embeds is fine. Rolling torch `2.14.0+rocm7.2` back to `2.12.0+rocm7.2` does **not** help — both wheels use HIP `7.2.53211`.
+**Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads past a torch allocation during UNet backward when prompt embeddings require grad (text-encoder LoRA). Isolated UNet backward with detached embeds is fine. Rolling torch `2.14.0+rocm7.2` back to `2.12.0+rocm7.2` does **not** help — both wheels use HIP `7.2.53211`. Python 3.14 + torch `2.13.0+rocm10.0.0` (HIP 7.15.26333) still aborts the same way; ROCm 10.0 logs the kernel as `Cijk_Ailk_Bjlk_…_MT32x32x128_…_ISA1201`.
 
-**Workaround:** `PYTORCH_NO_HIP_MEMORY_CACHING=1` avoids the abort but starves the GPU (CPU-bound `hipMalloc`). Do not leave that on as the default. Details: [`fixes/fix2.txt`](../fixes/fix2.txt).
+On this card the abort is a **single GEMM problem size**: `train_batch_size = 2` **and** `network_dim = 36` (encoder seq 231 → M=462 = 7×64+14, K=36). `batch` 1 or 3 with dim 36, or `batch=2` with dim 18/24/64, all train. That leftover 14×4 tile is the gfx1201 `global_load_tr` hole (rocm-libraries#7992).
+
+**Workaround:** change `train_batch_size` or `network_dim` so they are not 2+36 together. `PYTORCH_NO_HIP_MEMORY_CACHING=1` also avoids the abort but starves the GPU — do not leave that on. Details: [`fixes/fix2.txt`](../fixes/fix2.txt).
 
 ## Common failure modes
 

@@ -158,7 +158,7 @@ Details: [Installation](doc/installation.md#running-the-tests).
 
 ## Runtime environment
 
-**Python (engine + IPC).** Python 3.12 (3.11+ works; `tomllib` is used). Key pins in `environment.yml`: PyTorch `2.12.0+rocm7.2`, diffusers 0.38.0, transformers 4.57.6, peft 0.19.1, accelerate 1.13.0, schedulefree 1.4.1, safetensors, tensorboard. The primary target is **AMD ROCm** (MIOpen/MIGraphX). The training code is ordinary PyTorch/diffusers, so CUDA works with an equivalent `torch` build — see [Installation](doc/installation.md#nvidia--cuda-instead-of-rocm). You still need enough VRAM for SDXL LoRA at the resolution and batch size you chose.
+**Python (engine + IPC).** Python 3.14 (3.11+ works; `tomllib` is used). Key pins in `environment.yml`: PyTorch `2.13.0+rocm10.0.0` (gfx1201 extra, AMD `whl-next` index), diffusers 0.40.0, transformers 5.16.1, peft 0.20.0, accelerate 1.14.0, schedulefree 1.4.1, safetensors, tensorboard. The primary target is **AMD ROCm** (MIOpen/MIGraphX). The training code is ordinary PyTorch/diffusers, so CUDA works with an equivalent `torch` build — see [Installation](doc/installation.md#nvidia--cuda-instead-of-rocm). You still need enough VRAM for SDXL LoRA at the resolution and batch size you chose.
 
 **Ranko.** JDK 17+ (the Gradle wrapper provisions a JDK 21 toolchain), Gradle 9.1.0 wrapper, Kotlin 2.4.0, Compose Multiplatform 1.11.1, Material 3, ktoml, kotlinx.serialization, Coil 3.
 
@@ -172,14 +172,14 @@ Provided as a reference, not a requirement. This is also the machine on which th
 | CPU | Intel Core i7-14700F (20 cores / 28 threads) |
 | RAM | 32 GB |
 | GPU | AMD Radeon RX 9070 XT 16 GB GDDR6 (Navi 48 / RDNA4, PowerColor) |
-| ROCm stack | ROCm 7.2.4 (HIP 7.2.53211, MIOpen 3.5.1) |
+| ROCm stack | ROCm 10.0.0 (HIP 7.15.26333, vendored via `rocm-sdk-*` wheels) |
 | Java | OpenJDK 26.0.2.1 (system JVM; Ranko's Gradle daemon uses the provisioned JDK 21 toolchain) |
-| Python | 3.12.13 (conda env `axl`) |
-| torch / torchvision / torchaudio | `2.12.0+rocm7.2` / `0.27.0+rocm7.2` / `2.11.0+rocm7.2` |
-| diffusers / transformers / peft / accelerate | `0.38.0` / `4.57.6` / `0.19.1` / `1.13.0` |
+| Python | 3.14.7 (conda env `axl`, CPython `cp314`) |
+| torch / torchvision / torchaudio | `2.13.0+rocm10.0.0` / `0.28.0+rocm10.0.0` / `2.11.0.2+rocm10.0.0` |
+| diffusers / transformers / peft / accelerate | `0.40.0` / `5.16.1` / `0.20.0` / `1.14.0` |
 | schedulefree / safetensors | `1.4.1` / `0.8.0` |
 | tensorboard / streamlit | `2.21.0` / `1.63.0` |
-| onnxruntime-migraphx / triton-rocm | `1.27.1` / `3.7.0` |
+| onnxruntime-migraphx / triton | `1.27.1` / `3.8.0+git4cff872c.rocm10.0.0` |
 | kornia / opencv-python / numpy / pillow | `0.8.3` / `5.0.0.93` / `2.5.3` / `12.3.0` |
 
 > Versions above are what is installed in `axl` at the time of writing and may drift slightly; `environment.yml` is the pinned record.

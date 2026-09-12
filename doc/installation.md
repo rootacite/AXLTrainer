@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Python 3.11+** (3.12 recommended; `trainer/config.toml` parsing uses `tomllib` and `ranko/tools/agent.py` requires 3.11+).
+- **Python 3.11+** (3.14 recommended; `trainer/config.toml` parsing uses `tomllib` and `ranko/tools/agent.py` requires 3.11+).
 - **A GPU with enough VRAM for SDXL LoRA training.** The shipped environment targets **AMD ROCm** (MIOpen/MIGraphX). CUDA works too if you install a CUDA build of PyTorch instead (see below).
 - **JDK 17+** only if you want to build/run the Ranko desktop dashboard (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver).
 
@@ -19,12 +19,12 @@ The manifest pins the ROCm stack used during development, including:
 
 | Component | Version (in `environment.yml`) | Notes |
 | --- | --- | --- |
-| Python | 3.12.13 | |
-| PyTorch | `2.12.0+rocm7.2` | torch / torchvision (`0.27.0+rocm7.2`); torchaudio in the pin is still `2.11.0+rocm7.2` |
-| diffusers | 0.38.0 | pipeline + schedulers (`torch_dtype=` load kwarg) |
-| transformers | 4.57.6 | CLIP text encoders |
-| peft | 0.19.1 | LoRA adapters |
-| accelerate | 1.13.0 | mixed precision + TensorBoard |
+| Python | 3.14.7 (`cp314`, not free-threaded `cp314t`) | |
+| PyTorch | `2.13.0+rocm10.0.0` | torch / torchvision (`0.28.0+rocm10.0.0`) / torchaudio (`2.11.0.2+rocm10.0.0`); gfx1201 extra from `https://stable.repo.amd.com/rocm/whl-next/` |
+| diffusers | 0.40.0 | pipeline + schedulers |
+| transformers | 5.16.1 | CLIP text encoders |
+| peft | 0.20.0 | LoRA adapters |
+| accelerate | 1.14.0 | mixed precision + TensorBoard |
 | schedulefree | 1.4.1 | UNet optimizer (`AdamWScheduleFree`) |
 | safetensors | 0.8.0 | checkpoint I/O |
 | tensorboard | 2.21.0 | metric logging (read by `api.py` / `ui.py`) |

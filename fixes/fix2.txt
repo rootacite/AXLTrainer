@@ -36,11 +36,42 @@ paths can emit an unclamped `global_load_tr` that reads one page past a
 torch allocation. The HIP caching allocator packs those allocations so the
 overrun hits an unmapped GPU VM page and the KFD aborts the process.
 
+#### Triggering problem size (author-confirmed)
+
+On this machine the abort is **not** "any LoRA backward". It only fires for
+one shape combo with the kanae 1024×768 bucket and `max_token_length = 225`
+(3 CLIP chunks → encoder seq 231):
+
+| `train_batch_size` | `network_dim` | Result |
+| --- | --- | --- |
+| 2 | 36 | **page fault** |
+| 1 | 36 | ok |
+| 3 | 36 | ok |
+| 2 | 18 / 24 / 64 | ok |
+
+That is a Tensile **partial tile**. PEFT LoRA backward of UNet `to_k`/`to_v`
+w.r.t. encoder hidden states includes:
+
+    [B·231, 36] @ [36, 2048]     (K = network_dim)
+
+For B=2: M=462 = 7×64 + **14**, K=36 = 1×32 + **4**. gfx1201 kernels tiled
+MT64×64×32/64 drop the remainder bounds check on `global_load_tr` (see
+rocm-libraries#7992). Neighbouring sizes change M or K enough to pick a
+different kernel.
+
+Practical dodge: do not train with `train_batch_size = 2` and
+`network_dim = 36` together on this GPU. `batch=3` (current config) or
+`network_dim` in {16, 24, 32, 64} is fine.
+
 #### What does not fix it
 
 - Rolling back the aec104a pip bump (torch `2.14.0+rocm7.2` → `2.12.0+rocm7.2`,
   transformers 5.16 → 4.57, diffusers 0.40 → 0.38). Both wheels report
   `hip 7.2.53211`. Joint backward still page-faults on the first step.
+- Python 3.14.7 + torch `2.13.0+rocm10.0.0` (HIP 7.15.26333, AMD `whl-next`,
+  gfx1201 extra). Same `batch=2` + `network_dim=36` abort; same dodge works.
+  ROCm 10.0 named the kernel:
+  `Cijk_Ailk_Bjlk_…_MT32x32x128_…_ISA1201`.
 - Splitting TE backward from UNet backward, if prompt embeds still
   `requires_grad` (UNet cross-attn d(encoder_hidden_states) is enough).
 - `TORCH_BLAS_PREFER_HIPBLASLT=0`, math-only SDPA, disabling TE checkpointing.
