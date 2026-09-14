@@ -73,6 +73,8 @@ def main():
 
         # Process only image files
         if filename.lower().endswith(image_extensions):
+            if filename.lower().endswith(".mask.png"):
+                continue
             base_name, _ = os.path.splitext(filename)
             txt_filename = base_name + ".txt"
             txt_path = os.path.join(target_dir, txt_filename)
@@ -84,6 +86,11 @@ def main():
                 # Move annotation text file if it exists
                 if os.path.exists(txt_path):
                     shutil.move(txt_path, os.path.join(trash_dir, txt_filename))
+
+                mask_filename = base_name + ".mask.png"
+                mask_path = os.path.join(target_dir, mask_filename)
+                if os.path.exists(mask_path):
+                    shutil.move(mask_path, os.path.join(trash_dir, mask_filename))
                 
                 moved_count += 1
 

@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.acite.axlranko.util.isMaskSidecar
+import com.acite.axlranko.util.maskFileFor
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -64,8 +66,9 @@ class StatisticsScreenViewModel(
 
             val allFiles = dir.listFiles() ?: emptyArray()
             val txtFiles = allFiles.filter { it.extension.lowercase() == "txt" }
-            val imageMap = allFiles.filter { it.extension.lowercase() in imageExtensions }
-                .associateBy { it.nameWithoutExtension }
+            val imageMap = allFiles.filter {
+                it.extension.lowercase() in imageExtensions && !isMaskSidecar(it)
+            }.associateBy { it.nameWithoutExtension }
 
             val items = mutableListOf<DatasetItem>()
             val tagCounter = mutableMapOf<String, Int>()
@@ -230,6 +233,14 @@ class StatisticsScreenViewModel(
                             File(trashDir, item.imageFile.name).toPath(),
                             StandardCopyOption.REPLACE_EXISTING
                         )
+                        val maskFile = maskFileFor(item.imageFile)
+                        if (maskFile.exists()) {
+                            Files.move(
+                                maskFile.toPath(),
+                                File(trashDir, maskFile.name).toPath(),
+                                StandardCopyOption.REPLACE_EXISTING
+                            )
+                        }
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }

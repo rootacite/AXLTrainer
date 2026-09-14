@@ -21,7 +21,7 @@ try:
         enable_flash_attention,
         lora_checkpoint_file,
     )
-    from utils import build_time_ids
+    from utils import apply_loss_mask, build_time_ids
 except ImportError:
     from trainer.checkpoints import read_lora_metadata, resolve_resume_path
     from trainer.family import FamilyModules, FamilySpec
@@ -30,7 +30,7 @@ except ImportError:
         enable_flash_attention,
         lora_checkpoint_file,
     )
-    from trainer.utils import build_time_ids
+    from trainer.utils import apply_loss_mask, build_time_ids
 
 base_dir = os.getcwd()
 if base_dir not in sys.path:
@@ -500,7 +500,9 @@ class SdxlFamily:
             target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             target = noise
-        return F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        err = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        err = apply_loss_mask(err, extra.get("loss_mask"))
+        return err.mean()
 
     def compute_loss(
         self,

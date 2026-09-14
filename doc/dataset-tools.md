@@ -4,7 +4,7 @@ Beyond the desktop app, the repo ships several scriptable tools for preparing an
 
 ## `tools/` — caption/dataset utilities
 
-All scripts live in `tools/` and run from anywhere (paths are positional). Captions are the comma-separated tag lists in the `.txt` files next to images. Unless noted, operations are **destructive in place** — back up before bulk edits.
+All scripts live in `tools/` and run from anywhere (paths are positional). Captions are the comma-separated tag lists in the `.txt` files next to images. An optional loss mask `{stem}.mask.png` (always PNG, grayscale; white = train, black = ignore) may sit next to the image; if it is absent, a training PNG/WebP with an alpha channel uses that alpha as the mask. Listings skip `*.mask.png` so a sidecar is never treated as a training sample. `dropper.py` / `tag_coser.py` move the sidecar with the image+caption pair. Unless noted, operations are **destructive in place** — back up before bulk edits.
 
 | Script | Purpose | Usage |
 | --- | --- | --- |
@@ -45,11 +45,11 @@ python tagger/main.py
 | `--json` | Print one result object to stdout |
 | `--cpu` | Force `CPUExecutionProvider` |
 
-For every image (`png` / `jpg` / `jpeg` / `webp` / `bmp`, non-recursive) it writes `", ".join(tags)` sorted by confidence into `<stem>.txt`. Input is 448×448 BGR. Ranko’s Utils → Environment **Tag dataset** button calls the same script through the `dataset_tag` IPC method. The `migraphx_cache/` folder inside `tagger/` is a compiled-model cache created on first GPU run.
+For every image (`png` / `jpg` / `jpeg` / `webp` / `bmp`, non-recursive; `*.mask.png` skipped) it writes `", ".join(tags)` sorted by confidence into `<stem>.txt`. Input is 448×448 BGR. Ranko’s Utils → Environment **Tag dataset** button calls the same script through the `dataset_tag` IPC method. The `migraphx_cache/` folder inside `tagger/` is a compiled-model cache created on first GPU run.
 
 ## `ranko/tools/agent.py` — dataset CLI for scripts & AI agents
 
-A non-interactive, machine-friendly CLI that mirrors the desktop app's dataset features (browsing, caption editing, tag statistics, bulk cleanup). It **never reads image pixels** — it only manages the `.txt` caption files next to the images — and is safe to hand to automation.
+A non-interactive, machine-friendly CLI that mirrors the desktop app's dataset features (browsing, caption editing, tag statistics, bulk cleanup). It **never reads image pixels** — it only manages the `.txt` caption files next to the images — and is safe to hand to automation. `list` / `scan` skip `*.mask.png`. `drop` moves `{stem}.mask.png` with the image+caption pair when present.
 
 ```bash
 # Global options (before or after the subcommand):

@@ -63,7 +63,9 @@ def list_images(directory: Path) -> list[Path]:
     files = [
         path
         for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_EXTENSIONS
+        and not path.name.lower().endswith(".mask.png")
     ]
     files.sort(key=lambda p: p.name.lower())
     return files

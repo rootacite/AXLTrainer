@@ -21,7 +21,7 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | `pretrained_model_name_or_path` | `"/opt/models/diffusers/waillu_170"` | SDXL base model. A diffusers directory, or a single-file checkpoint path (`from_single_file`). |
 | `output_dir` | `"/home/acite/LLM/axltrainer/outputs"` | Root for run directories: each run writes `{output_dir}/{output_name}_{YYYYMMDD_HHMMSS}/…`. Created if missing. |
 | `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
-| `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. |
+| `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. |
 | `output_name` | `"rein"` | Run name; prefix of every artifact path, of the run directory, and of the TensorBoard project. Sanitized to `[A-Za-z0-9._-]` in the run id and checkpoint filename. |
 
 ### `[model_spec]` — base-model family + checkpoint metadata

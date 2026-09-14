@@ -101,10 +101,22 @@ def build_group_inputs(
             )
         )
 
+    stacked = _stack_extra(extras)
+    batch_masks = batch.get("loss_mask")
+    if batch_masks is not None:
+        if torch.is_tensor(batch_masks):
+            stacked["loss_mask"] = batch_masks[indices].to(
+                device=device, dtype=torch.float32, non_blocking=True
+            )
+        else:
+            stacked["loss_mask"] = torch.stack(
+                [batch_masks[i] for i in indices], dim=0
+            ).to(device=device, dtype=torch.float32)
+
     img_data = batch["img_data"]
     if torch.is_tensor(img_data):
         latents = img_data[indices].to(device=device, dtype=weight_dtype, non_blocking=True)
-        return prompts, latents, _stack_extra(extras)
+        return prompts, latents, stacked
 
     latents_list: list[torch.Tensor] = []
     for i in indices:
@@ -119,7 +131,7 @@ def build_group_inputs(
             )
         )
     latents = torch.stack(latents_list, dim=0).to(device=device, dtype=weight_dtype)
-    return prompts, latents, _stack_extra(extras)
+    return prompts, latents, stacked
 
 
 def _maybe_log_and_sample(

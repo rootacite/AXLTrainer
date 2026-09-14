@@ -13,14 +13,16 @@ from torch.utils.data import Dataset, Sampler
 try:
     from config import TrainConfig
     from utils import (
-        image_to_tensor, list_images, pick_bucket_size,
-        read_caption, resize_and_center_crop, sha1_text, shuffle_caption
+        image_has_alpha, image_to_tensor, list_images, load_loss_mask,
+        mask_path_for, pick_bucket_size, read_caption, resize_and_center_crop,
+        sha1_text, shuffle_caption,
     )
 except ImportError:
     from trainer.config import TrainConfig
     from trainer.utils import (
-        image_to_tensor, list_images, pick_bucket_size,
-        read_caption, resize_and_center_crop, sha1_text, shuffle_caption
+        image_has_alpha, image_to_tensor, list_images, load_loss_mask,
+        mask_path_for, pick_bucket_size, read_caption, resize_and_center_crop,
+        sha1_text, shuffle_caption,
     )
 
 
@@ -45,9 +47,11 @@ class LoraImageDataset(Dataset):
 
         self.records: list[dict[str, Any]] = []
         self.buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
+        self.n_masked = 0
         for index, image_path in enumerate(self.images):
             with Image.open(image_path) as img:
                 src_w, src_h = img.size
+                has_alpha = image_has_alpha(img)
             if cfg.enable_bucket:
                 bucket_w, bucket_h = pick_bucket_size(
                     src_w, src_h,
@@ -58,6 +62,9 @@ class LoraImageDataset(Dataset):
                 )
             else:
                 bucket_w = bucket_h = cfg.train_resolution
+            has_mask = mask_path_for(image_path).is_file() or has_alpha
+            if has_mask:
+                self.n_masked += 1
             self.records.append(
                 {
                     "path": image_path,
@@ -65,6 +72,7 @@ class LoraImageDataset(Dataset):
                     "src_h": int(src_h),
                     "bucket_w": int(bucket_w),
                     "bucket_h": int(bucket_h),
+                    "has_mask": has_mask,
                 }
             )
             self.buckets[(int(bucket_w), int(bucket_h))].append(index)
@@ -112,6 +120,13 @@ class LoraImageDataset(Dataset):
                 img = resize_and_center_crop(img, bucket_w, bucket_h)
                 img_data = image_to_tensor(img)
 
+        loss_mask = load_loss_mask(
+            image_path,
+            bucket_w,
+            bucket_h,
+            record["src_w"],
+            record["src_h"],
+        )
         return {
             "image_path": str(image_path),
             "caption": self._caption_for(image_path),
@@ -122,6 +137,7 @@ class LoraImageDataset(Dataset):
             "img_type": img_type,
             "img_data": img_data,
             "cache_path": str(cache_path),
+            "loss_mask": loss_mask,
         }
 
 
@@ -187,6 +203,14 @@ def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         except RuntimeError:
             img_data = img_items
 
+    mask_items = [ex["loss_mask"] for ex in examples]
+    loss_mask: Any = mask_items
+    if mask_items and all(torch.is_tensor(item) for item in mask_items):
+        try:
+            loss_mask = torch.stack(mask_items, dim=0)
+        except RuntimeError:
+            loss_mask = mask_items
+
     return {
         "image_path": [ex["image_path"] for ex in examples],
         "caption": [ex["caption"] for ex in examples],
@@ -197,6 +221,7 @@ def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         "img_type": [ex["img_type"] for ex in examples],
         "img_data": img_data,
         "cache_path": [ex["cache_path"] for ex in examples],
+        "loss_mask": loss_mask,
     }
 
 

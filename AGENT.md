@@ -18,7 +18,7 @@ Working notes for coding agents. Human-facing docs live under `doc/` and `README
 | Ranko tabs and IPC usage | `doc/dashboard.md` |
 | Wire protocol (methods, shapes) | `API.md` |
 | Dataset CLIs | `doc/dataset-tools.md` |
-| ROCm pitfalls | `doc/troubleshooting.md`, `fixes/fix1.txt` |
+| ROCm pitfalls | `doc/troubleshooting.md`, `fixes/fix1.txt`, `fixes/fix2/` |
 
 Verify after a change (pick the layer you touched):
 
@@ -269,6 +269,10 @@ Screens: `Images` | `Statistics` | `Utils` | `Dashboard` (`Stage.kt` enum).
 
 Dataset scan in the GUI is **non-recursive**, one folder, image + same-stem `.txt`. Orphan captions **abort** the statistics scan. `ranko/tools/agent.py` mirrors this (`--allow-orphans` to inspect anyway). Trash for GUI/agent drops: `/tmp/axlranko/trash` (not the dataset’s own `trash/` used by some `tools/` scripts).
 
+Mask painting does **not** use Compose pointer APIs: `maskPaintInput` (`pages/components/MaskPaint.kt` expect, `jvmMain/.../MaskPaint.jvm.kt` actual) attaches a global AWT mouse listener to the host window (both buttons are reported) plus a 4 ms `MouseInfo` sampler while a stroke is active, because AWT coalesces motion events and fast strokes used to land as separate dots. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
+
+Screen→window conversion for the sampled pointer must go through a component **inside** the window (`window.contentPane`), never through the `Window` itself: a `Window`'s screen position is its frame origin including decorations, so converting through it lands `insets.top` pixels off — 41 px under KWin/XWayland — and half the samples then paint a parallel line offset from the other half. `MaskPreview` maps box coordinates to image coordinates and drops samples outside the drawn image, calling `onStrokeLeaveImage` so a stroke that leaves the image resumes as a new segment instead of smearing along the border. Brush math lives in `util/MaskBrush.kt` (falloff, path interpolation, blending) and raster ops in `util/MaskCanvas.kt`; both are unit-tested without a display.
+
 DI: Metro `@Inject` / `@SingleIn(AppScope)` / `@ContributesBinding`. ViewModels via `metroViewModel()`. New ViewModels need constructor injection and to be reachable from the graph (follow existing `*ScreenViewModel`).
 
 Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopApp:run`.
@@ -277,7 +281,7 @@ Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopAp
 
 ## 8. Dataset contract
 
-Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp.
+Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp. Optional loss mask: `{stem}.mask.png` next to `{stem}.png` (always PNG). If the sidecar exists, MSE is weighted by that mask (white=train, black=ignore). If it is missing and the training image has an alpha channel, that alpha is the mask (0=ignore, 255=train). Otherwise loss is unchanged. **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`). Drop/trash moves the sidecar with the pair.
 
 Python trainer `list_images` / Ranko / `agent.py` should stay consistent on extensions and “same stem” pairing. Ranko `parse_tags` = split `,` → trim → drop empty. Duplicates preserved in captions; stats dedupe per file.
 
@@ -343,7 +347,10 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Sample offload | `python -m unittest test_sampling_offload` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
 | GPU smoke | `python -m unittest test_vram_gpu` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
 | Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
-| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch, catalog form, image headers |
+| Masked loss | `python -m unittest test_masked_loss` | sidecar exclusion, ones/zero/gray weights, alpha fallback, crop alignment |
+| Masked loss GPU | `python -m unittest test_masked_loss_gpu` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
+| Mask verifier | `python verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; conda `axl`, ~1 h |
+| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch, catalog form, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
 
 Cwd for Python tests: **repo root**. Use conda env `axl` so `torch` / `tensorboard` import.
 

@@ -63,6 +63,9 @@ def drop_samples(directory_path, tagger_name, rate):
                     # Move image file if it exists
                     if img_path:
                         shutil.move(str(img_path), str(trash_dir / img_path.name))
+                        mask_path = img_path.with_name(img_path.stem + ".mask.png")
+                        if mask_path.is_file():
+                            shutil.move(str(mask_path), str(trash_dir / mask_path.name))
                         
                     dropped_count += 1
 

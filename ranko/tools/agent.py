@@ -16,6 +16,16 @@ from pathlib import Path
 
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
 DEFAULT_TRASH_DIR = "/tmp/axlranko/trash"
+MASK_SIDECAR_SUFFIX = ".mask.png"
+
+
+def is_mask_sidecar(path):
+    return path.name.lower().endswith(MASK_SIDECAR_SUFFIX)
+
+
+def mask_path_for(image_path):
+    image_path = Path(image_path)
+    return image_path.with_name(image_path.stem + MASK_SIDECAR_SUFFIX)
 
 
 class ToolError(Exception):
@@ -49,7 +59,7 @@ def scan_dataset(data_dir, strict=False):
         if not f.is_file():
             continue
         ext = f.suffix.lower().lstrip(".")
-        if ext in IMAGE_EXTENSIONS:
+        if ext in IMAGE_EXTENSIONS and not is_mask_sidecar(f):
             image_files.append(f)
         elif ext == "txt":
             txt_by_stem[f.stem] = f
@@ -265,6 +275,9 @@ def cmd_drop(args, ctx):
             if s["txt"]:
                 _move_replace(Path(s["txt"]), trash)
             _move_replace(Path(s["image"]), trash)
+            mask = mask_path_for(s["image"])
+            if mask.is_file():
+                _move_replace(mask, trash)
         results.append({"name": s["name"], "image": s["image"], "txt": s["txt"]})
     return {"command": "drop", "data_dir": str(ctx["data_dir"]), "rate": rate, "trash_dir": str(trash),
             "scanned": len(targets), "dropped": len(results), "dry_run": ctx["dry_run"], "results": results}

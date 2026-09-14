@@ -39,6 +39,12 @@ kotlin {
             implementation(libs.kotlinx.datetime)
         }
 
+        // MaskPaintInputTest composes a real ComposeWindow, which needs the
+        // Skiko native runtime for this OS.
+        jvmTest.dependencies {
+            implementation(compose.desktop.currentOs)
+        }
+
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }

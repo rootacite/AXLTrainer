@@ -30,10 +30,11 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 ![Images tab](screenshots/images-tab.png)
 
-- Left: scrollable thumbnail list of every image in `train_data_dir` (jpg/jpeg/png/webp/bmp). The selected image is highlighted; images with unsaved edits get a **red border**.
-- Right: large preview (top) and a caption/tag editor (bottom) with **Reset** and **Save** buttons — both enabled only while there are unsaved edits.
+- Left: scrollable thumbnail list of every image in `train_data_dir` (jpg/jpeg/png/webp/bmp). `*.mask.png` sidecars are not listed. The selected image is highlighted; images with unsaved caption edits get a **red border**. A small pink corner dot marks images that already have a loss mask (`{stem}.mask.png` or an alpha channel on the training image); the dot turns red while the in-memory mask is unsaved.
+- Right, top: a **Mask** toolbar (toggle paint, mask-only view, brush size, feather as % of diameter default 20%, strength default 100%, invert / fill white / fill black, clear, save mask), then the large preview. With **Mask** on, left-drag paints white (train) and right-drag paints black (ignore; Ctrl+left also erases). Strokes are sampled along the pointer path, so fast movement stays continuous. The cursor shows the brush footprint: the solid circle is the full-strength core, the dashed circle is the outer edge of the feather, and both scale with the image. **Alt+wheel** over the canvas resizes the brush (same range as the slider, wheel up larger). The brush only paints while the pointer is over the image: dragging into the letterbox or past the edges stops painting (nothing is smeared along the border), and re-entering the image starts a new segment rather than a line back to where the pointer left. The overlay dims ignored regions. If there is no sidecar, a transparent training image is previewed using its alpha as the mask. **Save mask** writes `{stem}.mask.png` (takes precedence over alpha). **Clear** deletes only the sidecar and falls back to alpha (or full-image training). Switching thumbs auto-saves a dirty mask. Caption **Save** does not write the mask.
+- Right, bottom: caption/tag editor with **Reset** and **Save** — both enabled only while there are unsaved caption edits.
 - The vertical divider (thumbnails ↔ preview) and horizontal divider (preview ↔ editor) are draggable.
-- Saving writes the caption text to the image's `.txt` file. Re-entering the tab re-scans the disk without discarding in-progress drafts.
+- Saving tags writes the caption text to the image's `.txt` file. Re-entering the tab re-scans the disk without discarding in-progress caption drafts.
 
 ### Statistics — tag analysis & bulk cleanup
 
@@ -45,7 +46,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
   - **Logic mode**: Intersection (AND) / Union (OR), plus a **Not** negation toggle.
   - **Clear / Invert selection**.
   - **Remove Selected**: strip the selected tags from the captions of all matching images.
-  - **Drop Selected Samples**: with probability `r` (0.001–1.0), move each matching image + caption to `/tmp/axlranko/trash`.
+  - **Drop Selected Samples**: with probability `r` (0.001–1.0), move each matching image + caption (+ `{stem}.mask.png` if present) to `/tmp/axlranko/trash`.
   - **Batch Add**: prepend/append a new tag to matching captions, skipping images that already contain it.
 - Dataset scanning is strict: any orphan caption file (`.txt` with no matching image) aborts with an error card.
 

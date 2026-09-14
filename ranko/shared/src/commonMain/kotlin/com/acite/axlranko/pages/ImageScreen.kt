@@ -6,9 +6,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +26,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
+import com.acite.axlranko.pages.components.MaskPreview
+import com.acite.axlranko.util.BRUSH_RADIUS_MAX
+import com.acite.axlranko.util.BRUSH_RADIUS_MIN
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
@@ -78,6 +84,20 @@ public fun ImagesScreen(
                                 filterQuality = FilterQuality.High,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            val showMaskBadge = item.hasMask || (isSelected && uiState.maskDirty)
+                            if (showMaskBadge) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(6.dp)
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (isSelected && uiState.maskDirty) colors.qualityRed
+                                            else colors.accentPink
+                                        )
+                                )
+                            }
                         }
                     }
                 }
@@ -109,6 +129,102 @@ public fun ImagesScreen(
 
                 Column(modifier = Modifier.fillMaxSize()) {
 
+                    val hasSelection = uiState.selectedItem != null
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 36.dp)
+                            .padding(start = 8.dp, end = 8.dp, top = 8.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CapsuleButton(
+                            text = "Mask",
+                            onClick = { viewModel.setMaskEditEnabled(!uiState.maskEditEnabled) },
+                            enabled = hasSelection,
+                            compact = true,
+                            emphasized = uiState.maskEditEnabled,
+                        )
+                        CapsuleButton(
+                            text = "Mask only",
+                            onClick = { viewModel.setMaskOnly(!uiState.maskOnly) },
+                            enabled = hasSelection,
+                            compact = true,
+                            emphasized = uiState.maskOnly,
+                        )
+                        Text(
+                            text = "Brush ${uiState.brushRadiusPx.toInt()}",
+                            color = colors.textDim,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Slider(
+                            value = uiState.brushRadiusPx,
+                            onValueChange = { viewModel.setBrushRadius(it) },
+                            valueRange = BRUSH_RADIUS_MIN..BRUSH_RADIUS_MAX,
+                            enabled = hasSelection,
+                            modifier = Modifier.width(120.dp),
+                        )
+                        Text(
+                            text = "Feather ${(uiState.brushFeather * 100).toInt()}%",
+                            color = colors.textDim,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Slider(
+                            value = uiState.brushFeather,
+                            onValueChange = { viewModel.setBrushFeather(it) },
+                            valueRange = 0f..1f,
+                            enabled = hasSelection,
+                            modifier = Modifier.width(100.dp),
+                        )
+                        Text(
+                            text = "Strength ${(uiState.brushStrength * 100).toInt()}%",
+                            color = colors.textDim,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Slider(
+                            value = uiState.brushStrength,
+                            onValueChange = { viewModel.setBrushStrength(it) },
+                            valueRange = 0.05f..1f,
+                            enabled = hasSelection,
+                            modifier = Modifier.width(100.dp),
+                        )
+                        CapsuleButton(
+                            text = "Invert",
+                            onClick = { viewModel.invertMask() },
+                            enabled = hasSelection,
+                            compact = true,
+                        )
+                        CapsuleButton(
+                            text = "Fill white",
+                            onClick = { viewModel.fillMask(white = true) },
+                            enabled = hasSelection,
+                            compact = true,
+                        )
+                        CapsuleButton(
+                            text = "Fill black",
+                            onClick = { viewModel.fillMask(white = false) },
+                            enabled = hasSelection,
+                            compact = true,
+                        )
+                        CapsuleButton(
+                            text = "Clear",
+                            onClick = { viewModel.clearMask() },
+                            enabled = hasSelection && (
+                                uiState.selectedItem?.hasSidecarMask == true || uiState.maskDirty
+                            ),
+                            compact = true,
+                            danger = true,
+                        )
+                        CapsuleButton(
+                            text = "Save mask",
+                            onClick = { viewModel.saveMask() },
+                            enabled = hasSelection && uiState.maskDirty,
+                            compact = true,
+                            emphasized = true,
+                        )
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -116,15 +232,32 @@ public fun ImagesScreen(
                             .padding(8.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        uiState.selectedItem?.let { v ->
+                        val previewRevision = uiState.maskPreviewRevision
+                        val previewBitmap = remember(previewRevision) { viewModel.previewBitmap() }
+                        if (uiState.selectedItem != null && previewBitmap != null) {
+                            MaskPreview(
+                                bitmap = previewBitmap,
+                                sourceWidth = uiState.sourceWidth,
+                                sourceHeight = uiState.sourceHeight,
+                                editing = uiState.maskEditEnabled,
+                                brushRadius = uiState.brushRadiusPx,
+                                brushFeather = uiState.brushFeather,
+                                onStrokeStart = { x, y, erase -> viewModel.beginMaskStroke(x, y, erase) },
+                                onStrokeMove = { x, y -> viewModel.continueMaskStroke(x, y) },
+                                onStrokeLeaveImage = { viewModel.leaveMaskImage() },
+                                onStrokeEnd = { viewModel.endMaskStroke() },
+                                onBrushResize = { viewModel.resizeBrushBy(it) },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else if (uiState.selectedItem != null) {
                             AsyncImage(
-                                model = File(v.imagePath),
+                                model = File(uiState.selectedItem!!.imagePath),
                                 contentDescription = null,
                                 contentScale = ContentScale.Fit,
                                 filterQuality = FilterQuality.High,
                                 modifier = Modifier.fillMaxSize()
                             )
-                        } ?: run {
+                        } else {
                             Text(
                                 text = "Select an image to edit tags",
                                 color = colors.textDim

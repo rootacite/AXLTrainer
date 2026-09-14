@@ -68,6 +68,7 @@ class TaggerUnitTest(unittest.TestCase):
             img = Image.new("RGB", (64, 64), color=(12, 34, 56))
             img.save(folder / "0001.png")
             img.save(folder / "0002.jpg")
+            img.save(folder / "0001.mask.png")
             (folder / "ignore.txt").write_text("orphan", encoding="utf-8")
             result = tag_directory(
                 folder,

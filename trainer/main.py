@@ -63,6 +63,10 @@ def main() -> None:
         artifacts = build_train_objects(cfg)
         control.set_resume(artifacts.resume)
         accelerator = artifacts.accelerator
+        if accelerator.is_main_process:
+            ds = artifacts.train_dataset
+            n_masked = getattr(ds, "n_masked", 0)
+            print(f"Loss masks: {n_masked}/{len(ds)} samples")
         device = artifacts.device
         weight_dtype = artifacts.weight_dtype
         swap_ctx = SwapContext(
