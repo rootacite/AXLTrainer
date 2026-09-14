@@ -18,6 +18,7 @@ Working notes for coding agents. Human-facing docs live under `doc/` and `README
 | Ranko tabs and IPC usage | `doc/dashboard.md` |
 | Wire protocol (methods, shapes) | `API.md` |
 | Dataset CLIs | `doc/dataset-tools.md` |
+| Mask verification status + restart runbook | `doc/mask-verification.md` |
 | ROCm pitfalls | `doc/troubleshooting.md`, `fixes/fix1.txt`, `fixes/fix2/` |
 
 Verify after a change (pick the layer you touched):
@@ -349,7 +350,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
 | Masked loss | `python -m unittest test_masked_loss` | sidecar exclusion, ones/zero/gray weights, alpha fallback, crop alignment |
 | Masked loss GPU | `python -m unittest test_masked_loss_gpu` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
-| Mask verifier | `python verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; conda `axl`, ~1 h |
+| Mask verifier | `python verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; conda `axl`, ~1 h. Its children are the runs the gfx1201 fault kills, so it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1`. Refuses to start while a training run looks live; status, cost and restart checklist: `doc/mask-verification.md` |
 | Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch, catalog form, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
 
 Cwd for Python tests: **repo root**. Use conda env `axl` so `torch` / `tensorboard` import.
