@@ -1,10 +1,21 @@
 # `fixes/fix2/` — minimal reproduction attempts for the gfx1201 page fault
 
+> **2026-09-15 — the abort depends on the ROCm stack, not only on the shapes.** Every table below was
+> measured on `torch 2.13.0+rocm10.0.0` / HIP `7.15.26333`. On `torch 2.12.0+rocm7.14.1` /
+> HIP `7.14.60850` — the stack `environment.yml` now pins — the author reports the packaged repros no
+> longer abort. The local evidence for that: the last attempt of the `network_dim 32` row ran under
+> that env and was stopped by hand at **step 2** with no fault marker
+> (`/tmp/axl-fix2-repro/01_network-dim-32/train.out`, 04:06), where the same row used to die at
+> **step 4** in ~25 s, and the author's live 7.14 run has trained 700+ steps with sampling every 50
+> without a fault. `resources/real-results.json` still holds the 10.0-era `FAULT / exit -6` row
+> because it was not re-merged after that attempt. The Tensile overrun itself is unchanged, so this
+> is a stopgap, not a fix — see `doc/troubleshooting.md`.
+
 Fastest crash that actually aborts (still the trainer process):
 
 ```
-conda activate axl
-python repro_real.py --row "network_dim 32"   # FAULT at step 4, ~25 s
+conda activate axl_rocm_7_14
+python repro_real.py --row "network_dim 32"   # FAULT at step 4, ~25 s on torch 2.13 + rocm10.0
 ```
 
 `crash.py` is the same path rewritten without `trainer/` (diffusers + peft +

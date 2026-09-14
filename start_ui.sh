@@ -44,7 +44,7 @@ fi
 
 # shellcheck disable=SC1090
 source "$CONDA_SH"
-conda activate axl
+conda activate axl_rocm_7_14
 
 # Ranko spawns api.py itself (and api.py spawns the trainer). Point it at this
 # env's interpreter instead of whatever `python3` resolves to on PATH.

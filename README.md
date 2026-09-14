@@ -116,11 +116,11 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 
 ## Building and running
 
-There is no `requirements.txt`. Create the conda environment from the manifest (env name `axl`), point `trainer/config.toml` at **your** model, dataset and output paths — the shipped values are the author's machine and will not work elsewhere — then either train from the shell or open Ranko.
+There is no `requirements.txt`. Create the conda environment from the manifest (env name `axl_rocm_7_14`, read from `environment.yml`'s `name:`), point `trainer/config.toml` at **your** model, dataset and output paths — the shipped values are the author's machine and will not work elsewhere — then either train from the shell or open Ranko.
 
 ```bash
 conda env create -f environment.yml
-conda activate axl
+conda activate axl_rocm_7_14
 
 # edit trainer/config.toml  (model / dataset / output paths)
 
@@ -172,10 +172,10 @@ Provided as a reference, not a requirement. This is also the machine on which th
 | CPU | Intel Core i7-14700F (20 cores / 28 threads) |
 | RAM | 32 GB |
 | GPU | AMD Radeon RX 9070 XT 16 GB GDDR6 (Navi 48 / RDNA4, PowerColor) |
-| ROCm stack | ROCm 10.0.0 (HIP 7.15.26333, vendored via `rocm-sdk-*` wheels) |
+| ROCm stack | ROCm 7.14.1 (HIP 7.14.60850, vendored via `rocm-sdk-*` wheels) |
 | Java | OpenJDK 26.0.2.1 (system JVM; Ranko's Gradle daemon uses the provisioned JDK 21 toolchain) |
-| Python | 3.14.7 (conda env `axl`, CPython `cp314`) |
-| torch / torchvision / torchaudio | `2.13.0+rocm10.0.0` / `0.28.0+rocm10.0.0` / `2.11.0.2+rocm10.0.0` |
+| Python | 3.14.7 (conda env `axl_rocm_7_14`, CPython `cp314`) |
+| torch / torchvision / torchaudio | `2.12.0+rocm7.14.1` / `0.27.0+rocm7.14.1` / `2.11.0+rocm7.14.1` |
 | diffusers / transformers / peft / accelerate | `0.40.0` / `5.16.1` / `0.20.0` / `1.14.0` |
 | schedulefree / safetensors | `1.4.1` / `0.8.0` |
 | tensorboard / streamlit | `2.21.0` / `1.63.0` |

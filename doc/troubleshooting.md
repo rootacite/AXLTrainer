@@ -32,7 +32,7 @@ The seed does not change tensor *values* (`lora_B` starts at 0). It changes capt
 
 `accelerator.prepare()` of UNet + both TEs after the trainer's VAE-cache/`empty_cache` history is the moment the fatal layout is created. Replacing that call with `.to(device)` lets a 12-step dim-32 run finish; that was measured with copies under `/tmp` and is **not** applied in `trainer/`. Dropping `prepare` also drops Accelerate's autocast wrap, so it is not a numeric no-op.
 
-**Workaround:** `PYTORCH_NO_HIP_MEMORY_CACHING=1` before importing torch avoids both abort routes (~2.2× slower; every alloc is `hipMalloc`). Avoid `network_dim` 12 / 24 / 32 on this card if you can. Do **not** set `HSA_SVM_GUARD_PAGES=0` — that only makes the overrun miss the guard page.
+**Workaround:** run on PyTorch `2.12.0+rocm7.14.1` (HIP `7.14.60850`) — the stack `environment.yml` pins — which the author reports does not abort: the packaged dim-32 repro, dead at step 4 under `2.13.0+rocm10.0.0`, ran past that point under this stack, and a live run trained 700+ steps with sampling every 50 without a fault. This is a stopgap, not a fix: the same Tensile kernels still overread, so the guard-page lottery is unchanged in principle. (`fixes/fix2.txt`'s earlier rollback to `2.12.0+rocm7.2` did **not** help — different stack, HIP `7.2.53211`.) Otherwise: avoid `network_dim` 12 / 24 / 32 on this card, or set `PYTORCH_NO_HIP_MEMORY_CACHING=1` before importing torch (avoids both abort routes, ~2.2× slower). Do **not** set `HSA_SVM_GUARD_PAGES=0` — that only makes the overrun miss the guard page.
 
 Repro, tables, integrity diffs: [`fixes/fix2/README.md`](../fixes/fix2/README.md). First write-up: [`fixes/fix2.txt`](../fixes/fix2.txt). Second sighting: [`fixes/fix2-ex.md`](../fixes/fix2-ex.md).
 

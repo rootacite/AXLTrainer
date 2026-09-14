@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Closed-loop verification for the optional loss-mask pipeline.
 
-Run in the conda env `axl` from the repo root:
+Run from the repo root in the conda env named by `environment.yml`:
 
-    /home/acite/miniconda3/envs/axl/bin/python verify_mask_pipeline.py --tiers all
+    conda activate axl_rocm_7_14
+    python verify_mask_pipeline.py --tiers all
 
 Tiers
   plumbing  CPU. Sidecar discovery/exclusion, crop+bucket alignment against the real pixel
@@ -37,7 +38,6 @@ from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_STANDS = Path("/storage/Games/AVG/LimeLight Lemonade Jam/dataset/stands/杏珠")
-AXL_PYTHON = Path("/home/acite/miniconda3/envs/axl/bin/python")
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 TIERS = ("plumbing", "loss", "train", "stand")
 LIVE_STATUSES = {"starting", "encoding", "training", "sampling", "pausing", "paused", "resuming", "stopping"}
@@ -110,14 +110,27 @@ class Report:
 # --------------------------------------------------------------------------------------
 
 
+def project_env_name() -> str:
+    """The conda env this repo runs in, taken from environment.yml so it cannot drift."""
+    try:
+        for line in (REPO_ROOT / "environment.yml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("name:"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "axl_rocm_7_14"
+
+
 def guard_environment(args: argparse.Namespace, rep: Report) -> Any:
-    """Refuse to run outside the `axl` conda env; record what we actually run on."""
-    if Path(sys.prefix).name != "axl" and not args.allow_foreign_env:
+    """Refuse to run outside the project's conda env; record what we actually run on."""
+    expected = project_env_name()
+    if Path(sys.prefix).name != expected and not args.allow_foreign_env:
         raise SystemExit(
-            "refusing to run: expected the conda env `axl`\n"
+            f"refusing to run: expected the conda env `{expected}` (environment.yml)\n"
             f"  interpreter: {sys.executable}\n"
             f"  prefix:      {sys.prefix}\n"
-            f"  use: {AXL_PYTHON} verify_mask_pipeline.py ... (or pass --allow-foreign-env)"
+            f"  use: conda activate {expected} && python verify_mask_pipeline.py ... "
+            f"(or pass --allow-foreign-env)"
         )
     import torch
 
@@ -1975,7 +1988,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="run even when a training run looks live")
     parser.add_argument("--tag-stands", action="store_true", help="run tagger/main.py on the stand copies first")
     parser.add_argument("--no-resume-check", action="store_true", help="skip the resume sub-run")
-    parser.add_argument("--allow-foreign-env", action="store_true", help="skip the conda axl check")
+    parser.add_argument("--allow-foreign-env", action="store_true",
+                        help="skip the environment.yml conda env check")
     parser.add_argument("--retries", type=int, default=2,
                         help="retries per training run after the intermittent gfx1201 GPU memory fault")
     parser.add_argument("--prune-step-checkpoints", action="store_true",

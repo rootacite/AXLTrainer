@@ -201,6 +201,19 @@ Practical rules that *are* measured:
   a 12-step window (dim 36 still dies at step 101 with sampling on).
 - `HSA_SVM_GUARD_PAGES=0` is **not** an acceptable fix.
 
+#### 2026-09-15 — the stack matters as much as the shapes
+
+Everything above was measured on `torch 2.13.0+rocm10.0.0` (HIP `7.15.26333`). On
+`torch 2.12.0+rocm7.14.1` (HIP `7.14.60850`, now pinned in `environment.yml`) the author reports the
+packaged repros no longer abort. Local corroboration: the last attempt of the `network_dim 32` row
+ran under that env and was stopped by hand at step 2 with no fault marker, where it used to die at
+step 4; and the author's live run on that stack has trained 700+ steps with sampling every 50 without
+faulting. `fixes/fix2/README.md` carries the same note, and its tables stay stack-specific.
+
+The downgrade does not remove the overrun — the same Tensile kernels are still reading past their
+buffers — so it is a stopgap. It is also a different rollback from the one `fixes/fix2.txt` tested:
+that one was `2.12.0+rocm7.2` (HIP `7.2.53211`), which still faulted.
+
 #### Related
 
 - `fixes/fix2/README.md` — the reproducer, the failing-vs-surviving tables, `crash.py`, and

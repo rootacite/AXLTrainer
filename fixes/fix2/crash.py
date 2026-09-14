@@ -14,7 +14,7 @@ step 4 every time. The overrun is in Tensile; the fatality is
 `accelerator.prepare()` of UNet+TEs after the trainer's load/cache history
 (see `README.md`), which this file cannot recreate without that process.
 
-    conda activate axl
+    conda activate axl_rocm_7_14
     python crash.py
     python crash.py --model /path/to/sdxl-diffusers
 

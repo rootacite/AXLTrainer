@@ -6,8 +6,10 @@ the real `trainer/main.py` and writes `<report-dir>/mask_verify_report.md` + `.j
 
 **Current state: not finished, and not safe to restart while a training run is live.** `plumbing`
 passed on 2026-09-14 and is saved; `loss`, `train` and `stand` have no surviving results. The last
-attempt was interrupted by the gfx1201 Tensile page fault (`doc/troubleshooting.md`), which kills the
-child training runs the `train`/`stand` tiers depend on. Read "Restart checklist" before launching.
+attempt was interrupted by the gfx1201 Tensile page fault (`doc/troubleshooting.md`), which killed the
+child training runs the `train`/`stand` tiers depend on — those children ran on
+`torch 2.13.0+rocm10.0.0`. The stack in use is now `torch 2.12.0+rocm7.14.1`, which does not abort, so a
+restart no longer has to fight that. Read "Restart checklist" before launching.
 
 ## 1. What each tier asserts
 
@@ -53,7 +55,7 @@ alpha is **not** effectively opaque (mean 0.55), so alpha does act as a mask the
 | Model | `/opt/models/diffusers/waillu_170` (exists; read from `trainer/config.toml`, never copied) |
 | Training dataset | `train_data_dir` from `trainer/config.toml` — **currently `/home/acite/LLM/Character/LLLJ/`** (640 images). Only the first `--images` files are copied out. |
 | Stand dataset | `--stands-dir` default `/storage/Games/AVG/LimeLight Lemonade Jam/dataset/stands/杏珠` (241 files, no `.txt` captions → the trainer falls back to the file stem) |
-| Interpreter | `/home/acite/miniconda3/envs/axl/bin/python` — the harness refuses to run outside conda env `axl` (`--allow-foreign-env` to override) |
+| Interpreter | `/home/acite/miniconda3/envs/axl_rocm_7_14/bin/python` — torch `2.12.0+rocm7.14.1` / HIP `7.14.60850`. The harness reads the expected env **name** from `environment.yml`'s `name:` and refuses any other prefix (`--allow-foreign-env` to override), so it follows a rename of the env. |
 | GPU | One RX 9070 XT, exclusively. Child runs load SDXL at bf16; the earlier tiers peaked around 10 GB. |
 | Wall clock | About an hour for `--tiers all` per `AGENT.md`. Estimate from the run matrix: `train` is 8 child runs × 120 steps ≈ 25 min, `stand` is 5 × 60 steps ≈ 10 min, plus one pipeline load and the `loss` probes. Not measured end-to-end here. |
 | Scratch | Several GB. **The default `--report-dir` is under `/tmp`, which is tmpfs (16 GB, 6.3 GB free right now).** Point it at a disk. |
@@ -79,9 +81,9 @@ its own `AXL_RUNTIME_DIR`.
    pgrep -af 'trainer/main.py'
    cat "${XDG_RUNTIME_DIR:-/tmp}/axltrainer/state.json"
    ```
-2. **Put the report on disk, not `/tmp`**, and prune step checkpoints:
+2. **Use the project env and put the report on disk, not `/tmp`**, and prune step checkpoints:
    ```bash
-   conda activate axl
+   conda activate axl_rocm_7_14
    cd /home/acite/Deeppin/AxlTrainer
    python verify_mask_pipeline.py --tiers all \
      --report-dir "/home/acite/LLM/axltrainer/mask-verify/$(date +%Y%m%d_%H%M%S)" \
@@ -89,11 +91,13 @@ its own `AXL_RUNTIME_DIR`.
    ```
    The directory is created by the harness; keep the timestamped name so a later run does not
    overwrite this one.
-3. **Expect the gfx1201 fault and let the retry path absorb it.** Keep the default `--retries 2`: a
-   child that dies from the Tensor page fault is relaunched, and from the second retry on the child
-   gets `PYTORCH_NO_HIP_MEMORY_CACHING=1` (the documented dodge, ~2.2× slower). A tier with many
-   retries takes correspondingly longer; `--no-hip-memory-caching` on the whole run is only worth it
-   if the faults are constant.
+3. **Keep the retry path, but do not expect it to fire.** The last attempt died to the gfx1201 fault
+   because its children ran on `torch 2.13.0+rocm10.0.0`; the pinned `2.12.0+rocm7.14.1` stack does not
+   abort (see `doc/troubleshooting.md`), which is why the `axl_rocm_7_14` env is the one to use. The
+   default `--retries 2` stays as a safety net: a child that does die from the fault is relaunched,
+   and from the second retry on the child gets `PYTORCH_NO_HIP_MEMORY_CACHING=1` (~2.2× slower). If
+   retries do fire, a tier takes correspondingly longer and the affected run is marked in the report;
+   `--no-hip-memory-caching` for the whole run is only worth it if the faults are constant.
 4. **Read the run as one report.** `DONE` means zero failed checks; `FAILED` exits 1 and the failing
    rows are listed in the report. Interrupting the harness leaves no report — that is what happened
    last time.
@@ -131,9 +135,10 @@ Two caveats when using it as a reference:
   tracebacks). The harness does not have this problem: it launches `trainer/main.py` itself and
   captures stdout to the child log, which is how the `train` tier's "reports mask usage" check reads
   the line. For the live run, the count has to be derived from the dataset, as above.
-- **Different ROCm stack.** The reference runs on HIP `7.14.60850` (`axl_rocm_7_14`); the harness
-  children run `2.13.0+rocm10.0.0` / HIP `7.15.26333` (`axl`). Byte-level agreement with the reference
-  is not expected across those two stacks; use it for shape and direction, not for bitwise comparison.
+- **Same stack as the harness now.** The reference run and the harness children both use the
+  `axl_rocm_7_14` env (torch `2.12.0+rocm7.14.1`, HIP `7.14.60850`), so the reference is directly
+  comparable on that axis. The one thing it is *not* comparable to is the `fixes/fix2/` tables, which
+  were measured on `2.13.0+rocm10.0.0` — different kernels, different allocator behaviour.
 
 ## 6. Interpretation rules for the results
 
