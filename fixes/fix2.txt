@@ -83,10 +83,24 @@ Practical dodge: do not train with `train_batch_size = 2` and
 - Fully detach prompt embeds (do not train text-encoder LoRA): UNet-only
   backward is stable with the caching allocator.
 
-The bug is in ROCm 7.2 gfx1201 Tensile GEMM, not in this repo's training loop.
+The bug is in ROCm 7.2 gfx1201 Tensile GEMM: the kernel reads past a torch allocation.
+Whether that read is fatal depends on the caching-allocator layout of *this* process.
+A later pack (`fixes/fix2/`, `fixes/fix2-ex.md`) shows:
+
+- the `batch = 2` + `network_dim = 36` first-step abort above does **not** reproduce on
+  torch `2.13.0+rocm10.0.0`;
+- unmodified `trainer/main.py` on the packaged kanae config *does* abort (dim 36 at
+  step 101; dim 12/24/32 at step 4);
+- a self-contained loop with the same GEMM shapes (`fixes/fix2/crash.py`) does **not**;
+- replacing `accelerator.prepare()` of UNet+TEs with `.to(device)` makes the trainer
+  survive a 12-step window — a measurement, not a shipped change. Repo trainer files
+  were not left patched.
 
 #### Related
 
+- `fixes/fix2-ex.md` — second sighting (SDXL LoRA on kanae, batch 3 / dim 36): the same abort,
+  reproducible at step ~101 for one `seed` only, because the caption shuffle picks the encoder
+  sequence length and therefore the LoRA backward GEMM's `M` (231 vs 462).
 - `fixes/fix1.txt` — bucket step 64, latent dim not divisible by 16. Different bug, same dmesg family.
 - ROCm/rocm-libraries#7992 — gfx1201 Tensile MT64x64x* OOB, status 0x0080113B.
 - ROCm gfx1200 LoRA training: same mitigation (`PYTORCH_NO_HIP_MEMORY_CACHING=1`).

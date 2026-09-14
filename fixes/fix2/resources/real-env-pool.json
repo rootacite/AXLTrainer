@@ -1,0 +1,28 @@
+[
+  {
+    "label": "dim scan: network_dim 32",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 32,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "dataset": "dataset",
+    "images": 6,
+    "caption_chunks": null,
+    "padded_captions": 0,
+    "steps_requested": 12,
+    "last_step": 4,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 22.0,
+    "log": "/tmp/axl-env/pool/01_dim-scan-network-dim-32/train.out",
+    "reaped_workers": [
+      69437,
+      69495,
+      69496
+    ],
+    "pruned_dirs": 0,
+    "killed_after_fault": false,
+    "tensorboard": "/tmp/axl-env/pool/01_dim-scan-network-dim-32/logs"
+  }
+]

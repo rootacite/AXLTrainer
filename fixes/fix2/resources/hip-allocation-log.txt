@@ -1,0 +1,28 @@
+# HIP log tail (AMD_LOG_LEVEL=4, AMD_LOG_MASK=0x60000) for the network_dim 32 run that died at step 4
+# 320 'Cannot find the function' lookups over 81 distinct Tensile kernels, last one 0.39 ms before the abort
+
+:3:                         :0   : 9518915166 us: [pid:70382 tid: 0x10d6e] Initalizing runtime stack, Enumerated GPU agents = 1
+:3:                         :0   : 9519434886 us: [pid:70382 tid: 0x10d6e] Forcing SPIRV: false
+:3:                         :0   : 9519434960 us: [pid:70382 tid: 0x10d6e] Forcing SPIRV: false
+:3:                         :0   : 9519435053 us: [pid:70382 tid: 0x10d6e] Forcing SPIRV: false
+Loading pipeline components...:   0%|          | 0/7 [00:00<?, ?it/s]Loading pipeline components...:  14%|█▍        | 1/7 [00:00<00:00,  8.91it/s]
+Loading weights:   0%|          | 0/196 [00:00<?, ?it/s][ALoading weights: 100%|██████████| 196/196 [00:00<00:00, 19778.74it/s]
+Loading pipeline components...:  71%|███████▏  | 5/7 [00:00<00:00, 25.57it/s]
+Loading weights:   0%|          | 0/517 [00:00<?, ?it/s][ALoading weights: 100%|██████████| 517/517 [00:00<00:00, 23317.22it/s]
+Loading pipeline components...: 100%|██████████| 7/7 [00:00<00:00, 15.08it/s]
+Loss masks: 6/6 samples
+Checking/Generating latents cache...
+Encoding Latents:   0%|          | 0/6 [00:00<?, ?it/s]Encoding Latents: 100%|██████████| 6/6 [00:00<00:00, 155.07it/s]
+   [...]
+:3:                         :0   : 9532504602 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504608 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504610 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504612 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504614 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504617 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT32x16x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504718 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x64x32_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504721 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x64x32_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504724 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x64x32_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:3:                         :0   : 9532504726 us: [pid:70382 tid: 0xca782] Cannot find the function: Cijk_Ailk_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x64x32_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0
+:1:                         :0   : 9532895860 us: [pid:70382 tid: 0x9d4f0] Memory Fault Error
+:0:                         :0   : 9532895924 us: [pid:70382 tid: 0x9d4f0] Memory Fault Error [host: acitehost, GPU index: 0, faulting addr: 0x7fac84800000, kernel: Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV

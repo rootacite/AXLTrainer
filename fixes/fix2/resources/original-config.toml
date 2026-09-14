@@ -1,0 +1,85 @@
+[environment]
+pretrained_model_name_or_path = "/opt/models/diffusers/waillu_170"
+output_dir = "/tmp/axl-mask-verify/final/work/run_train_m1145141920/outputs"
+logging_dir = "/tmp/axl-mask-verify/final/work/run_train_m1145141920/logs"
+train_data_dir = "/tmp/axl-mask-verify/final/work/train/data_masked"
+output_name = "verify_train_m1145141920"
+
+[model_spec]
+base_model_version = "sdxl_base_v1-0"
+modelspec_architecture = "stable-diffusion-xl-v1-base/lora"
+modelspec_implementation = "https://github.com/Stability-AI/generative-models"
+modelspec_sai_model_spec = "1.0.0"
+
+[training]
+is_vpred = false
+min_snr_gamma = 5.0
+seed = 1145141920
+mixed_precision = "bf16"
+train_batch_size = 3
+gradient_accumulation_steps = 1
+learning_rate = 1.0
+lr_scheduler = "cosine"
+lr_warmup_steps = 10
+max_grad_norm = 1.0
+epoch = 60
+save_every_n_epochs = 1
+save_every_n_steps = 30
+resume_lora_path = ""
+
+[network]
+network_dim = 36
+network_alpha = 18
+network_dropout = 0.2
+clip_skip = 1
+max_token_length = 225
+
+[bucketing]
+enable_bucket = true
+bucket_no_upscale = true
+train_resolution = 1024
+bucket_reso_steps = 128
+min_bucket_reso = 768
+max_bucket_reso = 1280
+
+[optimization]
+cache_latents = true
+cache_latents_to_disk = true
+gradient_checkpointing_unet = true
+gradient_checkpointing_te = false
+shuffle_caption = true
+keep_tokens = 2
+caption_extension = ".txt"
+noise_offset = 0.05
+flush_memory_every_step = false
+
+[unet_optimizer]
+unet_learning_rate = 0.0002
+unet_weight_decay = 0.01
+unet_betas_1 = 0.9
+unet_betas_2 = 0.99
+unet_eps = 1e-08
+unet_warmup_steps = 10
+
+[te_optimizer]
+te_learning_rate = 2e-05
+te_weight_decay = 0.01
+te_betas_1 = 0.9
+te_betas_2 = 0.99
+te_max_grad_norm = 0.3
+
+[infrastructure]
+max_data_loader_n_workers = 2
+persistent_workers = true
+
+[validation]
+sample_prompts = "(kanae_style:1.1), masterpiece, best quality, newest, solo, 1girl, looking at viewer, from above, large breasts, shy smile, soft blush, school uniform, white thighhighs, indoors, classroom, sitting on desk, sitting on table, one knee up, blouse partially unbuttoned, cleavage, breasts out, soft lighting, opened eyes, empty classroom, after school, sunlight from window, skirt slightly hiked up, panties on one leg, blouse slipping off one shoulder, nipples faintly outlined, gentle embarrassed expression, head slightly tilted"
+sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+sample_width = 768
+sample_height = 768
+sample_steps = 8
+sample_seed = 0
+sample_repeat = 1
+guidance_scale = 6.0
+
+[bookkeeping]

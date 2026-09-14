@@ -1,0 +1,79 @@
+[
+  {
+    "batch": 1,
+    "chunks": 1,
+    "seq": 77,
+    "M": 77,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 8.4,
+    "tail": "\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.86it/s]"
+  },
+  {
+    "batch": 2,
+    "chunks": 1,
+    "seq": 77,
+    "M": 154,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 8.9,
+    "tail": "Loading pipeline components...:  71%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u258f  | 5/7 [00:00<00:00, 19.22it/s]\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.90it/s]"
+  },
+  {
+    "batch": 2,
+    "chunks": 2,
+    "seq": 154,
+    "M": 308,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 8.8,
+    "tail": "\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.67it/s]"
+  },
+  {
+    "batch": 3,
+    "chunks": 1,
+    "seq": 77,
+    "M": 231,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 9.3,
+    "tail": "Loading pipeline components...:  86%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u258c | 6/7 [00:00<00:00, 15.29it/s]\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 15.04it/s]"
+  },
+  {
+    "batch": 2,
+    "chunks": 3,
+    "seq": 231,
+    "M": 462,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 8.9,
+    "tail": "\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.74it/s]"
+  },
+  {
+    "batch": 3,
+    "chunks": 2,
+    "seq": 154,
+    "M": 462,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 9.3,
+    "tail": "\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.82it/s]"
+  },
+  {
+    "batch": 3,
+    "chunks": 3,
+    "seq": 231,
+    "M": 693,
+    "detach": 0,
+    "verdict": "ok",
+    "exit_code": 0,
+    "seconds": 9.4,
+    "tail": "\nLoading pipeline components...: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 7/7 [00:00<00:00, 14.57it/s]"
+  }
+]

@@ -1,0 +1,28 @@
+[
+  {
+    "label": "fast: cadence 2, cheap samples",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 36,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 2,
+    "dataset": "dataset",
+    "images": 6,
+    "caption_chunks": null,
+    "padded_captions": 0,
+    "steps_requested": 10,
+    "last_step": 8,
+    "verdict": "FAULT",
+    "exit_code": -9,
+    "seconds": 36.1,
+    "log": "/tmp/axl-fix2-repro/01_fast-cadence-2-cheap-samples/train.out",
+    "reaped_workers": [
+      45964,
+      46022,
+      46023
+    ],
+    "pruned_dirs": 1,
+    "killed_after_fault": true,
+    "tensorboard": "/tmp/axl-fix2-repro/01_fast-cadence-2-cheap-samples/logs"
+  }
+]

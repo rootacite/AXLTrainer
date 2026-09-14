@@ -12,15 +12,29 @@
 
 Details are documented in [`fixes/fix1.txt`](../fixes/fix1.txt).
 
-## Known issue: gfx1201 first-step backward page fault
+## Known issue: gfx1201 Tensile page fault (not the bucket-step bug)
 
-**Symptom:** encoding finishes, tqdm sits at `0/N`, then `Memory access fault by GPU node-1` / `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` (TCP). No Python traceback. Happens on the first `backward()` even with `bucket_reso_steps = 128`.
+**Symptom:** `bucket_reso_steps` is already 128, encoding finishes, then at some training step (sometimes the first backward, sometimes step 4, sometimes step 101) the process dies with `-6` / `HSA_STATUS_ERROR_MEMORY_FAULT` and no Python traceback. dmesg: `amdgpu ... [gfxhub] page fault`, `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` or `0x0090113B` (TCP client, `RW: 0x0`). Kernel names look like `Cijk_Ailk_Bjlk_…_MT32x32x128_…_ISA1201` or `…_MT64x128x16_…_ISA1201`.
 
-**Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads past a torch allocation during UNet backward when prompt embeddings require grad (text-encoder LoRA). Isolated UNet backward with detached embeds is fine. Rolling torch `2.14.0+rocm7.2` back to `2.12.0+rocm7.2` does **not** help — both wheels use HIP `7.2.53211`. Python 3.14 + torch `2.13.0+rocm10.0.0` (HIP 7.15.26333) still aborts the same way; ROCm 10.0 logs the kernel as `Cijk_Ailk_Bjlk_…_MT32x32x128_…_ISA1201`.
+**Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads one page past a torch allocation during LoRA backward (TE LoRA → UNet cross-attn `d(encoder_hidden_states)` is enough). Fatality depends on whether the next page is unmapped (`HSA_SVM_GUARD_PAGES` defaults to 1). The same overrun against a mapped neighbour is silent. Isolated UNet backward with detached embeds, and a self-contained SDXL loop with the same GEMM shapes (`fixes/fix2/crash.py`), do **not** abort — they never sit the operand next to a hole.
 
-On this card the abort is a **single GEMM problem size**: `train_batch_size = 2` **and** `network_dim = 36` (encoder seq 231 → M=462 = 7×64+14, K=36). `batch` 1 or 3 with dim 36, or `batch=2` with dim 18/24/64, all train. That leftover 14×4 tile is the gfx1201 `global_load_tr` hole (rocm-libraries#7992).
+On this box, unmodified `trainer/main.py` with the packaged kanae set:
 
-**Workaround:** change `train_batch_size` or `network_dim` so they are not 2+36 together. `PYTORCH_NO_HIP_MEMORY_CACHING=1` also avoids the abort but starves the GPU — do not leave that on. Details: [`fixes/fix2.txt`](../fixes/fix2.txt).
+| config | result |
+| --- | --- |
+| `network_dim` 12 / 24 / 32, batch 3, seed 1145141920 | **FAULT at step 4**, ~25 s, no sampling |
+| `network_dim` 36, batch 3, seed 1145141920, sample every 30 | **FAULT at step 101** (6/6 after reboot) |
+| same, `save_every_n_steps = 0` | 120/120 ok |
+| same, seed 1145141919 | 120/120 ok |
+| `train_batch_size = 2` + `network_dim = 36` (the original `fixes/fix2.txt` recipe) | **does not** abort here |
+
+The seed does not change tensor *values* (`lora_B` starts at 0). It changes caption-shuffle CLIP chunk count, hence `M = batch × chunks × 77` ∈ {231, 462}, hence *where* a 462↔231 switch lands versus the allocator.
+
+`accelerator.prepare()` of UNet + both TEs after the trainer's VAE-cache/`empty_cache` history is the moment the fatal layout is created. Replacing that call with `.to(device)` lets a 12-step dim-32 run finish; that was measured with copies under `/tmp` and is **not** applied in `trainer/`. Dropping `prepare` also drops Accelerate's autocast wrap, so it is not a numeric no-op.
+
+**Workaround:** `PYTORCH_NO_HIP_MEMORY_CACHING=1` before importing torch avoids both abort routes (~2.2× slower; every alloc is `hipMalloc`). Avoid `network_dim` 12 / 24 / 32 on this card if you can. Do **not** set `HSA_SVM_GUARD_PAGES=0` — that only makes the overrun miss the guard page.
+
+Repro, tables, integrity diffs: [`fixes/fix2/README.md`](../fixes/fix2/README.md). First write-up: [`fixes/fix2.txt`](../fixes/fix2.txt). Second sighting: [`fixes/fix2-ex.md`](../fixes/fix2-ex.md).
 
 ## Common failure modes
 
@@ -48,6 +62,7 @@ On this card the abort is a **single GEMM problem size**: `train_batch_size = 2`
 | `PYTHONUNBUFFERED` | launchers | Set to `1` by `start_*.sh` and Ranko so logs flush immediately. |
 | `AMD_LOG_LEVEL`, `CK_LOG_LEVEL`, `MIOPEN_*` | `start_*.sh` | Suppress ROCm/MIOpen driver log noise and pin the MIOpen cache to `~/.cache/miopen`. |
 | `PYTORCH_CUDA_ALLOC_CONF` | `start_train.sh` | `max_split_size_mb:128,garbage_collection_threshold:0.8` — reduces fragmentation. |
+| `PYTORCH_NO_HIP_MEMORY_CACHING` | trainer (workaround) | Set to `1` before importing torch to skip the HIP caching allocator. Avoids the gfx1201 Tensile abort; ~2.2× slower. See [Known issue: gfx1201](#known-issue-gfx1201-tensile-page-fault-not-the-bucket-step-bug). |
 | `ORT_MIGRAPHX_MODEL_CACHE_PATH` / `ORT_MIGRAPHX_CACHE_PATH` | `tagger/`, `trainer/env.py` | Compiled ONNX/MIGraphX cache location (`migraphx_cache/`). |
 
 ## Runtime state directory

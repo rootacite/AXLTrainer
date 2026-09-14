@@ -1,0 +1,90 @@
+[
+  {
+    "label": "original #1",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 36,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "steps_requested": 120,
+    "last_step": 101,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 188.0,
+    "images": 6,
+    "log": "/tmp/axl-fix2-repro/01_original-1/train.out",
+    "reaped_workers": [
+      4734,
+      4792,
+      4793
+    ],
+    "pruned_dirs": 1,
+    "tensorboard": "/tmp/axl-fix2-repro/01_original-1/logs"
+  },
+  {
+    "label": "original #2",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 36,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "steps_requested": 120,
+    "last_step": 101,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 178.0,
+    "images": 6,
+    "log": "/tmp/axl-fix2-repro/02_original-2/train.out",
+    "reaped_workers": [
+      5331,
+      5389,
+      5390
+    ],
+    "pruned_dirs": 1,
+    "tensorboard": "/tmp/axl-fix2-repro/02_original-2/logs"
+  },
+  {
+    "label": "original, run again #1",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 36,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "steps_requested": 120,
+    "last_step": 101,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 176.0,
+    "images": 6,
+    "log": "/tmp/axl-fix2-repro/03_original-run-again-1/train.out",
+    "reaped_workers": [
+      11477,
+      11537,
+      11538
+    ],
+    "pruned_dirs": 1,
+    "tensorboard": "/tmp/axl-fix2-repro/03_original-run-again-1/logs"
+  },
+  {
+    "label": "original, run again #2",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 36,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "steps_requested": 120,
+    "last_step": 101,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 174.0,
+    "images": 6,
+    "log": "/tmp/axl-fix2-repro/04_original-run-again-2/train.out",
+    "reaped_workers": [
+      12076,
+      12134,
+      12135
+    ],
+    "pruned_dirs": 1,
+    "tensorboard": "/tmp/axl-fix2-repro/04_original-run-again-2/logs"
+  }
+]

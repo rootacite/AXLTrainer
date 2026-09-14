@@ -1,0 +1,28 @@
+[
+  {
+    "label": "network_dim 32",
+    "seed": 1145141920,
+    "batch_size": 3,
+    "network_dim": 32,
+    "no_hip_memory_caching": false,
+    "save_every_n_steps": 30,
+    "dataset": "dataset",
+    "images": 6,
+    "caption_chunks": null,
+    "padded_captions": 0,
+    "steps_requested": 120,
+    "last_step": 4,
+    "verdict": "FAULT",
+    "exit_code": -6,
+    "seconds": 28.0,
+    "log": "/tmp/axl-fix2-repro/01_network-dim-32/train.out",
+    "reaped_workers": [
+      29155,
+      29213,
+      29214
+    ],
+    "pruned_dirs": 1,
+    "killed_after_fault": false,
+    "tensorboard": "/tmp/axl-fix2-repro/01_network-dim-32/logs"
+  }
+]
