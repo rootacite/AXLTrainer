@@ -547,11 +547,19 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     )
 
     # 6. real dataset scans --------------------------------------------------------------
+    # Sampled across the whole dataset, not over its first records: filenames cluster, so a
+    # prefix can be entirely opaque art (on LLLJ every event CG sorts before the transparent
+    # character images) and a prefix scan then calls a mostly-masked dataset opaque.
     dataset_dir = Path(base_config().train_data_dir)
     ds_kanae = LoraImageDataset(base_config())
-    alpha_means, mask_means, agreements = [], [], []
-    for record in ds_kanae.records[:60]:
+    records = ds_kanae.records
+    spread = max(1, len(records) // 48)
+    alpha_means, mask_means, candidates, seen, non_opaque = [], [], [], [], 0
+    for record in records[:12] + records[::spread]:
         image = Path(record["path"])
+        if str(image) in seen:
+            continue
+        seen.append(str(image))
         with Image.open(image) as img:
             has_alpha = "A" in img.getbands()
             if has_alpha:
@@ -561,24 +569,34 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
                 image, record["bucket_w"], record["bucket_h"], record["src_w"], record["src_h"]
             )[0].numpy()
             mask_means.append(float(pipeline_mask.mean()))
-            if has_alpha and not mask_path_for(image).is_file() and len(agreements) < 5:
-                expected = bucket_crop(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
-                agreements.append(float((abs(pipeline_mask - expected) < 0.02).mean()))
+            if has_alpha and not mask_path_for(image).is_file():
+                candidates.append((float(pipeline_mask.min()) < 0.98, image, record, pipeline_mask))
+    non_opaque = sum(1 for partial, _, _, _ in candidates if partial)
+    # Prefer partially transparent art: on an all-opaque image the comparison below is
+    # trivially true (both sides all ones), which is why a prefix sample could pass it.
+    agreements = []
+    for _, image, record, pipeline_mask in sorted(candidates, key=lambda item: not item[0])[:5]:
+        expected = bucket_crop(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
+        agreements.append(float((abs(pipeline_mask - expected) < 0.02).mean()))
     rep.check(
         tier, "configured dataset: alpha-derived masks match an independent alpha crop",
         bool(agreements) and all(value > 0.99 for value in agreements),
         "the fallback path (alpha channel -> loss weight) reproduces an independently computed crop",
         checked=len(agreements), worst_agreement=min(agreements) if agreements else None,
+        partially_transparent=non_opaque,
     )
     rep.observe(
         tier, f"configured dataset scan ({dataset_dir})",
         "`n_masked` counts alpha-capable files, and alpha only acts as a no-op when it is ~opaque. "
-        "This scan follows the live config, which may differ from the copies the training tiers used",
+        "Sampled over the first 12 records plus a spread across all of them. This scan follows the "
+        "live config, which may differ from the copies the training tiers used",
         images=len(ds_kanae), n_masked=ds_kanae.n_masked,
         captions=sum(1 for r in ds_kanae.records if r["path"].with_suffix(".txt").is_file()),
+        sampled=len(seen),
         alpha_mean=float(np.mean(alpha_means)) if alpha_means else None,
         mask_mean=float(np.mean(mask_means)),
-        alpha_effectively_opaque=all(value > 0.98 for value in mask_means),
+        partially_transparent=non_opaque,
+        alpha_effectively_opaque=non_opaque == 0,
     )
 
     stands_dir = Path(args.stands_dir)

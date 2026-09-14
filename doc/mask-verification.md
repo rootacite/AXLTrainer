@@ -4,12 +4,9 @@ Closed-loop verification for the optional loss-mask pipeline (`{stem}.mask.png` 
 training image's alpha channel). The harness is `verify_mask_pipeline.py` at the repo root; it drives
 the real `trainer/main.py` and writes `<report-dir>/mask_verify_report.md` + `.json`.
 
-**Current state: not finished, and not safe to restart while a training run is live.** `plumbing`
-passed on 2026-09-14 and is saved; `loss`, `train` and `stand` have no surviving results. The last
-attempt was interrupted by the gfx1201 Tensile page fault (`doc/troubleshooting.md`), which killed the
-child training runs the `train`/`stand` tiers depend on — those children ran on
-`torch 2.13.0+rocm10.0.0`. The stack in use is now `torch 2.12.0+rocm7.14.1`, which does not abort, so a
-restart no longer has to fight that. Read "Restart checklist" before launching.
+**Current state: complete** — 52/52 checks on 2026-09-15 (see "Where it stands"). A local re-run
+needs a free GPU: the harness refuses to start while a training run looks live, which is correct,
+because the child runs need the whole card.
 
 ## 1. What each tier asserts
 
@@ -28,18 +25,45 @@ inside the window.
 
 ## 2. Where it stands
 
-| Tier | Status | Evidence |
-| --- | --- | --- |
-| `plumbing` | **PASS, 8/8 checks**, 9.2 s | `/tmp/axl-mask-verify/plumbing-only/mask_verify_report.md` + `.json` (2026-09-14 22:01, conda `axl`, torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`, RX 9070 XT) |
-| `loss` | no results | — |
-| `train` | no results | — |
-| `stand` | no results | — |
+**Complete.** Full run 2026-09-15 07:05, `--tiers all`, in the `axl_rocm_7_14` env
+(torch `2.12.0+rocm7.14.1`, HIP `7.14.60850`): **52 checks, 0 failed, 2482 s** (~41 min). Report:
+`/home/acite/LLM/axltrainer/mask-verify/20260915_0705/mask_verify_report.md` + `.json`, raw log
+`run.log` next to it. All 11 child training runs finished on their **first attempt** with
+`gpu_memory_fault=false` — the page fault never appeared under this stack.
 
-`plumbing` is also the only report on disk: searching `/tmp` and `/run/user/1000` for
-`mask_verify*` returns that one directory and nothing else. A later full run was interrupted before
-`write_report` ran, so there is no partial `mask_verify_report.*` for the GPU tiers to inspect — the
-tiers have to be re-run, they cannot be resumed from a report. The scratch dir of that attempt
-(datasets, mirrors, child runs) is gone too.
+An earlier attempt on 2026-09-14 was interrupted by the fault before `write_report` ran, so nothing
+from it survives except the `plumbing`-only report in `/tmp/axl-mask-verify/plumbing-only/`.
+
+What the run establishes:
+
+| Claim | Evidence |
+| --- | --- |
+| Unmasked is untouched | all-ones mask bit-identical to no mask (loss `0.15557` three times, grad diff `0.0`) |
+| A fully ignored sample contributes nothing | all-black mask → loss `0`, weight-grad norm `0`, latent-grad max `0` |
+| The loss is a plain spatial weight, no area renormalization | `right40 + left60 = 0.15557` = the all-ones loss exactly; half-gray = half the loss |
+| The trainer's reported loss follows the mask | masked/control `0.598` and `0.600` against coverage `0.6087`, law error `1.2e-4` / `2.2e-4`, both seeds |
+| Masks reach real runs | `Loss masks: 12/12` masked, `0/12` control, `12/12` scale-matched; same for the stand tier (`3/3`, `0/3`) |
+| Masked checkpoints stay usable | resume loads `1472` tensors, `0` skipped; kohya metadata intact (`network_dim 64`, `alpha 32`) |
+| The mask changes behaviour where it is applied | per-region probe: masked-trained error is worse in the ignored region and better in the trained region, `consistent_sign` true and `resolved` true in both tiers |
+
+Two results are deliberately **not** resolved, and should not be read as support for anything:
+
+- **Masked vs unmasked LoRA weights at 120 steps.** `signal_over_floor` is `0.72`–`0.83` across all
+  four comparisons (two seeds × unmasked/scale-matched): the mask's effect on the final weights
+  (`~0.070` relative L2) is *smaller* than the duplicate run's own difference (`0.0887`). The floor
+  run is not bitwise identical here (`duplicate_is_identical=false`, 1464 of 2208 tensors changed at
+  bf16 scale), which is the same "first run of a session is not comparable to later ones" effect
+  documented in `fixes/fix2/` — MIOpen picks its algorithms per process, and the first masked run of
+  the session ran with a cold cache. Resolving the weight question needs a warm-up run before the
+  measured ones; it does not need a different mask implementation.
+- **Mask coverage scales the gradient norm harder than the loss** (`0.63` and `0.53` gradient ratios
+  against `0.49` and `0.24` loss ratios): recorded as measured, not asserted — the mask removes loss
+  where the error is smallest, so the remaining gradient is not simply a scaled copy.
+
+Masked loss is *not* inpainting: masking suppresses the objective for the ignored pixels, it does not
+insulate the network from them. The `loss` tier measures that directly — repainting only the
+masked-out 40% still moves the LoRA gradient, by `share_of_trained_side = 1.47` of the same repaint on
+the trained side.
 
 What `plumbing` established, in short: masks pair with their own image and never appear as training
 samples; the mask survives crop + bucket resize pixel-for-pixel against an independent implementation
@@ -57,7 +81,7 @@ alpha is **not** effectively opaque (mean 0.55), so alpha does act as a mask the
 | Stand dataset | `--stands-dir` default `/storage/Games/AVG/LimeLight Lemonade Jam/dataset/stands/杏珠` (241 files, no `.txt` captions → the trainer falls back to the file stem) |
 | Interpreter | `/home/acite/miniconda3/envs/axl_rocm_7_14/bin/python` — torch `2.12.0+rocm7.14.1` / HIP `7.14.60850`. The harness reads the expected env **name** from `environment.yml`'s `name:` and refuses any other prefix (`--allow-foreign-env` to override), so it follows a rename of the env. |
 | GPU | One RX 9070 XT, exclusively. Child runs load SDXL at bf16; the earlier tiers peaked around 10 GB. |
-| Wall clock | About an hour for `--tiers all` per `AGENT.md`. Estimate from the run matrix: `train` is 8 child runs × 120 steps ≈ 25 min, `stand` is 5 × 60 steps ≈ 10 min, plus one pipeline load and the `loss` probes. Not measured end-to-end here. |
+| Wall clock | **2482 s (~41 min) measured** on 2026-09-15 for `--tiers all`, of which the `train` tier is 8 child runs of 120 steps at ~4 min each and `stand` is 5 runs of 60 steps. |
 | Scratch | Several GB. **The default `--report-dir` is under `/tmp`, which is tmpfs (16 GB, 6.3 GB free right now).** Point it at a disk. |
 
 Each child run gets a generated config in a throwaway repo mirror. It **inherits** everything from the
@@ -72,7 +96,7 @@ as it stands at launch — check them before starting.
 Nothing is written into a source dataset directory: images are copied first and every child run gets
 its own `AXL_RUNTIME_DIR`.
 
-## 4. Restart checklist
+## 4. Re-run checklist
 
 1. **Confirm nothing is training.** The harness refuses to start when a live training process or a
    live `state.json` exists (checks `LIVE_STATUSES`, so `sampling` counts). Do not pass `--force`
@@ -91,13 +115,14 @@ its own `AXL_RUNTIME_DIR`.
    ```
    The directory is created by the harness; keep the timestamped name so a later run does not
    overwrite this one.
-3. **Keep the retry path, but do not expect it to fire.** The last attempt died to the gfx1201 fault
-   because its children ran on `torch 2.13.0+rocm10.0.0`; the pinned `2.12.0+rocm7.14.1` stack does not
-   abort (see `doc/troubleshooting.md`), which is why the `axl_rocm_7_14` env is the one to use. The
-   default `--retries 2` stays as a safety net: a child that does die from the fault is relaunched,
-   and from the second retry on the child gets `PYTORCH_NO_HIP_MEMORY_CACHING=1` (~2.2× slower). If
-   retries do fire, a tier takes correspondingly longer and the affected run is marked in the report;
-   `--no-hip-memory-caching` for the whole run is only worth it if the faults are constant.
+3. **Keep the retry path, but do not expect it to fire.** The 2026-09-14 attempt died to the gfx1201
+   fault because its children ran on `torch 2.13.0+rocm10.0.0`; the 2026-09-15 run on the pinned
+   `2.12.0+rocm7.14.1` stack finished all 11 child runs on their first attempt with no fault (see
+   `doc/troubleshooting.md`). The default `--retries 2` stays as a safety net: a child that does die
+   is relaunched, and from the second retry on the child gets `PYTORCH_NO_HIP_MEMORY_CACHING=1`
+   (~2.2× slower). If retries do fire, a tier takes correspondingly longer and the affected run is
+   marked in the report; `--no-hip-memory-caching` for the whole run is only worth it if the faults
+   are constant.
 4. **Read the run as one report.** `DONE` means zero failed checks; `FAILED` exits 1 and the failing
    rows are listed in the report. Interrupting the harness leaves no report — that is what happened
    last time.
@@ -105,26 +130,27 @@ its own `AXL_RUNTIME_DIR`.
    (minutes, no child training runs, so no page-fault exposure) and `--no-resume-check` drops the
    resume sub-run.
 
-## 5. The live masked run as a reference
+## 5. The finished masked run as a reference
 
-There is a real masked training run in flight, which is a useful independent reference for the
-`train` tier. Snapshot taken while checking (it keeps moving):
+The masked loss feature has been exercised by a real training run, which is an independent reference
+for the `train` tier. It finished at 07:04 on 2026-09-15: step 3210/3210, epoch 10/10, no error.
 
 | Field | Value |
 | --- | --- |
 | Run | `output_name = lllj`, `run_id = lllj_20260915_053826`, PID 170386, started 2026-09-15 05:38 |
-| Status at snapshot | `sampling`, step 700 / 3210, epoch 3 / 10 |
+| Status | `finished`, step 3210/3210, epoch 10/10, run time ~86 min |
 | Interpreter | conda `axl_rocm_7_14` → torch `2.12.0+rocm7.14.1`, HIP `7.14.60850` |
 | Data | `/home/acite/LLM/Character/LLLJ/` — 640 images, **0** `{stem}.mask.png` sidecars, 518 alpha-capable |
 | Mask source | alpha channel only (a sidecar would win, but none exist) |
 | Config | `train_batch_size = 2`, `network_dim = 64`, `seed = 1145141919`, `save_every_n_steps = 50`, `sample_seed = 0` |
-| Artifacts | `outputs/lllj_20260915_053826/lllj_s000050 … lllj_s000700` (every 50 steps), `lllj_samples/` (42 PNGs), TB scalars in `logs/lllj_20260915_053826/` |
+| Artifacts | `outputs/lllj_20260915_053826/lllj_s000050 … lllj_s003200`, `lllj_final`, `lllj_samples/` (195 PNGs), TB scalars in `logs/lllj_20260915_053826/` |
 
-How much of it is actually masked: of 30 sampled images, 28 carry alpha, and 46% of those have a mean
-alpha below 0.99 (min 0.036, median 1.0). So roughly 240 of the 640 images get a genuinely non-opaque
-loss weight and the rest are effectively unmasked — the reference is a **mixed** masked run, not a
-fully masked one. That is a realistic workload and a reasonable thing for the `train` tier's geometry
-probes to be read against, but it is not a clean all-masked control.
+How much of it is actually masked: `plumbing` samples the first 12 records plus a spread across the
+whole dataset (61 images) and finds `alpha_mean = 0.79`, `mask_mean = 0.855`, and **20 of the sampled
+alpha-carrying images partially transparent** — so roughly a third of the 640 images carry a real
+loss weight and the rest are opaque, where the mask is a no-op. The reference is a **mixed** masked
+run, not a fully masked one. (The first 60 records are all opaque — the event CGs sort before the
+transparent character art — which is why the scan samples across the dataset rather than a prefix.)
 
 Two caveats when using it as a reference:
 
