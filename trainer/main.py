@@ -6,7 +6,7 @@ from pathlib import Path
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
-from config import TrainConfig, resolve_sample_sets
+from config import TrainConfig, resolve_sample_sets, tracker_hparams
 from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
@@ -127,7 +127,7 @@ def main() -> None:
         if accelerator.is_main_process:
             accelerator.init_trackers(
                 project_name=run_id,
-                config=vars(cfg),
+                config=tracker_hparams(cfg),
             )
 
         steps_per_epoch = max(

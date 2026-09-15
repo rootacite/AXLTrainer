@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 
 import sys
@@ -11,6 +12,7 @@ from trainer.config import (
     TrainConfig,
     _load_toml_config,
     resolve_sample_sets,
+    tracker_hparams,
 )
 
 
@@ -133,6 +135,97 @@ class ValidationErrorTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             resolve_sample_sets(flat(samples=[{"prompt": "p", "steps": "many"}]))
         self.assertIn("expected an integer", str(ctx.exception))
+
+
+class TrackerHparamsTest(unittest.TestCase):
+    """A prompt set in the config must not abort `accelerator.init_trackers`.
+
+    TensorBoard's `add_hparams` accepts int/float/str/bool/torch.Tensor and skips `None`. Once
+    `[[validation.samples]]` put a list of tables into `vars(cfg)`, the tracker init raised — after
+    the pipeline was loaded and the latent cache had been built, i.e. minutes into a run.
+    """
+
+    def setUp(self):
+        self.cfg = TrainConfig(samples=[{"name": "one", "prompt": "p1", "repeat": 2}])
+
+    def test_non_scalars_become_json_and_scalars_pass_through(self):
+        params = tracker_hparams(self.cfg)
+        self.assertIsInstance(params["samples"], str)
+        self.assertIn('"prompt": "p1"', params["samples"])
+        self.assertEqual(params["train_batch_size"], self.cfg.train_batch_size)
+        self.assertEqual(params["guidance_scale"], self.cfg.guidance_scale)
+        # the kohya metadata placeholders are None, which the tracker skips anyway
+        self.assertNotIn("ss_session_id", params)
+
+    def test_tensorboard_accepts_the_sanitized_record(self):
+        from torch.utils.tensorboard import SummaryWriter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = SummaryWriter(log_dir=tmp)
+            try:
+                writer.add_hparams(tracker_hparams(self.cfg), metric_dict={})
+                with self.assertRaises(ValueError):
+                    writer.add_hparams(vars(self.cfg), metric_dict={})
+            finally:
+                writer.close()
+
+    def test_a_flattened_mapping_is_accepted_too(self):
+        params = tracker_hparams(flat(samples=[{"prompt": "p"}]))
+        self.assertIn('"prompt": "p"', params["samples"])
+        self.assertEqual(params["sample_steps"], 30)
+
+
+def _load_verifier():
+    """The mask verifier, imported by path (`test/` is deliberately not a package)."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "verify_mask_pipeline.py"
+    spec = importlib.util.spec_from_file_location("verify_mask_pipeline", path)
+    module = importlib.util.module_from_spec(spec)
+    # @dataclass resolves a field's annotations through sys.modules[cls.__module__].
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+class VerifierMirrorConfigTest(unittest.TestCase):
+    """The mask verifier re-serializes the live config for its mirror repo.
+
+    Its writer emits `key = value` lines, so an array of tables used to come out as one
+    `samples = "{'name': …}"` string and the child aborted at startup with "validation.samples must
+    be an array of tables". Left out of the mirror, the child builds its single set from the flat
+    `sample_*` scalars — which is what those runs want anyway.
+    """
+
+    def test_the_mirror_config_drops_the_array_and_still_resolves_a_set(self):
+        import tomllib
+
+        module = _load_verifier()
+        sections = {
+            "environment": {"train_data_dir": "/tmp/data"},
+            "validation": {
+                "sample_prompts": "flat prompt",
+                "sample_negative": "flat negative",
+                "sample_repeat": 2,
+                "samples": [{"name": "one", "prompt": "p1"}],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            module.write_toml(path, sections)
+            with open(path, "rb") as handle:
+                written = tomllib.load(handle)
+            self.assertNotIn("samples", written["validation"])
+            self.assertEqual(written["validation"]["sample_prompts"], "flat prompt")
+
+            sets = resolve_sample_sets(_load_toml_config(str(path)))
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(sets[0].prompt, "flat prompt")
+        self.assertEqual(sets[0].repeat, 2)
 
 
 if __name__ == "__main__":

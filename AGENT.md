@@ -189,7 +189,7 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | --- | --- |
 | `trainer/main.py` | Lifecycle: run dir, lock, seed, `build_train_objects`, optional `warm_latent_cache`, epoch loop, final checkpoint, `end_run`. |
 | `trainer/setup.py` | `TrainArtifacts`: `resolve_family`, pipeline, PEFT LoRA, dataloader, dual optimizers, Accelerator. |
-| `trainer/config.py` | `TrainConfig` + TOML flatten; `__post_init__` validates `[model_spec]` against the family catalog. |
+| `trainer/config.py` | `TrainConfig` + TOML flatten; `resolve_sample_sets` (prompt sets), `tracker_hparams` (tracker-safe config view); `__post_init__` validates `[model_spec]` against the family catalog. |
 | `trainer/family.py` | Catalog (`sdxl_base_v1-0`, `sd3.5-large`), `resolve_family`, `require_trainable`. |
 | `trainer/family_sdxl.py` | SDXL load/unpack/LoRA/encode/loss/save/sample; PEFT → kohya remap **and** the reverse map used by resume (`load_lora`). |
 | `trainer/family_sd35.py` | Stub; every method raises `UnsupportedFamilyError`. |
@@ -396,7 +396,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Suite | Command | Covers |
 | --- | --- | --- |
 | IPC | `python -m unittest discover -s test -p 'test_api_ipc.py'` | ping, dashboard empty logs, sample grouping (incl. `_p{set}_` names), avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset, `sample_sets` payload |
-| Validation sets | `python -m unittest discover -s test -p 'test_validation.py'` | `resolve_sample_sets`: no entries → one set from the scalars, per-key fallback, name defaulting, ranges with the entry index, matching seed sequences |
+| Validation sets | `python -m unittest discover -s test -p 'test_validation.py'` | `resolve_sample_sets`: no entries → one set from the scalars, per-key fallback, name defaulting, ranges with the entry index, matching seed sequences. `tracker_hparams` against a real `SummaryWriter` (a list-valued key must not reach `add_hparams`) |
 | Tagger | `python -m unittest discover -s test -p 'test_tagger.py'` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest discover -s test -p 'test_train_control.py'` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
 | Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing |

@@ -1216,6 +1216,12 @@ def write_toml(path: Path, sections: dict[str, dict[str, Any]]) -> None:
         for key, value in table.items():
             if value is None:
                 continue
+            if isinstance(value, list) and any(isinstance(item, dict) for item in value):
+                # An array of tables (`[[validation.samples]]`) cannot be written as `key = …`; the
+                # child then resolves its single set from the flat `sample_*` scalars, which is all
+                # these runs need. Stringifying it instead made the child abort at startup with
+                # "validation.samples must be an array of tables".
+                continue
             lines.append(f"{key} = {toml_value(value)}")
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)

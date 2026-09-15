@@ -1,6 +1,7 @@
+import json
 import tomllib
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 def _load_toml_config(file_path: str = "config.toml") -> dict:
     try:
@@ -170,6 +171,28 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
             repeat=int(_scalar(cfg, "sample_repeat", 3)),
         )
     ]
+
+
+def tracker_hparams(cfg) -> dict[str, Any]:
+    """`vars(cfg)` reduced to what TensorBoard's hparams record accepts.
+
+    `torch.utils.tensorboard.add_hparams` takes int/float/str/bool/torch.Tensor and skips `None`;
+    anything else aborts `accelerator.init_trackers`, which runs after the pipeline is loaded and
+    the latent cache is built. `[[validation.samples]]` is a list of tables, so it is recorded the
+    way kohya records `ss_bucket_info`: as a JSON string, still readable in the HParams tab.
+
+    `cfg` is a `TrainConfig` or the flattened TOML mapping.
+    """
+    source = cfg if isinstance(cfg, dict) else vars(cfg)
+    params: dict[str, Any] = {}
+    for key, value in source.items():
+        if value is None:
+            continue
+        if isinstance(value, (bool, int, float, str)):
+            params[key] = value
+        else:
+            params[key] = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return params
 
 
 @dataclass

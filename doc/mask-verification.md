@@ -118,6 +118,10 @@ than the shipped values so a few minutes move the LoRA measurably), DataLoader w
 samples (`768×768`, 8 steps, 1 repeat). So `network_dim` and `sample_seed` come from the config file
 as it stands at launch — check them before starting.
 
+Arrays of tables are the one exception: `[[validation.samples]]` cannot be expressed by the flat
+line writer, so the mirror carries only the `[validation]` scalars and the child resolves **one**
+prompt set from them (written as a `samples = "…"` string it aborted the child instead).
+
 Nothing is written into a source dataset directory: images are copied first and every child run gets
 its own `AXL_RUNTIME_DIR`.
 

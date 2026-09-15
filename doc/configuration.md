@@ -171,7 +171,9 @@ repeat = 3
 - **File names**: `{output_name}_{step:06d}_p{set}_{repeat}.png`, with `set` counting from 0. The
   two-number form of older runs (`…_{step}_{repeat}.png`) is still parsed, as set 0.
 - Sampling time scales with `Σ repeat`; each set's images are rendered sequentially.
-```
+- The run's configuration is recorded in TensorBoard's **HParams** tab. `add_hparams` only
+  accepts int/float/str/bool/tensor values, so a list-valued key such as `samples` is written
+  as a JSON string (`tracker_hparams()` in `trainer/config.py`) rather than passed through raw.
 
 ### `[bookkeeping]`
 
