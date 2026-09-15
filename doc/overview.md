@@ -43,16 +43,17 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 .
 ├── api.py                     # NDJSON IPC helper (stdin/stdout)
 ├── clean.py                   # interactive CLI cleanup
+├── config.toml                # the actual configuration (single source of truth)
 ├── environment.yml            # conda env manifest (env name: axl)
 ├── start_train.sh             # trainer launcher (AMD/ROCm env vars)
 ├── start_api.sh               # debug launcher for api.py
+├── start_ui.sh                # AxlRanko launcher (packages the jar, then runs it)
 ├── text_processing.py         # long-prompt chunking + dual CLIP encode (SDXL family)
 ├── ui.py                      # Streamlit read-only viewer
 ├── API.md                     # IPC protocol reference
 ├── trainer/
 │   ├── main.py                # training entry point (no CLI args)
 │   ├── config.py              # TrainConfig dataclass + TOML loading
-│   ├── config.toml            # the actual configuration
 │   ├── family.py              # model-spec catalog + family dispatch
 │   ├── family_sdxl.py         # SDXL pipeline, LoRA, loss, kohya remap
 │   ├── family_sd35.py         # SD 3.5 stub (not implemented)
@@ -67,22 +68,24 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 │   ├── loss_log.py            # Kohya-style epoch-window avg-loss recorder
 │   ├── cleanup.py             # discovery + deletion of run artifacts
 │   ├── env.py                 # ROCm cache dirs, memory flushing
-│   ├── utils.py               # image/caption/bucket/time-id helpers
-│   └── test_warm_latent_cache.py
+│   └── utils.py               # image/caption/bucket/time-id helpers
+├── test/                      # Python suites + verification harness (run from the repo root)
+│   ├── test_api_ipc.py …      # one file per suite, see AGENT.md §10
+│   ├── test_warm_latent_cache.py
+│   └── verify_mask_pipeline.py
 ├── ranko/                     # Kotlin/Compose desktop app (AxlRanko)
 │   ├── desktopApp/            # window entry point
 │   ├── shared/                # UI, viewmodels, IPC client, config editing
 │   └── tools/agent.py         # machine-friendly dataset CLI (for scripts/agents)
 ├── tools/                     # dataset utility scripts (see doc/dataset-tools.md)
 ├── tagger/                    # ONNX caption generator (WD-tagger style)
-├── fixes/                     # resolved issue reports (e.g. ROCm bucket step)
-└── tests: test_api_ipc.py, test_train_control.py, test_family.py
+└── fixes/                     # resolved issue reports (e.g. ROCm bucket step)
 ```
 
 ## Training data flow
 
 ```
-trainer/config.toml ──► TrainConfig (trainer/config.py)
+config.toml ──► TrainConfig (trainer/config.py)
                               │
                               ▼
 trainer/main.py ──► begin_run (acquires train.lock)
@@ -91,7 +94,7 @@ trainer/main.py ──► begin_run (acquires train.lock)
      │                ├─ resolve_family(config) → load pipeline (family_sdxl today)
      │                ├─ apply PEFT LoRA (network_dim/alpha/dropout) + flash attention
      │                ├─ LoraImageDataset + DataLoader (dataset.py)
-     │                │    └─ images + .txt captions, aspect-ratio bucketing
+     │                │    └─ images + .txt captions, area-budgeted buckets + fit+pad
      │                ├─ UNet optimizer (Schedule-Free AdamW) + TE optimizer (AdamW)
      │                └─ Accelerator (TensorBoard → logging_dir)
      │
@@ -135,7 +138,7 @@ Pause/resume adds `pausing` and `paused` (GPU weights offloaded to CPU) and `res
 
 ## Design notes worth knowing
 
-- **Configuration is TOML-only.** `trainer/main.py` takes no command-line arguments; `trainer/config.toml` (with hardcoded fallbacks in `trainer/config.py`) is the single source of truth. The TOML file always wins over the Python defaults.
+- **Configuration is TOML-only.** `trainer/main.py` takes no command-line arguments; `config.toml` at the repo root (with hardcoded fallbacks in `trainer/config.py`) is the single source of truth. The file is read relative to the working directory, which every entry point keeps at the repo root. The TOML file always wins over the Python defaults.
 - **Checkpoints are ComfyUI-ready.** PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` keys, converted to bf16, and saved with `modelspec.*` + `ss_*` metadata.
 - **The dashboard never touches your GPU.** All GPU work happens in the detached trainer process; Ranko only spawns `api.py` and renders what it returns.
 - **Safety rails:** a run lock prevents two concurrent runs; a dead-PID reconciliation marks stale `state.json` as `error`; dataset scans abort on orphan caption files; Reset confirms exact paths before deleting.

@@ -144,7 +144,7 @@ byte-identical on this box, but the option still converts a crash into a silent 
 | `patch_mirror.py` | Ablation ladder over the *code*: copies the trainer into `/tmp` and replaces one file (never the repo). Rows include `control`, `crash-body`, `true-crash`, `prepare-models`, `prepare-opts`, `no-prepare`, `run-crash-child`. Writes `resources/patch-mirror.json`. |
 | `repro_real.py` | **The trainer-side reproducer.** Runs the unmodified `trainer/main.py` on `resources/original-config.toml` and the packaged dataset, and prints the failing-vs-surviving table. `--grid table|mech|fast|dim|dim2|integrity|integrity2` picks the row set, `--row <exact|labels>` and `--only <substrings>` narrow it, `--env KEY=VALUE` adds child environment (ROCm variables), `--list` prints them, `--dry-run` writes the configs without starting anything. |
 | `repro.py` + `trial.py` | Model-free. Sweeps PEFT LoRA GEMMs over `M`, `network_dim`, dtype, allocator perturbation, layer count and resident memory. One subprocess per configuration (the fault cannot be caught in-process). |
-| `repro_unet.py` + `repro_unet_sweep.py` | Real SDXL UNet + LoRA from `trainer/config.toml`, synthetic cross-attention input that carries gradients — i.e. no CLIP, no VAE, no training loop. |
+| `repro_unet.py` + `repro_unet_sweep.py` | Real SDXL UNet + LoRA from `config.toml`, synthetic cross-attention input that carries gradients — i.e. no CLIP, no VAE, no training loop. |
 | `repro_joint.py` | Real UNet **and** both CLIP text encoders with LoRA, a real tokenized caption, joint backward — the case `fixes/fix2.txt` records as faulting. No VAE, no DataLoader, no optimizer. |
 | `resources/dataset/` | The six kanae images+captions the faulting run trained on (5 MB). |
 | `resources/original-config.toml` | The exact generated config of the run that faulted 6/6 times. |
@@ -159,9 +159,9 @@ byte-identical on this box, but the option still converts a crash into a silent 
 | `resources/rocm-10.0.0-environment-variables.pdf` | Official AMD ROCm 10.0.0 env-var reference (`HSA_SVM_GUARD_PAGES` default 1, etc.). |
 
 Model weights are **referenced**, never copied: `repro_unet.py` / `repro_joint.py` read
-`pretrained_model_name_or_path` from `trainer/config.toml` (or `--model`), and fail fast if the path
+`pretrained_model_name_or_path` from `config.toml` (or `--model`), and fail fast if the path
 does not exist. Run everything with the `axl` conda env; `repro_unet*` and `repro_joint` can be started
-from anywhere (they `chdir` to the repo root so `trainer/config.toml` resolves).
+from anywhere (they `chdir` to the repo root so `config.toml` resolves).
 
 ## Level 1 — synthetic LoRA GEMMs (`repro.py`)
 
@@ -545,7 +545,7 @@ python repro_real.py --grid fast --list                # the speed/mechanism/ran
 It writes `resources/original-config.toml` and the six packaged kanae images into a throwaway repo
 mirror and starts the unmodified `trainer/main.py` there, so nothing under the repository or under a
 user dataset directory is written to. Model weights are referenced, never copied:
-`trainer/config.toml`'s `pretrained_model_name_or_path`, overridable with `--model`.
+`config.toml`'s `pretrained_model_name_or_path`, overridable with `--model`.
 
 | row | data | batch | dim | seed | steps | result |
 | --- | --- | --- | --- | --- | --- | --- |

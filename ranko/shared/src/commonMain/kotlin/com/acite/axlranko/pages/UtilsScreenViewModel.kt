@@ -10,8 +10,12 @@ import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
+import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
+import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.util.pickDirectoryDialog
+import com.acite.axlranko.util.pickFileDialog
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -23,9 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import javax.swing.JFileChooser
-import javax.swing.filechooser.FileNameExtensionFilter
+
+private val IMAGE_EXTENSIONS = listOf("jpg", "jpeg", "png", "webp", "bmp")
 
 @Inject
 @ViewModelKey
@@ -75,9 +78,12 @@ class UtilsScreenViewModel(
     }
 
     fun browseBackgroundImage() {
-        val selected = pickImagePath(_uiState.value.appearance.backgroundImagePath) ?: return
-        appearanceRepo.update {
-            it.copy(background = BackgroundStyle.Image, backgroundImagePath = selected)
+        viewModelScope.launch {
+            val current = _uiState.value.appearance.backgroundImagePath
+            val selected = pickFileDialog("Select background image", current, IMAGE_EXTENSIONS) ?: return@launch
+            appearanceRepo.update {
+                it.copy(background = BackgroundStyle.Image, backgroundImagePath = selected)
+            }
         }
     }
 
@@ -109,7 +115,7 @@ class UtilsScreenViewModel(
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
-                                errorMessage = "Could not locate or parse trainer/config.toml"
+                                errorMessage = "Could not locate or parse config.toml"
                             )
                         }
                         return@withContext
@@ -122,6 +128,7 @@ class UtilsScreenViewModel(
                             configPath = path,
                             form = form,
                             savedForm = form,
+                            selectedSampleSet = it.selectedSampleSet.coerceIn(0, form.sampleSets.lastIndex),
                             fieldErrors = emptyMap(),
                             errorMessage = null,
                             statusMessage = null
@@ -154,6 +161,31 @@ class UtilsScreenViewModel(
         _uiState.update { it.copy(selectedSection = section) }
     }
 
+    fun selectSampleSet(index: Int) {
+        _uiState.update { state ->
+            if (index in state.form.sampleSets.indices) state.copy(selectedSampleSet = index) else state
+        }
+    }
+
+    fun updateSampleSet(index: Int, transform: (SampleSetForm) -> SampleSetForm) {
+        val set = _uiState.value.form.sampleSets.getOrNull(index) ?: return
+        updateForm { withSampleSet(index, transform(set)) }
+    }
+
+    /** `+` clones the open tab so a second prompt set is one edit away. */
+    fun addSampleSet() {
+        val from = _uiState.value.selectedSampleSet
+        updateForm { appendSampleSet(from) }
+        _uiState.update { it.copy(selectedSampleSet = it.form.sampleSets.lastIndex) }
+    }
+
+    fun removeSampleSet(index: Int) {
+        updateForm { removeSampleSet(index) }
+        _uiState.update {
+            it.copy(selectedSampleSet = it.selectedSampleSet.coerceIn(0, it.form.sampleSets.lastIndex))
+        }
+    }
+
     fun updateLeftWeight(weight: Float) {
         _uiState.update { it.copy(leftWeight = weight.coerceIn(0.16f, 0.4f)) }
     }
@@ -171,13 +203,19 @@ class UtilsScreenViewModel(
     }
 
     fun browseDirectory(current: String, update: TrainingConfigForm.(String) -> TrainingConfigForm) {
-        val selected = pickPath(current, directoriesOnly = true) ?: return
-        updateForm { update(selected) }
+        viewModelScope.launch {
+            val selected = pickDirectoryDialog("Select directory", current) ?: return@launch
+            updateForm { update(selected) }
+        }
     }
 
+    // The dialog picks a file; the field itself still accepts a directory holding one .safetensors.
     fun browseCheckpointPath() {
-        val selected = pickPath(_uiState.value.form.resumeLoraPath, directoriesOnly = false) ?: return
-        updateForm { copy(resumeLoraPath = selected) }
+        viewModelScope.launch {
+            val current = _uiState.value.form.resumeLoraPath
+            val selected = pickFileDialog("Select checkpoint", current, listOf("safetensors")) ?: return@launch
+            updateForm { copy(resumeLoraPath = selected) }
+        }
     }
 
     fun clearCheckpoint() {
@@ -286,12 +324,22 @@ class UtilsScreenViewModel(
         val errors = form.validate()
         if (errors.isNotEmpty()) {
             val firstSection = ConfigSection.entries.firstOrNull { section ->
-                section.fieldKeys.any { it in errors }
+                errors.keys.any { section.owns(it) }
             }
+            val failingSet = errors.keys
+                .firstOrNull { it.startsWith(SAMPLE_SET_ERROR_PREFIX) }
+                ?.removePrefix(SAMPLE_SET_ERROR_PREFIX)
+                ?.substringBefore('.')
+                ?.toIntOrNull()
             _uiState.update {
                 it.copy(
                     fieldErrors = errors,
                     selectedSection = firstSection ?: it.selectedSection,
+                    selectedSampleSet = if (firstSection == ConfigSection.Validation && failingSet != null) {
+                        failingSet.coerceIn(0, form.sampleSets.lastIndex)
+                    } else {
+                        it.selectedSampleSet
+                    },
                     statusMessage = null,
                     errorMessage = "Fix ${errors.size} invalid field${if (errors.size == 1) "" else "s"} before saving"
                 )
@@ -302,7 +350,7 @@ class UtilsScreenViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, errorMessage = null, statusMessage = null) }
             val result = withContext(Dispatchers.IO) {
-                ConfigImporter.savePatched(form.toTomlSections())
+                ConfigImporter.savePatched(form.toTomlSections(), form.toTomlArrayBlocks())
             }
             result.fold(
                 onSuccess = {
@@ -325,47 +373,6 @@ class UtilsScreenViewModel(
                     }
                 }
             )
-        }
-    }
-
-    private fun pickPath(current: String, directoriesOnly: Boolean): String? {
-        val chooser = JFileChooser()
-        chooser.fileSelectionMode =
-            if (directoriesOnly) JFileChooser.DIRECTORIES_ONLY else JFileChooser.FILES_AND_DIRECTORIES
-        chooser.dialogTitle = if (directoriesOnly) "Select directory" else "Select path"
-        val start = File(current)
-        when {
-            start.isDirectory -> chooser.currentDirectory = start
-            start.parentFile?.isDirectory == true -> chooser.currentDirectory = start.parentFile
-        }
-        val result = chooser.showOpenDialog(null)
-        return if (result == JFileChooser.APPROVE_OPTION) {
-            chooser.selectedFile.absolutePath
-        } else {
-            null
-        }
-    }
-
-    private fun pickImagePath(current: String): String? {
-        val chooser = JFileChooser()
-        chooser.fileSelectionMode = JFileChooser.FILES_ONLY
-        chooser.dialogTitle = "Select background image"
-        chooser.fileFilter = FileNameExtensionFilter(
-            "Images (jpg, png, webp, bmp)",
-            "jpg", "jpeg", "png", "webp", "bmp",
-        )
-        chooser.isAcceptAllFileFilterUsed = true
-        val start = File(current)
-        when {
-            start.isFile -> chooser.currentDirectory = start.parentFile
-            start.isDirectory -> chooser.currentDirectory = start
-            start.parentFile?.isDirectory == true -> chooser.currentDirectory = start.parentFile
-        }
-        val result = chooser.showOpenDialog(null)
-        return if (result == JFileChooser.APPROVE_OPTION) {
-            chooser.selectedFile.absolutePath
-        } else {
-            null
         }
     }
 }

@@ -7,6 +7,12 @@ from unittest import mock
 
 import torch
 
+import sys
+
+# `python test/test_train_control.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import api
 from trainer import control
 from trainer.device_swap import optimizer_tensors_to
@@ -125,6 +131,32 @@ class ControlTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.dispatch("train_start")
 
+    def test_start_refuses_a_bad_sample_set_before_spawning(self):
+        from types import SimpleNamespace
+
+        bad = SimpleNamespace(
+            base_model_version="sdxl_base_v1-0",
+            modelspec_architecture="stable-diffusion-xl-v1-base/lora",
+            modelspec_implementation="https://github.com/Stability-AI/generative-models",
+            modelspec_sai_model_spec="1.0.0",
+            resume_lora_path="",
+            sample_prompts="p",
+            sample_negative="",
+            sample_width=1024,
+            sample_height=1024,
+            sample_steps=30,
+            sample_seed=0,
+            sample_repeat=1,
+            guidance_scale=5.0,
+            samples=[{"prompt": "p", "steps": 999}],
+        )
+        with mock.patch.object(api, "TrainConfig", lambda: bad):
+            with mock.patch("api.subprocess.Popen") as popen:
+                with self.assertRaises(ValueError) as ctx:
+                    api.dispatch("train_start")
+        self.assertIn("validation.samples[1]", str(ctx.exception))
+        popen.assert_not_called()
+
     def test_begin_run_records_run_id(self):
         control.begin_run(4242, "rein", run_id="rein_20260911_120000")
         loaded = control.read_state()
@@ -140,6 +172,28 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(loaded["resume"]["loaded"], 42)
         control.set_resume({})
         self.assertIsNone(control.read_state()["resume"])
+
+    def test_sampling_progress_reports_the_prompt_set(self):
+        control.set_sampling(
+            active=True,
+            repeat=3,
+            repeats=9,
+            denoise_step=5,
+            denoise_steps=20,
+            global_step=3000,
+            prompt_set=2,
+            prompt_sets=3,
+        )
+        sampling = control.status_payload()["sampling"]
+        self.assertEqual(sampling["prompt_set"], 2)
+        self.assertEqual(sampling["prompt_sets"], 3)
+        self.assertEqual(sampling["repeat"], 3)
+
+    def test_sampling_without_sets_defaults_to_zero(self):
+        control.set_sampling(active=True, repeat=0, repeats=1, denoise_step=1, denoise_steps=10)
+        sampling = control.status_payload()["sampling"]
+        self.assertEqual(sampling["prompt_set"], 0)
+        self.assertEqual(sampling["prompt_sets"], 0)
 
     def test_reset_clears_finished_and_logs(self):
         out = Path(self.tmp.name) / "out"

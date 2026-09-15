@@ -4,11 +4,12 @@
 Run from the repo root in the conda env named by `environment.yml`:
 
     conda activate axl_rocm_7_14
-    python verify_mask_pipeline.py --tiers all
+    python test/verify_mask_pipeline.py --tiers all
 
 Tiers
-  plumbing  CPU. Sidecar discovery/exclusion, crop+bucket alignment against the real pixel
-            tensor, per-sample mask pairing, latent-cache independence, real dataset scans.
+  plumbing  CPU. Sidecar discovery/exclusion, fit+pad alignment against the real pixel tensor
+            (including the "a tall sample must keep its head and feet" case), per-sample mask
+            pairing, latent-cache independence, real dataset scans.
   loss      GPU, one pipeline load. Exact loss identities (all-ones == no mask, all-black ->
             zero loss and zero grads), mask linearity, coverage -> gradient scaling, mask
             position sensitivity, and measured leakage of ignored-region content.
@@ -36,7 +37,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# The tiers import the trainer as a package, and a script's sys.path[0] is this directory.
+sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_STANDS = Path("/storage/Games/AVG/LimeLight Lemonade Jam/dataset/stands/杏珠")
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 TIERS = ("plumbing", "loss", "train", "stand")
@@ -129,7 +132,7 @@ def guard_environment(args: argparse.Namespace, rep: Report) -> Any:
             f"refusing to run: expected the conda env `{expected}` (environment.yml)\n"
             f"  interpreter: {sys.executable}\n"
             f"  prefix:      {sys.prefix}\n"
-            f"  use: conda activate {expected} && python verify_mask_pipeline.py ... "
+            f"  use: conda activate {expected} && python test/verify_mask_pipeline.py ... "
             f"(or pass --allow-foreign-env)"
         )
     import torch
@@ -257,8 +260,11 @@ def uniform_sidecar(image_path: Path, value: int) -> None:
 
 
 def bucket_crop(image_path: Path, bucket_w: int, bucket_h: int, mode: str = "RGB", channel: str | None = None):
-    """Crop like the trainer does (LANCZOS, centre crop), implemented here independently of
-    `trainer.utils.resize_and_center_crop` so the comparison is not self-referential."""
+    """Cover-scale + centre crop, implemented here independently of
+    `trainer.utils.resize_and_center_crop` so the comparison is not self-referential.
+
+    This is what the trainer used before the fit+pad change; it is still the reference for how
+    much content a crop would have thrown away."""
     import numpy as np
     from PIL import Image
 
@@ -275,6 +281,48 @@ def bucket_crop(image_path: Path, bucket_w: int, bucket_h: int, mode: str = "RGB
     cropped = resized.crop((left, top, left + bucket_w, top + bucket_h))
     array = np.asarray(cropped, dtype=np.float32) / 255.0
     return array
+
+
+def bucket_fit(image_path: Path, bucket_w: int, bucket_h: int, mode: str = "RGB",
+               channel: str | None = None, fill: int = 0):
+    """Contain-scale + centre pad, implemented here independently of
+    `trainer.utils.fit_to_bucket` so the comparison is not self-referential.
+
+    `fill` is 0 for mask/alpha comparisons; the trainer pads the RGB image with 127."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(image_path) as img:
+        source = img.convert(mode)
+        if channel:
+            source = source.getchannel(channel)
+    src_w, src_h = source.size
+    scale = min(bucket_w / src_w, bucket_h / src_h)
+    fit_w = min(bucket_w, max(1, int(round(src_w * scale))))
+    fit_h = min(bucket_h, max(1, int(round(src_h * scale))))
+    left = (bucket_w - fit_w) // 2
+    top = (bucket_h - fit_h) // 2
+    resized = source.resize((fit_w, fit_h), Image.Resampling.LANCZOS)
+    canvas = Image.new(resized.mode, (bucket_w, bucket_h), fill)
+    canvas.paste(resized, (left, top))
+    return np.asarray(canvas, dtype=np.float32) / 255.0
+
+
+def content_region(record: dict[str, Any]):
+    """Boolean `[bucket_h, bucket_w]` map of where the image content sits (pad is False)."""
+    import numpy as np
+
+    geom = record["geom"]
+    content = np.zeros((geom.bucket_h, geom.bucket_w), dtype=bool)
+    content[geom.top : geom.top + geom.fit_h, geom.left : geom.left + geom.fit_w] = True
+    return content
+
+
+def pad_region(record: dict[str, Any]):
+    """Boolean `[bucket_h, bucket_w]` map of the letterbox pad (weight must be exactly 0)."""
+    import numpy as np
+
+    return ~content_region(record)
 
 
 def copy_samples(source_dir: Path, dest: Path, count: int, *, rgb_only: bool, sidecars: bool,
@@ -391,25 +439,89 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
 
     cfg = base_config(train_data_dir=str(root), enable_bucket=False, train_resolution=64,
                       cache_latents=False, cache_latents_to_disk=False, shuffle_caption=False)
-    item = LoraImageDataset(cfg)[0]
+    dataset_synth = LoraImageDataset(cfg)
+    item = dataset_synth[0]
+    record = dataset_synth.records[0]
+    geom = record["geom"]
     pixels, item_mask = item["img_data"], item["loss_mask"][0]
-    red, blue = (pixels[0] + 1) / 2, (pixels[2] + 1) / 2
-    interior_left = torch.zeros(64, dtype=torch.bool)
-    interior_left[4:28] = True   # away from the centre-crop seam
-    interior_right = torch.zeros(64, dtype=torch.bool)
-    interior_right[36:60] = True
-    fully_masked = (item_mask > 0.9).all(dim=0)
-    fully_clear = (item_mask < 0.1).all(dim=0)
-    red_in = float(red[:, interior_left & fully_masked].mean())
-    blue_in = float(blue[:, interior_left & fully_masked].mean())
-    blue_out = float(blue[:, interior_right & fully_clear].mean())
-    red_out = float(red[:, interior_right & fully_clear].mean())
+    rows = slice(geom.top, geom.top + geom.fit_h)
+    red = (pixels[0] + 1) / 2
+    blue = (pixels[2] + 1) / 2
+    # away from the fit seam, where LANCZOS blends the two halves
+    masked_cols = (item_mask[rows] > 0.9).all(dim=0)
+    clear_cols = (item_mask[rows] < 0.1).all(dim=0)
+    pad_rows = torch.ones(geom.bucket_h, dtype=torch.bool)
+    pad_rows[geom.top : geom.top + geom.fit_h] = False
+    fill_value = (127 / 255.0) * 2 - 1
     rep.check(
-        tier, "mask geometry matches the image after crop/resize (96x64 -> 64x64)",
-        red_in > 0.8 and blue_in < 0.2 and blue_out > 0.8 and red_out < 0.2,
-        "masked columns carry the red half, unmasked columns the blue half",
-        red_where_masked=red_in, blue_where_masked=blue_in,
-        blue_where_unmasked=blue_out, red_where_unmasked=red_out,
+        tier, "mask geometry matches the image after fit+pad (96x64 -> 64x64)",
+        (geom.fit_w, geom.fit_h, geom.left, geom.top) == (64, 43, 0, 10)
+        and bool(masked_cols.any()) and bool(clear_cols.any())
+        and float(red[rows][:, masked_cols].mean()) > 0.8
+        and float(blue[rows][:, masked_cols].mean()) < 0.2
+        and float(blue[rows][:, clear_cols].mean()) > 0.8
+        and float(red[rows][:, clear_cols].mean()) < 0.2
+        and float(item_mask[pad_rows].max()) == 0.0
+        and float((pixels[:, pad_rows] - fill_value).abs().max()) < 1e-6,
+        "the whole 96x64 source is fitted (nothing cropped), the masked half carries the red "
+        "columns, and the pad rows are the fill colour with loss weight exactly 0",
+        geometry=f"{geom.fit_w}x{geom.fit_h}@({geom.left},{geom.top})",
+        red_where_masked=float(red[rows][:, masked_cols].mean()),
+        blue_where_masked=float(blue[rows][:, masked_cols].mean()),
+        blue_where_unmasked=float(blue[rows][:, clear_cols].mean()),
+        red_where_unmasked=float(red[rows][:, clear_cols].mean()),
+        pad_weight_max=float(item_mask[pad_rows].max()),
+    )
+
+    # 2b. the shape this whole change exists for: a tall sample keeps its head and feet -------
+    root = work / "plumbing" / "align_tall"
+    root.mkdir(parents=True, exist_ok=True)
+    tall_w, tall_h = 512, 1536
+    band = tall_h // 20
+    tall = Image.new("RGB", (tall_w, tall_h), (0, 0, 255))
+    tall_draw = ImageDraw.Draw(tall)
+    tall_draw.rectangle([0, 0, tall_w - 1, band - 1], fill=(255, 0, 0))          # head
+    tall_draw.rectangle([0, tall_h - band, tall_w - 1, tall_h - 1], fill=(0, 255, 0))  # feet
+    tall.save(root / "tall.png")
+    (root / "tall.txt").write_text("tall figure", encoding="utf-8")
+    tall_mask = Image.new("L", (tall_w, tall_h), color=0)
+    tall_draw_l = ImageDraw.Draw(tall_mask)
+    tall_draw_l.rectangle([0, 0, tall_w - 1, band - 1], fill=255)
+    tall_draw_l.rectangle([0, tall_h - band, tall_w - 1, tall_h - 1], fill=255)
+    tall_mask.save(mask_path_for(root / "tall.png"))
+
+    cfg = base_config(train_data_dir=str(root), enable_bucket=True, train_resolution=512,
+                      min_bucket_reso=128, max_bucket_reso=512,
+                      cache_latents=False, cache_latents_to_disk=False, shuffle_caption=False)
+    ds_tall = LoraImageDataset(cfg)
+    record = ds_tall.records[0]
+    geom = record["geom"]
+    ds_tall_item = ds_tall[0]
+    tall_pixels = ds_tall_item["img_data"]
+    tall_loss_mask = ds_tall_item["loss_mask"][0]
+    head = (tall_pixels[0] + 1) / 2 > 0.8
+    feet = (tall_pixels[1] + 1) / 2 > 0.8
+    pad = pad_region(record)
+    # What the retired crop rule would have kept at this bucket, computed independently: this is
+    # the check that the check is not vacuous.
+    crop_pixels = bucket_crop(root / "tall.png", geom.bucket_w, geom.bucket_h)
+    crop_head = bool((crop_pixels[..., 0] > 0.8).any())
+    crop_feet = bool((crop_pixels[..., 1] > 0.8).any())
+    rep.check(
+        tier, "tall sample keeps head and feet: the crop rule dropped both ends",
+        bool(head.any()) and bool(feet.any())
+        and float(tall_loss_mask[head].mean()) > 0.99
+        and float(tall_loss_mask[feet].mean()) > 0.99
+        and bool(pad.any()) and float(tall_loss_mask[pad].max()) == 0.0
+        and not crop_head and not crop_feet,
+        "a 1:3 source is fitted into its bucket instead of centre-cropped, so both end bands "
+        "survive and only the side bars carry zero weight; the independent centre crop of the "
+        "same sample loses both bands",
+        bucket=f"{geom.bucket_w}x{geom.bucket_h}",
+        content=f"{geom.fit_w}x{geom.fit_h}@({geom.left},{geom.top})",
+        pad_fraction=float(pad.mean()), head_weight=float(tall_loss_mask[head].mean()),
+        feet_weight=float(tall_loss_mask[feet].mean()),
+        crop_keeps_head=crop_head, crop_keeps_feet=crop_feet,
     )
 
     # 3. the same question on a real image, at its real bucket ---------------------------
@@ -421,8 +533,9 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     cfg = base_config(train_data_dir=str(root), enable_bucket=True, cache_latents=False,
                       cache_latents_to_disk=False, shuffle_caption=False)
     ds_real = LoraImageDataset(cfg)
-    bucket_w, bucket_h = ds_real.records[0]["bucket_w"], ds_real.records[0]["bucket_h"]
-    # A geometric sidecar: the invariant is that the mask survives crop+resize onto the same
+    record_real = ds_real.records[0]
+    bucket_w, bucket_h = record_real["bucket_w"], record_real["bucket_h"]
+    # A geometric sidecar: the invariant is that the mask survives fit+pad onto the same
     # pixels. A content-derived (median-luminance) mask cannot check that on flat or transparent
     # art, where both sides of the split share one luminance value.
     with Image.open(root / "real.png") as img:
@@ -433,28 +546,20 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     item_real = LoraImageDataset(cfg)[0]
     pixels_real = item_real["img_data"]
     mask_real = item_real["loss_mask"][0].numpy()
-    with Image.open(mask_path_for(root / "real.png")) as img:
-        side_mask = img.convert("L")
-    scale = max(bucket_w / side_mask.size[0], bucket_h / side_mask.size[1])
-    side = side_mask.resize(
-        (max(1, int(round(side_mask.size[0] * scale))), max(1, int(round(side_mask.size[1] * scale)))),
-        Image.Resampling.LANCZOS,
-    )
-    crop_left = max(0, (side.size[0] - bucket_w) // 2)
-    crop_top = max(0, (side.size[1] - bucket_h) // 2)
-    expected_mask = np.asarray(
-        side.crop((crop_left, crop_top, crop_left + bucket_w, crop_top + bucket_h)), dtype=np.float32
-    ) / 255.0
+    expected_mask = bucket_fit(mask_path_for(root / "real.png"), bucket_w, bucket_h, "L")
     agreement = float((abs(mask_real - expected_mask) < 0.02).mean())
     luma_bucketed = (0.299 * pixels_real[0] + 0.587 * pixels_real[1] + 0.114 * pixels_real[2]).numpy()
     inside, outside = mask_real > 0.5, mask_real < 0.5
+    pad = pad_region(record_real)
+    pad_max = float(mask_real[pad].max()) if bool(pad.any()) else 0.0
     rep.check(
-        tier, f"mask geometry survives crop/resize at the real bucket ({bucket_w}x{bucket_h})",
-        agreement > 0.99 and float(inside.mean()) > 0.4,
-        "a geometric sidecar on a real image lands pixel-for-pixel where an independent crop says "
-        "it should",
+        tier, f"mask geometry survives fit+pad at the real bucket ({bucket_w}x{bucket_h})",
+        agreement > 0.99 and float(inside.mean()) > 0.4 and pad_max == 0.0,
+        "a geometric sidecar on a real image lands pixel-for-pixel where an independent fit says "
+        "it should, and the letterbox pad carries no weight",
         bucket=f"{bucket_w}x{bucket_h}", agreement=agreement, coverage=float(inside.mean()),
-        image=real_src.name,
+        image=real_src.name, content=f"{record_real['geom'].fit_w}x{record_real['geom'].fit_h}",
+        pad_fraction=float(record_real["geom"].pad_area), pad_weight_max=pad_max,
     )
     rep.observe(
         tier, "mask vs image content on the real image (depends on the artwork)",
@@ -489,7 +594,7 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     tall_mask.save(mask_path_for(root / "tall.png"))
 
     cfg = base_config(train_data_dir=str(root), enable_bucket=True, min_bucket_reso=64,
-                      max_bucket_reso=128, bucket_reso_steps=64, train_resolution=64,
+                      max_bucket_reso=128, bucket_reso_steps=64, train_resolution=128,
                       cache_latents=False, cache_latents_to_disk=False, shuffle_caption=False)
     ds_pair = LoraImageDataset(cfg)
     batch_pair = collate_fn([ds_pair[i] for i in range(len(ds_pair))])
@@ -526,8 +631,13 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
                       cache_latents=True, cache_latents_to_disk=True, shuffle_caption=False)
     ds_cache = LoraImageDataset(cfg)
     image_path = Path(ds_cache.records[0]["path"])
-    bucket_w, bucket_h = ds_cache.records[0]["bucket_w"], ds_cache.records[0]["bucket_h"]
-    cache_key = f"{image_path.resolve()}::{bucket_w}x{bucket_h}"
+    record_cache = ds_cache.records[0]
+    geom_cache = record_cache["geom"]
+    bucket_w, bucket_h = record_cache["bucket_w"], record_cache["bucket_h"]
+    cache_key = (
+        f"{image_path.resolve()}::{bucket_w}x{bucket_h}"
+        f"::{geom_cache.left},{geom_cache.top},{geom_cache.fit_w}x{geom_cache.fit_h}"
+    )
     cache_file = ds_cache.latent_cache_dir / f"{sha1_text(cache_key)}.pt"
     torch.save(torch.full((4, bucket_h // 8, bucket_w // 8), 0.25, dtype=torch.float32), cache_file)
     mtime_before = cache_file.stat().st_mtime_ns
@@ -541,9 +651,22 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
         and abs(float(first["loss_mask"].mean()) - 0.5) < 0.02
         and abs(float(second["loss_mask"].mean()) - 0.8) < 0.02
         and float(second["loss_mask"][0, 32, 8]) > 0.9,
-        "latent served from `<data>/.latents_cache/{sha1(abs_path::WxH)}.pt` with the new mask",
+        "latent served from `<data>/.latents_cache/{sha1(abs_path::WxH::geometry)}.pt` with the new "
+        "mask (a geometry change does invalidate the key, a mask edit does not)",
         key=cache_key, coverage_before=float(first["loss_mask"].mean()),
         coverage_after=float(second["loss_mask"].mean()),
+    )
+
+    from trainer.utils import fit_geometry
+
+    other_geom = fit_geometry(record_cache["src_w"], record_cache["src_h"], bucket_w, bucket_h // 2)
+    other_key = ds_cache._cache_path(image_path, other_geom)
+    rep.check(
+        tier, "a geometry change moves the latent cache key (a mask edit does not)",
+        other_key != cache_file and cache_file.name == f"{sha1_text(cache_key)}.pt",
+        "the key carries the fit geometry, so latents encoded from differently placed pixels can "
+        "never be served for the same bucket size",
+        geometry_key=cache_key, other_geom=f"{other_geom.left},{other_geom.top}",
     )
 
     # 6. real dataset scans --------------------------------------------------------------
@@ -576,12 +699,13 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     # trivially true (both sides all ones), which is why a prefix sample could pass it.
     agreements = []
     for _, image, record, pipeline_mask in sorted(candidates, key=lambda item: not item[0])[:5]:
-        expected = bucket_crop(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
+        expected = bucket_fit(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
         agreements.append(float((abs(pipeline_mask - expected) < 0.02).mean()))
     rep.check(
-        tier, "configured dataset: alpha-derived masks match an independent alpha crop",
+        tier, "configured dataset: alpha-derived masks match an independent alpha fit",
         bool(agreements) and all(value > 0.99 for value in agreements),
-        "the fallback path (alpha channel -> loss weight) reproduces an independently computed crop",
+        "the fallback path (alpha channel -> loss weight) reproduces an independently computed "
+        "fit+pad",
         checked=len(agreements), worst_agreement=min(agreements) if agreements else None,
         partially_transparent=non_opaque,
     )
@@ -612,7 +736,7 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
             pipeline_mask = load_loss_mask(
                 image, record["bucket_w"], record["bucket_h"], record["src_w"], record["src_h"]
             )[0].numpy()
-            expected = bucket_crop(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
+            expected = bucket_fit(image, record["bucket_w"], record["bucket_h"], "RGBA", "A")
             agreements.append(float((abs(pipeline_mask - expected) < 0.02).mean()))
             rows.append({
                 "image": image.name,
@@ -621,10 +745,11 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
                 "independent_coverage": float(expected.mean()),
             })
         rep.check(
-            tier, "real transparent art: pipeline mask equals an independent alpha crop",
+            tier, "real transparent art: pipeline mask equals an independent alpha fit",
             all(value > 0.99 for value in agreements) and ds_stand.n_masked == len(ds_stand)
             and all(abs(r["pipeline_coverage"] - r["independent_coverage"]) < 0.005 for r in rows),
-            "alpha channel cropped to the bucket agrees pixel-for-pixel with a separate implementation",
+            "alpha channel fitted into the bucket agrees pixel-for-pixel with a separate "
+            "implementation",
             agreement=min(agreements), samples=len(ds_stand), rows=rows,
         )
         rep.observe(
@@ -720,16 +845,20 @@ class Pipeline:
         self.torch.cuda.empty_cache()
 
     # -- encoders ------------------------------------------------------------------
-    def encode_latents(self, image_path: Path, bucket_w: int, bucket_h: int):
+    def encode_latents(self, image_path: Path, bucket_w: int, bucket_h: int, geom: Any = None):
+        """VAE-encode the sample exactly as the trainer does: fit into the bucket, pad the rest."""
         import torch
         from PIL import Image
 
         self.ensure_loaded()
 
-        from trainer.utils import image_to_tensor, resize_and_center_crop
+        from trainer.utils import fit_geometry, fit_to_bucket, image_to_tensor
 
         with Image.open(image_path) as img:
-            pixels = image_to_tensor(resize_and_center_crop(img.convert("RGB"), bucket_w, bucket_h))
+            source = img.convert("RGB")
+        src_w, src_h = source.size
+        geom = fit_geometry(src_w, src_h, bucket_w, bucket_h) if geom is None else geom
+        pixels = image_to_tensor(fit_to_bucket(source, geom))
         self.modules.vae.to(device=self.device, dtype=self.dtype)
         with torch.no_grad():
             latents = self.modules.vae.encode(pixels.unsqueeze(0).to(self.device, self.dtype)).latent_dist.sample()
@@ -864,7 +993,7 @@ def tier_loss(rep: Report, args: argparse.Namespace, work: Path, pipeline: Pipel
     image = Path(record["path"])
     bucket_w, bucket_h = record["bucket_w"], record["bucket_h"]
     src_wh = (record["src_w"], record["src_h"])
-    latent = pipeline.encode_latents(image, bucket_w, bucket_h)
+    latent = pipeline.encode_latents(image, bucket_w, bucket_h, record["geom"])
     encoded = pipeline.encode_prompts([ds[0]["caption"] or "probe"])
     extra = pipeline.extra_cond(src_wh, (bucket_w, bucket_h))
     rep.observe(tier, "probe setup", "real image at its real bucket, prompt from its caption",
@@ -956,8 +1085,8 @@ def tier_loss(rep: Report, args: argparse.Namespace, work: Path, pipeline: Pipel
         stand_image = Path(record["path"])
         stand_bucket = (record["bucket_w"], record["bucket_h"])
         mask = load_loss_mask(stand_image, stand_bucket[0], stand_bucket[1], record["src_w"], record["src_h"])
-        expected = bucket_crop(stand_image, stand_bucket[0], stand_bucket[1], "RGBA", "A")
-        stand_latent = pipeline.encode_latents(stand_image, stand_bucket[0], stand_bucket[1])
+        expected = bucket_fit(stand_image, stand_bucket[0], stand_bucket[1], "RGBA", "A")
+        stand_latent = pipeline.encode_latents(stand_image, stand_bucket[0], stand_bucket[1], record["geom"])
         stand_encoded = pipeline.encode_prompts([record["path"].stem])
         stand_extra = pipeline.extra_cond((record["src_w"], record["src_h"]), stand_bucket)
         loss_masked = pipeline.loss_only(latents=stand_latent, encoded=stand_encoded, extra=stand_extra,
@@ -1002,7 +1131,7 @@ def _leakage_probe(rep: Report, pipeline: Pipeline, work: Path, latent, encoded,
         width = array.shape[1]
         array[:, int(width * columns[0]) : int(width * columns[1])] = (12, 240, 12)
         Image.fromarray(array).save(target)
-        repainted[label] = pipeline.encode_latents(target, bucket_w, bucket_h)
+        repainted[label] = pipeline.encode_latents(target, bucket_w, bucket_h, record["geom"])
 
     mask_right = region_mask(bucket_w, bucket_h, "right40")
     loss_masked, grads_base, _ = pipeline.with_grads(latents=latent, encoded=encoded, extra=extra,
@@ -1096,13 +1225,14 @@ def write_toml(path: Path, sections: dict[str, dict[str, Any]]) -> None:
 def config_sections() -> dict[str, dict[str, Any]]:
     import tomllib
 
-    with open(REPO_ROOT / "trainer" / "config.toml", "rb") as handle:
+    with open(REPO_ROOT / "config.toml", "rb") as handle:
         return tomllib.load(handle)
 
 
 def make_mirror(dest: Path) -> None:
     """A throwaway repo root: symlinked trainer sources plus a generated config.toml, so the
-    unmodified `trainer/main.py` runs against a verification config."""
+    unmodified `trainer/main.py` runs against a verification config. The config sits at the
+    mirror's root because that is where the trainer reads it from (cwd-relative)."""
     (dest / "trainer").mkdir(parents=True, exist_ok=True)
     for src in (REPO_ROOT / "trainer").glob("*.py"):
         os.symlink(src, dest / "trainer" / src.name)
@@ -1280,7 +1410,7 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
             "train_batch_size": batch_size,
             "lr_warmup_steps": warmup,
         },
-        # Raised over trainer/config.toml so a few minutes of training moves the LoRA clearly
+        # Raised over config.toml so a few minutes of training moves the LoRA clearly
         # enough to measure; both variants get the same values.
         "unet_optimizer": {"unet_learning_rate": lr[0], "unet_warmup_steps": warmup},
         "te_optimizer": {"te_learning_rate": lr[1]},
@@ -1292,7 +1422,7 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
     }
     for section, values in overrides.items():
         sections.setdefault(section, {}).update(values)
-    write_toml(mirror / "trainer" / "config.toml", sections)
+    write_toml(mirror / "config.toml", sections)
 
     # Re-running the same work dir only redoes runs that did not finish, so a verification hit by
     # an intermittent GPU fault can be completed without repeating everything.
@@ -1355,7 +1485,7 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
         mask_line=mask_line,
         claims={"seed": seed, "steps_requested": steps, "epochs": epochs,
                 "steps_per_epoch": steps_per_epoch, "images": n_images, "masked": masked,
-                "save_every_n_steps": cadence, "mirror_config": str(mirror / "trainer" / "config.toml"),
+                "save_every_n_steps": cadence, "mirror_config": str(mirror / "config.toml"),
                 "gpu_memory_fault": fault},
     )
     result.gpu_fault = fault
@@ -1781,6 +1911,8 @@ def region_probe(rep: Report, pipeline: Pipeline, tier: str, data_dir: Path,
                  use_alpha_mask: bool, floor_run: RunResult | None = None) -> dict[str, Any]:
     """Per-region error at init vs after masked training vs after unmasked training, on the same
     latents, prompts and noise seeds."""
+    import torch
+
     from trainer.dataset import LoraImageDataset
     from trainer.utils import load_loss_mask
 
@@ -1791,13 +1923,16 @@ def region_probe(rep: Report, pipeline: Pipeline, tier: str, data_dir: Path,
     for index, record in enumerate(ds.records[: min(4, len(ds.records))]):
         image = Path(record["path"])
         bucket = (record["bucket_w"], record["bucket_h"])
-        mask = load_loss_mask(image, bucket[0], bucket[1], record["src_w"], record["src_h"])
+        mask = load_loss_mask(image, bucket[0], bucket[1], record["src_w"], record["src_h"],
+                              geom=record["geom"])
+        content = torch.from_numpy(content_region(record)).float()
         prepared.append({
             "name": image.name,
-            "latents": pipeline.encode_latents(image, bucket[0], bucket[1]),
+            "latents": pipeline.encode_latents(image, bucket[0], bucket[1], record["geom"]),
             "encoded": pipeline.encode_prompts([ds[index]["caption"] or image.stem]),
             "extra": pipeline.extra_cond((record["src_w"], record["src_h"]), bucket),
             "mask": mask,
+            "content": content,
             "bucket": bucket,
             "seed": 100 + index,
         })
@@ -1806,8 +1941,11 @@ def region_probe(rep: Report, pipeline: Pipeline, tier: str, data_dir: Path,
         if use_alpha_mask:
             return {"subject (trained)": sample["mask"], "background (ignored)": 1.0 - sample["mask"]}
         width, height = sample["bucket"]
-        return {"trained (left 60%)": region_mask(width, height, "left60"),
-                "ignored (right 40%)": region_mask(width, height, "right40")}
+        # clamped to the content: the letterbox pad always carries weight 0, so a region that
+        # included it would divide its loss by uncovered pixels.
+        content = sample["content"]
+        return {"trained (left 60%)": region_mask(width, height, "left60") * content,
+                "ignored (right 40%)": region_mask(width, height, "right40") * content}
 
     def measure() -> dict[str, float]:
         totals: dict[str, list[float]] = {}
@@ -2018,7 +2156,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    os.chdir(REPO_ROOT)  # trainer/config.toml is read relative to the repo root
+    os.chdir(REPO_ROOT)  # config.toml is read relative to the repo root
     args = parse_args(argv)
     tiers = list(TIERS if args.tiers == "all" else (t.strip() for t in args.tiers.split(",") if t.strip()))
     for tier in tiers:

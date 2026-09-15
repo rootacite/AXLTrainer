@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,13 @@ from unittest import mock
 
 import torch
 
+
+# `python test/test_api_ipc.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import api
+from trainer import config as trainer_config
 from trainer.loss_log import LossRecorder, synthesize_avg_loss
 
 
@@ -28,6 +35,92 @@ class ScanSamplesTest(unittest.TestCase):
 
     def test_missing_dir_is_empty(self):
         self.assertEqual(api.scan_samples(Path("/tmp/axl-missing-samples-dir")), {})
+
+
+class ScanSampleSetsTest(unittest.TestCase):
+    """`_p{set}_{repeat}` naming, with the two-number form still mapping to set 0."""
+
+    def _names(self, *names):
+        with tempfile.TemporaryDirectory() as raw:
+            sample_dir = Path(raw)
+            for name in names:
+                (sample_dir / name).write_bytes(b"x")
+            return api.scan_samples(sample_dir)
+
+    def test_set_index_is_parsed(self):
+        grouped = self._names("run_100_p0_0.png", "run_100_p1_0.png", "run_100_p1_1.png")
+        self.assertEqual(
+            [(item["set_index"], item["repeat_idx"]) for item in grouped["100"]],
+            [(0, 0), (1, 0), (1, 1)],
+        )
+
+    def test_legacy_names_are_set_zero(self):
+        grouped = self._names("run_100_0.png", "run_100_1.png")
+        self.assertEqual([item["set_index"] for item in grouped["100"]], [0, 0])
+        self.assertEqual([item["repeat_idx"] for item in grouped["100"]], [0, 1])
+
+    def test_both_layouts_group_under_the_same_step(self):
+        grouped = self._names("run_100_p0_0.png", "run_100_0.png")
+        self.assertEqual(len(grouped["100"]), 2)
+        self.assertEqual(list(grouped.keys()), ["100"])
+
+
+class DashboardSampleSetsTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_config = api._train_config_dict
+        api._train_config_dict = lambda: {
+            "sample_prompts": "flat prompt",
+            "sample_negative": "flat negative",
+            "sample_width": 1152,
+            "sample_height": 768,
+            "sample_steps": 35,
+            "sample_seed": 0,
+            "sample_repeat": 3,
+            "guidance_scale": 5.0,
+            "samples": [
+                {"name": "one", "prompt": "p1", "steps": 8, "repeat": 1},
+                {"prompt": "p2", "width": 512},
+            ],
+        }
+
+    def tearDown(self):
+        api._train_config_dict = self._orig_config
+
+    def test_dashboard_reports_every_set(self):
+        result = api.dispatch("dashboard", {"name": "__missing_run__"})
+        sets = result["sample_sets"]
+        self.assertEqual([entry["name"] for entry in sets], ["one", "p2"])
+        self.assertEqual(sets[1]["width"], 512)
+        self.assertEqual(sets[1]["height"], 768)
+        json.dumps(result)
+
+    def test_flat_config_keys_mirror_the_first_set(self):
+        result = api.dispatch("dashboard", {"name": "__missing_run__"})
+        config = result["config"]
+        self.assertEqual(config["sample_prompts"], "p1")
+        self.assertEqual(config["sample_steps"], 8)
+        self.assertEqual(config["sample_repeat"], 1)
+
+    def test_without_sets_the_flat_keys_are_untouched(self):
+        api._train_config_dict = lambda: {
+            "sample_prompts": "flat prompt",
+            "sample_negative": "flat negative",
+            "sample_steps": 35,
+            "guidance_scale": 5.0,
+        }
+        # A key this mapping omits falls back to the config file's scalar, so pin that scalar
+        # instead of asserting on whatever the author's local config.toml happens to hold.
+        with mock.patch.dict(trainer_config._CONFIG, {"sample_repeat": 3}, clear=False):
+            result = api.dispatch("dashboard", {"name": "__missing_run__"})
+        self.assertEqual(result["config"]["sample_prompts"], "flat prompt")
+        self.assertEqual(len(result["sample_sets"]), 1)
+        self.assertEqual(result["sample_sets"][0]["repeat"], 3)
+
+    def test_a_broken_entry_degrades_to_no_sets(self):
+        api._train_config_dict = lambda: {"samples": [{"prompt": "p", "steps": 0}]}
+        result = api.dispatch("dashboard", {"name": "__missing_run__"})
+        self.assertEqual(result["sample_sets"], [])
+        json.dumps(result)
 
 
 class DispatchTest(unittest.TestCase):
@@ -256,6 +349,238 @@ class RunScopedIpcTest(unittest.TestCase):
         self.assertIsNone(result["run_id"])
         self.assertTrue(legacy_samples.exists())
         self.assertTrue((self.logs / "rein").exists())
+
+
+class GeneratedSampleIpcTest(unittest.TestCase):
+    """generate_sample / list_generated_samples: job records, GPU guard, validation."""
+
+    RUN_ID = "rein_20260911_120000"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+
+        self.out = Path(self.tmp.name) / "out"
+        self.logs = Path(self.tmp.name) / "logs"
+        self.cfg = {
+            "output_dir": str(self.out),
+            "logging_dir": str(self.logs),
+            "output_name": "rein",
+            "sample_prompts": "config prompt",
+            "sample_negative": "config negative",
+            "guidance_scale": 5.0,
+            "sample_steps": 35,
+            "sample_seed": 0,
+            "sample_width": 1152,
+            "sample_height": 768,
+        }
+        self._orig_config = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+
+        # No test may spawn a real generator (it would load SDXL on the GPU); the spawn tests assert
+        # against this mock instead.
+        self._popen_patcher = mock.patch.object(api.subprocess, "Popen")
+        self.popen = self._popen_patcher.start()
+        self.popen.return_value.pid = 4242
+
+        self.run_dir = self.out / self.RUN_ID
+        self.samples = self.run_dir / "rein_samples"
+        self.samples.mkdir(parents=True)
+        (self.logs / self.RUN_ID).mkdir(parents=True)
+        self.checkpoint_dir = self.run_dir / "rein_s003050"
+        self.checkpoint_dir.mkdir()
+        self.checkpoint = self.checkpoint_dir / "rein.safetensors"
+        self.checkpoint.write_bytes(b"weights")
+
+    def tearDown(self):
+        from trainer import control
+
+        self._popen_patcher.stop()
+        api._train_config_dict = self._orig_config
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    @property
+    def generated(self) -> Path:
+        return self.samples / "generated"
+
+    def _write_job(self, job_id: str, **fields) -> dict:
+        from trainer import genjob
+
+        job = genjob.new_job(
+            {
+                "prompt": "p",
+                "negative_prompt": "",
+                "cfg": 5.0,
+                "steps": 12,
+                "seed": 7,
+                "width": 1024,
+                "height": 1024,
+                "step": 3050,
+            },
+            run_id=self.RUN_ID,
+            output_name="rein",
+            checkpoint=str(self.checkpoint),
+        )
+        job["id"] = job_id
+        job.update(fields)
+        return genjob.write_job(self.generated, job)
+
+    def _spawn(self, params: dict | None = None):
+        """Run the handler against the mocked generator process."""
+        return api.handle_generate_sample(
+            {
+                "checkpoint": str(self.checkpoint),
+                "prompt": "my prompt",
+                "cfg": 7.0,
+                "steps": 12,
+                "seed": 42,
+                **(params or {}),
+            }
+        )
+
+    def _spec_written_by_last_spawn(self) -> dict:
+        return json.loads(Path(self.popen.call_args.args[0][4]).read_text())
+
+    def test_dispatch_registered(self):
+        self.assertIn("generate_sample", api._HANDLERS)
+        self.assertIn("list_generated_samples", api._HANDLERS)
+
+    def test_listing_without_generated_dir_is_empty(self):
+        result = api.dispatch("list_generated_samples", {})
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(result["jobs"], [])
+
+    def test_listing_is_newest_first_and_json_safe(self):
+        self._write_job("old_gen_1", started_at=100.0, state="done", image_path="/x/old.png")
+        self._write_job("new_gen_1", started_at=200.0, state="done", image_path="/x/new.png")
+        result = api.dispatch("list_generated_samples", {})
+        self.assertEqual([job["id"] for job in result["jobs"]], ["new_gen_1", "old_gen_1"])
+        self.assertEqual(result["jobs"][0]["cfg"], 5.0)
+        json.dumps(result)
+
+    def test_a_dead_generator_is_reported_as_error(self):
+        self._write_job("stuck_gen_1", pid=999_999_999)
+        jobs = api.dispatch("list_generated_samples", {})["jobs"]
+        self.assertEqual(jobs[0]["state"], "error")
+        self.assertIn("exited before finishing", jobs[0]["error"])
+
+    def test_a_live_generator_stays_running(self):
+        self._write_job("live_gen_1", pid=os.getpid())
+        self.assertEqual(api.dispatch("list_generated_samples", {})["jobs"][0]["state"], "running")
+
+    def test_spawns_a_detached_generator_and_records_the_job(self):
+        result = self._spawn()
+        argv = self.popen.call_args.args[0]
+        self.assertEqual(argv[0], sys.executable)
+        self.assertEqual(argv[1], "-u")
+        self.assertTrue(argv[2].endswith("trainer/generate_sample.py"))
+        self.assertEqual(argv[3], "--spec")
+        self.assertTrue(self.popen.call_args.kwargs["start_new_session"])
+
+        spec = Path(argv[4])
+        self.assertTrue(spec.is_file())
+        self.assertEqual(spec.parent, self.generated)
+        stored = json.loads(spec.read_text())
+        self.assertEqual(stored["state"], "running")
+        self.assertEqual(stored["pid"], 4242)
+        self.assertEqual(stored["prompt"], "my prompt")
+        self.assertEqual(stored["cfg"], 7.0)
+        self.assertEqual(stored["steps"], 12)
+        self.assertEqual(stored["seed"], 42)
+        self.assertEqual(stored["width"], 1152)
+        self.assertEqual(stored["height"], 768)
+        self.assertEqual(stored["checkpoint"], str(self.checkpoint))
+        self.assertTrue(stored["id"].startswith("rein_s003050_gen_"))
+        self.assertEqual(result["job"]["id"], stored["id"])
+        self.assertTrue(result["log_path"].endswith(".log"))
+        self.assertEqual(Path(result["log_path"]).parent, self.generated)
+
+    def test_form_values_default_to_the_config(self):
+        self._spawn({"prompt": None, "cfg": None, "steps": None, "seed": None})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual(stored["prompt"], "config prompt")
+        self.assertEqual(stored["negative_prompt"], "config negative")
+        self.assertEqual(stored["cfg"], 5.0)
+        self.assertEqual(stored["steps"], 35)
+        self.assertEqual(stored["seed"], 0)
+        self.assertEqual((stored["width"], stored["height"]), (1152, 768))
+
+    def test_form_values_default_to_the_first_sample_set(self):
+        for key in ("sample_prompts", "sample_negative", "guidance_scale", "sample_steps",
+                    "sample_width", "sample_height"):
+            self.cfg.pop(key)
+        self.cfg["samples"] = [
+            {
+                "prompt": "set one",
+                "negative": "set one negative",
+                "steps": 9,
+                "guidance_scale": 4.0,
+                "width": 640,
+                "height": 960,
+                "seed": 11,
+            },
+            {"prompt": "set two", "steps": 40},
+        ]
+        self._spawn({"prompt": None, "cfg": None, "steps": None, "seed": None})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual(stored["prompt"], "set one")
+        self.assertEqual(stored["negative_prompt"], "set one negative")
+        self.assertEqual(stored["cfg"], 4.0)
+        self.assertEqual(stored["steps"], 9)
+        self.assertEqual(stored["seed"], 11)
+        self.assertEqual((stored["width"], stored["height"]), (640, 960))
+
+    def test_refuses_while_the_trainer_is_alive(self):
+        from trainer import control
+
+        for status in ("training", "sampling", "paused"):
+            with self.subTest(status=status):
+                control.write_state({"status": status, "pid": os.getpid()}, force=True)
+                with self.assertRaises(ValueError) as ctx:
+                    api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
+                self.assertIn("GPU is in use", str(ctx.exception))
+
+    def test_refuses_a_second_job_while_one_runs(self):
+        self._write_job("live_gen_1", pid=os.getpid())
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
+        self.assertIn("already running", str(ctx.exception))
+
+    def test_requires_a_checkpoint_file(self):
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_sample({"checkpoint": str(self.run_dir / "nope.safetensors"), "prompt": "p"})
+        self.assertIn("not a checkpoint file", str(ctx.exception))
+
+    def test_rejects_a_bad_form(self):
+        cases = [
+            ({"prompt": ""}, "prompt"),
+            ({"prompt": "p", "cfg": 99}, "cfg"),
+            ({"prompt": "p", "steps": 0}, "steps"),
+            ({"prompt": "p", "seed": -5}, "seed"),
+        ]
+        for params, expected in cases:
+            with self.subTest(params=params):
+                with self.assertRaises(ValueError) as ctx:
+                    api.handle_generate_sample({"checkpoint": str(self.checkpoint), **params})
+                self.assertIn(expected, str(ctx.exception))
+
+    def test_requires_a_resolved_run(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.cfg["logging_dir"] = empty
+            self.cfg["output_dir"] = empty
+            with self.assertRaises(ValueError) as ctx:
+                api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
+            self.assertIn("no run", str(ctx.exception))
 
 
 class DatasetTagIpcTest(unittest.TestCase):

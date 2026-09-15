@@ -57,6 +57,73 @@ object TomlDocumentPatcher {
         return if (hadTrailingNewline && !joined.endsWith(newline)) joined + newline else joined
     }
 
+    /**
+     * Replace the `[[section]]` array of tables with [blocks], one block per entry.
+     *
+     * Each block's values are written in the map's iteration order. An existing array is
+     * replaced as a whole (comments inside it are lost, as in [apply]); without one the
+     * blocks are appended to the parent table. [blocks] empty leaves the document alone.
+     */
+    fun replaceArrayOfTables(
+        original: String,
+        section: String,
+        blocks: List<Map<String, String>>,
+    ): String {
+        if (blocks.isEmpty()) return original
+
+        val newline = if (original.contains("\r\n")) "\r\n" else "\n"
+        val lines = original.split("\r\n", "\n").toMutableList()
+        val hadTrailingNewline = original.endsWith("\n") || original.endsWith("\r\n")
+        val header = "[[$section]]"
+        val parentHeader = "[${section.substringBeforeLast('.')}]"
+
+        val emitted = mutableListOf<String>()
+        for ((index, values) in blocks.withIndex()) {
+            if (index > 0) emitted.add("")
+            emitted.add(header)
+            for ((key, value) in values) emitted.add("$key = $value")
+        }
+
+        val start = lines.indexOfFirst { it.trim() == header }
+        val regionStart: Int
+        val regionEnd: Int
+        if (start >= 0) {
+            // The whole array, i.e. every repeated header and the keys under it.
+            var end = start + 1
+            while (end < lines.size) {
+                val trimmed = lines[end].trim()
+                if (trimmed == header || !trimmed.startsWith("[")) end++ else break
+            }
+            regionStart = start
+            regionEnd = end
+        } else {
+            val parent = lines.indexOfFirst { it.trim() == parentHeader }
+            require(parent >= 0) { "missing table $parentHeader" }
+            var end = parent + 1
+            while (end < lines.size && !lines[end].trim().startsWith("[")) end++
+            var from = end
+            while (from > parent + 1 && lines[from - 1].isBlank()) from--
+            regionStart = from
+            regionEnd = from
+        }
+
+        // The blank lines around the array are re-emitted, so drop them with it.
+        var from = regionStart
+        var to = regionEnd
+        while (to > from && lines[to - 1].isBlank()) to--
+        while (to < lines.size && lines[to].isBlank()) to++
+        lines.subList(from, to).clear()
+
+        val payload = mutableListOf<String>()
+        if (from > 0 && lines[from - 1].isNotBlank()) payload.add("")
+        payload.addAll(emitted)
+        if (lines.getOrNull(from) != null) payload.add("")
+        lines.addAll(from, payload)
+
+        val joined = lines.joinToString(newline)
+        return if (hadTrailingNewline && !joined.endsWith(newline)) joined + newline else joined
+    }
+
     fun quote(value: String): String {
         val escaped = buildString(value.length + 2) {
             for (ch in value) {

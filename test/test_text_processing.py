@@ -4,6 +4,13 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
+import sys
+from pathlib import Path
+
+# `python test/test_text_processing.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from text_processing import (
     encode_prompt_batch,
     tokenize_long_prompt,

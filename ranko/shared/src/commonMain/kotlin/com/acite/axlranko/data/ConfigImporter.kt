@@ -6,15 +6,16 @@ expect fun getAppExecutionPath(): String
 expect fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig?
 expect fun saveTrainerConfigPatched(
     tomlPath: Path,
-    sectionValues: Map<String, Map<String, String>>
+    sectionValues: Map<String, Map<String, String>>,
+    arrayBlocks: Map<String, List<Map<String, String>>> = emptyMap()
 ): Result<Unit>
 
 public object ConfigImporter {
     fun getConfig(): AxlTrainerConfig {
         val p = getConfigPath()
-            ?: error("Could not locate trainer/config.toml (searched upward from the executable and working directory)")
+            ?: error("Could not locate config.toml (searched upward from the executable and working directory)")
         return loadTrainerConfig(p.toPath())
-            ?: error("Failed to parse trainer/config.toml at $p")
+            ?: error("Failed to parse config.toml at $p")
     }
 
     fun getConfigPath(): String? = TrainerRepo.configToml()?.absolutePath
@@ -25,9 +26,12 @@ public object ConfigImporter {
         return path to config
     }
 
-    fun savePatched(sectionValues: Map<String, Map<String, String>>): Result<Unit> {
+    fun savePatched(
+        sectionValues: Map<String, Map<String, String>>,
+        arrayBlocks: Map<String, List<Map<String, String>>> = emptyMap()
+    ): Result<Unit> {
         val path = getConfigPath()
-            ?: return Result.failure(IllegalStateException("Could not locate trainer/config.toml"))
-        return saveTrainerConfigPatched(path.toPath(), sectionValues)
+            ?: return Result.failure(IllegalStateException("Could not locate config.toml"))
+        return saveTrainerConfigPatched(path.toPath(), sectionValues, arrayBlocks)
     }
 }

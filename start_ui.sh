@@ -21,6 +21,8 @@ WATCHED=(
     "$RANKO_DIR/gradle.properties"
     "$RANKO_DIR/gradle/libs.versions.toml"
     "$RANKO_DIR/gradle/wrapper/gradle-wrapper.properties"
+    "$RANKO_DIR/shared/build.gradle.kts"
+    "$RANKO_DIR/desktopApp/build.gradle.kts"
 )
 
 CONDA_SH="${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")/etc/profile.d/conda.sh}"

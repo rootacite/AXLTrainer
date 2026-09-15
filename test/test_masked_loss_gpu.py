@@ -6,6 +6,12 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageDraw
 
+import sys
+
+# `python test/test_masked_loss_gpu.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from trainer.config import TrainConfig
 from trainer.dataset import LoraImageDataset
 from trainer.family import resolve_family

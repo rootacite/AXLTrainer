@@ -16,7 +16,7 @@ command produces both sides of the table:
     python repro_real.py --list               # show the grid without running it
     python repro_real.py --only original --repeats 3
 
-Weights are referenced from `trainer/config.toml` (`pretrained_model_name_or_path`), never copied;
+Weights are referenced from `config.toml` (`pretrained_model_name_or_path`), never copied;
 override with `--model`. Everything else travels with this directory: the config and the six
 images+captions live in `resources/`, and the run is assembled in a throwaway directory
 (`/tmp/axl-fix2-repro` by default) so the repository and the datasets are never written to.
@@ -219,21 +219,21 @@ MECH_GRID: list[tuple[str, dict]] = [
 
 def find_repo_root(start: Path) -> Path:
     for candidate in (start, *start.parents):
-        if (candidate / "api.py").is_file() and (candidate / "trainer" / "config.toml").is_file():
+        if (candidate / "api.py").is_file() and (candidate / "config.toml").is_file():
             return candidate
-    raise SystemExit(f"could not find the repository root above {start} (needs api.py, trainer/)")
+    raise SystemExit(f"could not find the repository root above {start} (needs api.py, config.toml)")
 
 
 REPO_ROOT = find_repo_root(HERE)
 
 
 def model_path(override: str | None) -> str:
-    """The pipeline path the trainer would use: `trainer/config.toml` unless overridden."""
+    """The pipeline path the trainer would use: `config.toml` unless overridden."""
     if override:
         return override
     import tomllib
 
-    with open(REPO_ROOT / "trainer" / "config.toml", "rb") as handle:
+    with open(REPO_ROOT / "config.toml", "rb") as handle:
         return str(tomllib.load(handle)["environment"]["pretrained_model_name_or_path"])
 
 
@@ -472,7 +472,7 @@ def run_variant(label: str, overrides: dict, *, args: argparse.Namespace, work: 
     # The trainer only knows whole epochs, so a row always runs at least one epoch.
     steps = epochs * steps_per_epoch
     output_name = "repro"
-    write_config(mirror / "trainer" / "config.toml", sections, {
+    write_config(mirror / "config.toml", sections, {
         "data_dir": str(data_dir), "output_dir": str(output_dir),
         "logging_dir": str(logging_dir), "output_name": output_name,
         "model": args.model_path, "seed": int(overrides.get("seed", 1145141920)),
@@ -484,14 +484,14 @@ def run_variant(label: str, overrides: dict, *, args: argparse.Namespace, work: 
 
     if args.dry_run:
         print(f"      {label}: staged {images} images, wrote "
-              f"{mirror / 'trainer' / 'config.toml'} (dry run)", flush=True)
+              f"{mirror / 'config.toml'} (dry run)", flush=True)
         return {"label": label, "seed": int(overrides.get("seed", 1145141920)),
                 "batch_size": batch_size, "network_dim": sections["network"]["network_dim"],
                 "steps_requested": steps, "last_step": None, "verdict": "dry-run",
                 "exit_code": None, "seconds": 0.0, "dataset": source.name, "images": images,
                 "no_hip_memory_caching": bool(overrides.get("no_hip_memory_caching")),
                 "save_every_n_steps": overrides.get("save_every_n_steps", 30),
-                "config": str(mirror / "trainer" / "config.toml")}
+                "config": str(mirror / "config.toml")}
 
     log_path = run_root / "train.out"
     started = time.time()
@@ -638,7 +638,7 @@ def main() -> int:
     model = model_path(args.model)
     if not Path(model).is_dir():
         print(f"model path not found: {model}\n"
-              f"point --model at a diffusers SDXL directory (trainer/config.toml holds the "
+              f"point --model at a diffusers SDXL directory (config.toml holds the "
               f"author's path)", file=sys.stderr)
         return 2
     if os.environ.get("CONDA_DEFAULT_ENV") != "axl" and not args.quiet:

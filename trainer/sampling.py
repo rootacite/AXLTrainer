@@ -18,12 +18,12 @@ if base_dir not in sys.path:
 from text_processing import encode_prompt_batch
 
 try:
-    from config import TrainConfig
+    from config import TrainConfig, resolve_sample_sets
     from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
 except ImportError:
-    from trainer.config import TrainConfig
+    from trainer.config import TrainConfig, resolve_sample_sets
     from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
@@ -101,6 +101,29 @@ def _restore_train_modules(
         _reify_autograd_tensors(module)
 
 
+def _prepare_encode_device(
+    te1: torch.nn.Module,
+    te2: torch.nn.Module,
+    device: torch.device,
+) -> None:
+    """Text encoders on the train device for a prompt pass (the denoise step puts them back off)."""
+    _move_module_to_device(te1, device)
+    _move_module_to_device(te2, device)
+    flush_memory(device)
+
+
+def _configure_scheduler(pipe, steps: int, device: torch.device) -> None:
+    """Linspace sigma schedule for one set's step count (sets may differ)."""
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+        pipe.scheduler.config,
+        timestep_spacing="linspace",
+    )
+    sigmas = np.linspace(pipe.scheduler.config.num_train_timesteps - 1, 0, steps)
+    sigmas = np.append(sigmas, 0.0).astype(np.float32)
+    pipe.scheduler.sigmas = torch.from_numpy(sigmas).to(device)
+    pipe.scheduler.num_inference_steps = steps
+
+
 @torch.no_grad()
 def generate_sample_image(
     *,
@@ -116,7 +139,12 @@ def generate_sample_image(
     output_dir_base: Path,
     swap_ctx: SwapContext | None = None,
 ) -> None:
-    """Generate and save sample images with aggressive module offloading."""
+    """Generate and save sample images with aggressive module offloading.
+
+    One image per repeat for every `[[validation.samples]]` set. The file name carries
+    the set index (`{output_name}_{step:06d}_p{set}_{repeat}.png`) and `control` reports a
+    global image counter plus the set this pass is on.
+    """
     if not accelerator.is_main_process:
         return
     
@@ -136,133 +164,139 @@ def generate_sample_image(
     pipe.text_encoder = trained_te1
     pipe.text_encoder_2 = trained_te2
 
-    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
-        pipe.scheduler.config,
-        timestep_spacing="linspace",
-    )
-
-    num_inference_steps = cfg.sample_steps
-    sigmas = np.linspace(pipe.scheduler.config.num_train_timesteps - 1, 0, num_inference_steps)
-    sigmas = np.append(sigmas, 0.0).astype(np.float32)
-    pipe.scheduler.sigmas = torch.from_numpy(sigmas).to(device)
-    pipe.scheduler.num_inference_steps = num_inference_steps
-
-    prompt_embeds, pooled_prompt_embeds, npu = encode_prompt_batch(
-        prompts=[cfg.sample_prompts],
-        tokenizer_1=pipe.tokenizer,
-        tokenizer_2=pipe.tokenizer_2,
-        text_encoder_1=pipe.text_encoder,
-        text_encoder_2=pipe.text_encoder_2,
-        clip_skip=cfg.clip_skip,
-        max_token_length=cfg.max_token_length,
-        device=device,
-        dtype=dtype,
-    )
-    negative_prompt_embeds, negative_pooled_prompt_embeds, _ = encode_prompt_batch(
-        prompts=[cfg.sample_negative],
-        tokenizer_1=pipe.tokenizer,
-        tokenizer_2=pipe.tokenizer_2,
-        text_encoder_1=pipe.text_encoder,
-        text_encoder_2=pipe.text_encoder_2,
-        clip_skip=cfg.clip_skip,
-        max_token_length=cfg.max_token_length,
-        device=device,
-        dtype=dtype,
-        target_num_chunks=npu
-    )
-
-    _offload_text_encoders(trained_te1, trained_te2)
-    flush_memory(device)
+    sets = resolve_sample_sets(cfg)
+    total_images = sum(sample_set.repeat for sample_set in sets)
 
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     vae_dtype = torch.bfloat16
-    repeats = max(1, cfg.sample_repeat)
+    completed = 0
 
     try:
         control.set_sampling(
             active=True,
             repeat=0,
-            repeats=repeats,
+            repeats=total_images,
             denoise_step=0,
-            denoise_steps=cfg.sample_steps,
+            denoise_steps=sets[0].steps,
             global_step=global_step,
+            prompt_set=1,
+            prompt_sets=len(sets),
         )
-        repeat_idx = 0
-        while repeat_idx < repeats:
-            if not at_safe_point("sampling", swap_ctx):
-                return
-
-            _prepare_denoise_device(trained_unet, device, trained_te1, trained_te2)
-
-            interrupted = {"value": False}
-
-            def _on_step_end(pipeline, step_index, _timestep, callback_kwargs):
-                control.set_sampling(
-                    active=True,
-                    repeat=repeat_idx,
-                    repeats=repeats,
-                    denoise_step=int(step_index) + 1,
-                    denoise_steps=cfg.sample_steps,
-                    global_step=global_step,
-                )
-                pending = control.peek_command()
-                if pending in ("pause", "stop"):
-                    pipeline._interrupt = True
-                    interrupted["value"] = True
-                return callback_kwargs
-
-            generator = torch.Generator(device="cpu")
-            if cfg.sample_seed == 0:
-                current_seed = int(torch.randint(0, 2**32, (1,)).item())
-                generator.manual_seed(current_seed)
-                print(f"[Sample {repeat_idx}] Using random seed: {current_seed}")
-            else:
-                current_seed = cfg.sample_seed + repeat_idx
-                generator.manual_seed(current_seed)
-
-            latent_result = pipe(
-                prompt=None,
-                negative_prompt=None,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                pooled_prompt_embeds=pooled_prompt_embeds,
-                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                width=cfg.sample_width,
-                height=cfg.sample_height,
-                num_inference_steps=cfg.sample_steps,
-                guidance_scale=cfg.guidance_scale,
-                generator=generator,
-                output_type="latent",
-                callback_on_step_end=_on_step_end,
+        for set_index, sample_set in enumerate(sets, start=1):
+            _configure_scheduler(pipe, sample_set.steps, device)
+            # Every set encodes on its own, so the chunk padding of one prompt never depends
+            # on how long another set's prompt is.
+            _prepare_encode_device(trained_te1, trained_te2, device)
+            set_prompt_embeds, set_pooled_prompt_embeds, npu = encode_prompt_batch(
+                prompts=[sample_set.prompt],
+                tokenizer_1=pipe.tokenizer,
+                tokenizer_2=pipe.tokenizer_2,
+                text_encoder_1=pipe.text_encoder,
+                text_encoder_2=pipe.text_encoder_2,
+                clip_skip=cfg.clip_skip,
+                max_token_length=cfg.max_token_length,
+                device=device,
+                dtype=dtype,
+            )
+            set_negative_embeds, set_negative_pooled_embeds, _ = encode_prompt_batch(
+                prompts=[sample_set.negative],
+                tokenizer_1=pipe.tokenizer,
+                tokenizer_2=pipe.tokenizer_2,
+                text_encoder_1=pipe.text_encoder,
+                text_encoder_2=pipe.text_encoder_2,
+                clip_skip=cfg.clip_skip,
+                max_token_length=cfg.max_token_length,
+                device=device,
+                dtype=dtype,
+                target_num_chunks=npu
+            )
+            _offload_text_encoders(trained_te1, trained_te2)
+            flush_memory(device)
+            print(
+                f"[Sample set {set_index}/{len(sets)}] {sample_set.name}: "
+                f"{sample_set.repeat} image(s), {sample_set.width}x{sample_set.height}, "
+                f"{sample_set.steps} steps, cfg {sample_set.guidance_scale}, seed {sample_set.seed}"
             )
 
-            if interrupted["value"] or getattr(pipe, "_interrupt", False):
-                pipe._interrupt = False
+            repeat_idx = 0
+            while repeat_idx < sample_set.repeat:
                 if not at_safe_point("sampling", swap_ctx):
                     return
-                continue
 
-            latents = latent_result.images.to(device=device, dtype=vae_dtype)
-            latents = latents / pipe.vae.config.scaling_factor
+                _prepare_denoise_device(trained_unet, device, trained_te1, trained_te2)
 
-            _prepare_decode_devices(trained_unet, pipe.vae, device)
-            if hasattr(pipe.vae.config, "force_upcast"):
-                pipe.vae.config.force_upcast = False
-            pipe.vae.enable_slicing()
-            pipe.vae.enable_tiling()
+                interrupted = {"value": False}
 
-            decoded = pipe.vae.decode(latents, return_dict=False)[0]
-            image = (decoded / 2 + 0.5).clamp(0, 1)
-            image = image[0].permute(1, 2, 0).detach().float().cpu().numpy()
-            image = (image * 255).round().astype("uint8")
+                def _on_step_end(pipeline, step_index, _timestep, callback_kwargs):
+                    control.set_sampling(
+                        active=True,
+                        repeat=completed,
+                        repeats=total_images,
+                        denoise_step=int(step_index) + 1,
+                        denoise_steps=sample_set.steps,
+                        global_step=global_step,
+                        prompt_set=set_index,
+                        prompt_sets=len(sets),
+                    )
+                    pending = control.peek_command()
+                    if pending in ("pause", "stop"):
+                        pipeline._interrupt = True
+                        interrupted["value"] = True
+                    return callback_kwargs
 
-            out_filename = f"{cfg.output_name}_{global_step:06d}_{repeat_idx}.png"
-            Image.fromarray(image).save(sample_dir / out_filename)
+                generator = torch.Generator(device="cpu")
+                if sample_set.seed == 0:
+                    current_seed = int(torch.randint(0, 2**32, (1,)).item())
+                    generator.manual_seed(current_seed)
+                    print(f"[Sample {set_index}.{repeat_idx}] Using random seed: {current_seed}")
+                else:
+                    current_seed = sample_set.seed + repeat_idx
+                    generator.manual_seed(current_seed)
 
-            _offload_module(pipe.vae)
-            repeat_idx += 1
+                latent_result = pipe(
+                    prompt=None,
+                    negative_prompt=None,
+                    prompt_embeds=set_prompt_embeds,
+                    negative_prompt_embeds=set_negative_embeds,
+                    pooled_prompt_embeds=set_pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=set_negative_pooled_embeds,
+                    width=sample_set.width,
+                    height=sample_set.height,
+                    num_inference_steps=sample_set.steps,
+                    guidance_scale=sample_set.guidance_scale,
+                    generator=generator,
+                    output_type="latent",
+                    callback_on_step_end=_on_step_end,
+                )
+
+                if interrupted["value"] or getattr(pipe, "_interrupt", False):
+                    pipe._interrupt = False
+                    if not at_safe_point("sampling", swap_ctx):
+                        return
+                    continue
+
+                latents = latent_result.images.to(device=device, dtype=vae_dtype)
+                latents = latents / pipe.vae.config.scaling_factor
+
+                _prepare_decode_devices(trained_unet, pipe.vae, device)
+                if hasattr(pipe.vae.config, "force_upcast"):
+                    pipe.vae.config.force_upcast = False
+                pipe.vae.enable_slicing()
+                pipe.vae.enable_tiling()
+
+                decoded = pipe.vae.decode(latents, return_dict=False)[0]
+                image = (decoded / 2 + 0.5).clamp(0, 1)
+                image = image[0].permute(1, 2, 0).detach().float().cpu().numpy()
+                image = (image * 255).round().astype("uint8")
+
+                out_filename = f"{cfg.output_name}_{global_step:06d}_p{set_index - 1}_{repeat_idx}.png"
+                Image.fromarray(image).save(sample_dir / out_filename)
+
+                _offload_module(pipe.vae)
+                repeat_idx += 1
+                completed += 1
 
     finally:
         _restore_train_modules(
@@ -290,10 +324,12 @@ def generate_sample_image(
 
         control.set_sampling(
             active=False,
-            repeat=repeats,
-            repeats=repeats,
+            repeat=completed,
+            repeats=total_images,
             denoise_step=0,
-            denoise_steps=cfg.sample_steps,
+            denoise_steps=sets[0].steps,
             global_step=global_step,
+            prompt_set=len(sets),
+            prompt_sets=len(sets),
         )
         flush_memory(device)

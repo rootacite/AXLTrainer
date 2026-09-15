@@ -21,21 +21,29 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -183,6 +191,15 @@ data class ChartSeries(
     val domainMax: Float? = null,
 )
 
+/**
+ * What a Ctrl+click resolved to: the step under the pointer and the checkpoint step the pick matched,
+ * both drawn on the chart so the snapping is visible.
+ */
+data class ChartPickMarkers(
+    val clickedStep: Float,
+    val matchedStep: Int?,
+)
+
 @Composable
 fun ChartCard(
     title: String,
@@ -193,6 +210,13 @@ fun ChartCard(
     outlierClip: Float = 0.15f,
     strokeWidth: Float = 3f,
     chartHeight: Dp = 220.dp,
+    /**
+     * Receives the step under the picking click and where that click landed (window-root pixels).
+     * Fired by `Ctrl`+left click and by a left double click; null keeps the chart a pure display.
+     */
+    onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
+    showHoverStep: Boolean = false,
+    pickMarkers: ChartPickMarkers? = null,
 ) {
     MultiSeriesChartCard(
         title = title,
@@ -203,6 +227,9 @@ fun ChartCard(
         strokeWidth = strokeWidth,
         chartHeight = chartHeight,
         showLegend = false,
+        onPickStep = onPickStep,
+        showHoverStep = showHoverStep,
+        pickMarkers = pickMarkers,
     )
 }
 
@@ -216,6 +243,9 @@ fun MultiSeriesChartCard(
     strokeWidth: Float = 3f,
     chartHeight: Dp = 220.dp,
     showLegend: Boolean = true,
+    onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
+    showHoverStep: Boolean = false,
+    pickMarkers: ChartPickMarkers? = null,
 ) {
     val hasData = series.any { it.points.isNotEmpty() }
     val colors = rankoColors
@@ -277,6 +307,9 @@ fun MultiSeriesChartCard(
                     outlierClip = outlierClip,
                     strokeWidth = strokeWidth,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
+                    onPickStep = onPickStep,
+                    showHoverStep = showHoverStep,
+                    pickMarkers = pickMarkers,
                 )
             } else {
                 Box(
@@ -329,6 +362,9 @@ private fun InteractiveLineChart(
     outlierClip: Float,
     strokeWidth: Float,
     modifier: Modifier = Modifier,
+    onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
+    showHoverStep: Boolean = false,
+    pickMarkers: ChartPickMarkers? = null,
 ) {
     val prepared = remember(series, smoothing) {
         series.mapNotNull { item ->
@@ -371,7 +407,15 @@ private fun InteractiveLineChart(
         }
     }
 
-    var viewport by remember(initialViewport) { mutableStateOf(initialViewport) }
+    // The pick handler outlives recompositions, so it reads the viewport through the state
+    // object instead of capturing the value it was composed with.
+    val viewportState = remember(initialViewport) { mutableStateOf(initialViewport) }
+    var viewport by viewportState
+    val canvasOrigin = remember { mutableStateOf(Offset.Zero) }
+    val pickHandler = rememberUpdatedState(onPickStep)
+    // Pointer x while the mouse is over the plot. Read from the draw phase, so moving the mouse
+    // repaints the canvas without recomposing the card.
+    val hoverX = remember { mutableStateOf<Float?>(null) }
 
     val avgStepGap = remember(allRaw) {
         val xs = allRaw.map { it.step }.distinct().sorted()
@@ -419,8 +463,8 @@ private fun InteractiveLineChart(
         .pointerInput(fullBounds) {
             detectDragGestures(
                 onDrag = { change, dragAmount ->
-                    val plotW = (size.width.toFloat() - 52f).coerceAtLeast(1f)
-                    val plotH = (size.height.toFloat() - 28f).coerceAtLeast(1f)
+                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                    val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
                     val dx = dragAmount.x
                     val dy = dragAmount.y
                     if (!dx.isFinite() || !dy.isFinite()) return@detectDragGestures
@@ -466,8 +510,8 @@ private fun InteractiveLineChart(
                     }
                     if (amount == 0f || !amount.isFinite()) continue
 
-                    val plotW = (size.width.toFloat() - 52f).coerceAtLeast(1f)
-                    val plotH = (size.height.toFloat() - 28f).coerceAtLeast(1f)
+                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                    val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
                     val factor = WHEEL_ZOOM_STEP.pow(-amount * WHEEL_ZOOM_INTENSITY)
                     val vp = viewport
                     val newXRange = if (zoomX) {
@@ -481,7 +525,7 @@ private fun InteractiveLineChart(
                         vp.yRange
                     }
 
-                    val xFrac = ((change.position.x - 52f) / plotW).coerceIn(0f, 1f)
+                    val xFrac = ((change.position.x - PLOT_LEFT_PADDING) / plotW).coerceIn(0f, 1f)
                     val yFrac = (change.position.y / plotH).coerceIn(0f, 1f)
                     val dataX = vp.xMin + xFrac * vp.xRange
                     val dataY = vp.yMax - yFrac * vp.yRange
@@ -498,13 +542,101 @@ private fun InteractiveLineChart(
                 }
             }
         }
+        .pointerInput(fullBounds) {
+            if (pickHandler.value == null) return@pointerInput
+            awaitPointerEventScope {
+                var trackedId: PointerId? = null
+                var downPosition = Offset.Zero
+                var travel = 0f
+                var ctrlAtPress = false
+                // Uptime of the last plain click. A second one inside the double-click window opens
+                // the panel as well; only the interval counts, never the distance between the two.
+                var lastPlainClickMillis = 0L
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull() ?: continue
 
-    Canvas(modifier = gestureModifier) {
+                    if (change.id == trackedId) {
+                        travel = maxOf(travel, (change.position - downPosition).getDistance())
+                    }
+
+                    when {
+                        event.type == PointerEventType.Press &&
+                            change.type == PointerType.Mouse &&
+                            event.buttons.isPrimaryPressed -> {
+                            trackedId = change.id
+                            downPosition = change.position
+                            travel = 0f
+                            ctrlAtPress = event.keyboardModifiers.isCtrlPressed
+                        }
+
+                        event.type == PointerEventType.Press -> trackedId = null
+
+                        event.type == PointerEventType.Release && change.id == trackedId -> {
+                            trackedId = null
+                            if (travel > CLICK_MAX_TRAVEL) continue
+
+                            val clickedAt = change.uptimeMillis
+                            val doubleClick = completesDoubleClick(lastPlainClickMillis, clickedAt)
+                            // A Ctrl+click picks at once and never pairs with a later plain click.
+                            lastPlainClickMillis = if (ctrlAtPress || doubleClick) 0L else clickedAt
+                            if (!ctrlAtPress && !doubleClick) continue
+
+                            val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                            val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
+                            if (downPosition.y > plotH) continue
+                            val step = stepAtPlotX(
+                                downPosition.x,
+                                plotW,
+                                viewportState.value.xMin,
+                                viewportState.value.xRange,
+                            ) ?: continue
+                            // The anchor is where the picking click landed: for a double click that is
+                            // the second click, wherever the first one was.
+                            pickHandler.value?.invoke(step, canvasOrigin.value + downPosition)
+                        }
+                    }
+                }
+            }
+        }
+
+    Canvas(
+        modifier = gestureModifier
+            .onGloballyPositioned {
+                canvasOrigin.value = it.boundsInRoot().topLeft
+            }
+            .pointerInput(showHoverStep) {
+                if (!showHoverStep) return@pointerInput
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: continue
+                        if (change.type != PointerType.Mouse) continue
+                        hoverX.value = when (event.type) {
+                            PointerEventType.Enter,
+                            PointerEventType.Move,
+                            -> {
+                                val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
+                                if (change.position.y > plotH || change.position.x < PLOT_LEFT_PADDING) {
+                                    null
+                                } else {
+                                    change.position.x
+                                }
+                            }
+
+                            PointerEventType.Exit -> null
+
+                            else -> continue
+                        }
+                    }
+                }
+            },
+    ) {
         val vp = viewport
         val w = size.width
         val h = size.height
-        val leftPad = 52f
-        val bottomPad = 28f
+        val leftPad = PLOT_LEFT_PADDING
+        val bottomPad = PLOT_BOTTOM_PADDING
         val plotW = w - leftPad
         val plotH = h - bottomPad
 
@@ -545,8 +677,113 @@ private fun InteractiveLineChart(
                     drawCircle(Color.White, radius = strokeWidth * 0.8f, center = pt)
                 }
             }
+
+            // The Ctrl+click that the panel is showing: the clicked step stays subtle, the step the
+            // pick actually matched gets the loud marker, so the snapping is visible.
+            pickMarkers?.let { markers ->
+                val clickedX = stepToScreenX(markers.clickedStep, vp, leftPad, plotW)
+                if (clickedX != null) {
+                    drawLine(
+                        colors.textDim.copy(alpha = 0.75f),
+                        Offset(clickedX, 0f),
+                        Offset(clickedX, plotH),
+                        strokeWidth = 1.2f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f)),
+                    )
+                }
+                val matched = markers.matchedStep
+                val matchedX = matched?.let { stepToScreenX(it.toFloat(), vp, leftPad, plotW) }
+                if (matched != null && matchedX != null) {
+                    val accent = colors.accentPink
+                    drawLine(accent, Offset(matchedX, 0f), Offset(matchedX, plotH), strokeWidth = 2.5f)
+                    drawCircle(accent, radius = 4.5f, center = Offset(matchedX, 5f))
+                    // Small flag pointing down at the axis, inside the plot rect so it is not clipped.
+                    drawPath(
+                        Path().apply {
+                            moveTo(matchedX, plotH)
+                            lineTo(matchedX - 6f, plotH - 9f)
+                            lineTo(matchedX + 6f, plotH - 9f)
+                            close()
+                        },
+                        accent,
+                    )
+                    drawMarkerLabel(
+                        text = "ckpt $matched",
+                        centerX = matchedX,
+                        topY = 3f,
+                        plotLeft = leftPad,
+                        plotRight = w,
+                        textMeasurer = textMeasurer,
+                        style = labelStyle.copy(color = Color.White, fontWeight = FontWeight.Bold),
+                        background = accent.copy(alpha = 0.92f),
+                    )
+                }
+            }
+
+            // Always-on readout: the exact step under the pointer.
+            hoverX.value?.let { x ->
+                val step = stepAtPlotX(x, plotW, vp.xMin, vp.xRange)
+                val anchor = step?.let { nearestPointByStep(prepared.first().raw, it) }
+                if (anchor != null) {
+                    val lineX = stepToScreenX(anchor.step, vp, leftPad, plotW)
+                    if (lineX != null) {
+                        drawLine(
+                            colors.text.copy(alpha = 0.55f),
+                            Offset(lineX, 0f),
+                            Offset(lineX, plotH),
+                            strokeWidth = 1.2f,
+                        )
+                        drawCircle(colors.text, radius = 3f, center = Offset(lineX, plotH))
+                        drawMarkerLabel(
+                            text = "step ${anchor.step.roundToInt()}",
+                            centerX = lineX,
+                            topY = plotH - 20f,
+                            plotLeft = leftPad,
+                            plotRight = w,
+                            textMeasurer = textMeasurer,
+                            style = labelStyle.copy(color = colors.text),
+                            background = colors.bgCard.copy(alpha = 0.88f),
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+/** Screen x of a data step, or null when it is outside the visible viewport. */
+private fun stepToScreenX(step: Float, vp: Viewport, leftPad: Float, plotW: Float): Float? {
+    if (step < vp.xMin - 1e-3f || step > vp.xMax + 1e-3f) return null
+    return leftPad + ((step - vp.xMin) / vp.xRange) * plotW
+}
+
+/** Closest logged step, so the readout always names a step that was actually logged. */
+private fun nearestPointByStep(points: List<ChartPoint>, step: Float): ChartPoint? =
+    points.minByOrNull { abs(it.step - step) }
+
+private fun DrawScope.drawMarkerLabel(
+    text: String,
+    centerX: Float,
+    topY: Float,
+    plotLeft: Float,
+    plotRight: Float,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+    background: Color,
+) {
+    val layout = textMeasurer.measure(text, style)
+    val padX = 5f
+    val padY = 3f
+    val boxW = layout.size.width + padX * 2
+    val boxH = layout.size.height + padY * 2
+    val boxX = (centerX - boxW / 2f).coerceIn(plotLeft + 2f, (plotRight - boxW - 2f).coerceAtLeast(plotLeft + 2f))
+    drawRoundRect(
+        color = background,
+        topLeft = Offset(boxX, topY),
+        size = Size(boxW, boxH),
+        cornerRadius = CornerRadius(6f, 6f),
+    )
+    drawText(layout, topLeft = Offset(boxX + padX, topY + padY))
 }
 
 private fun DrawScope.drawGridAndLabels(

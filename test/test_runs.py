@@ -4,6 +4,12 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import sys
+
+# `python test/test_runs.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from trainer.runs import (
     create_run_dirs,
     find_latest_run,

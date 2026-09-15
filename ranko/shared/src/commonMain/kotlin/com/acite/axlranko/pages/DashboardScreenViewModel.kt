@@ -2,13 +2,33 @@ package com.acite.axlranko.pages
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.DpSize
 import com.acite.axlranko.data.TrainerIpcClient
+import com.acite.axlranko.model.ChartPickState
+import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.DashboardUiState
+import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.HardwareHistory
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.model.TrainStatus
+import com.acite.axlranko.pages.components.JOB_DONE
+import com.acite.axlranko.pages.components.JOB_ERROR
+import com.acite.axlranko.pages.components.JOB_RUNNING
+import com.acite.axlranko.pages.components.checkpointsForRun
+import com.acite.axlranko.pages.components.generateFormDefaults
+import com.acite.axlranko.pages.components.generateFormError
+import com.acite.axlranko.pages.components.generatedSampleItem
+import com.acite.axlranko.pages.components.nearestCheckpoint
+import com.acite.axlranko.util.checkpointSaveName
+import com.acite.axlranko.util.copyFileWithProgress
+import com.acite.axlranko.util.deleteEmptyPlaceholder
+import com.acite.axlranko.util.ensureSafetensorsExtension
+import com.acite.axlranko.util.formatBytes
+import com.acite.axlranko.util.saveFileDialog
+import java.io.File
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -39,6 +59,15 @@ class DashboardScreenViewModel(
     private var hardwareJob: Job? = null
     private var hardwareStep = 0
     private var entered = false
+
+    // Reading every checkpoint's safetensors header costs ~2 s on a finished run, so the list is
+    // scanned on demand and reused while a fresh scan runs in the background.
+    private var checkpointCache: List<CheckpointItem> = emptyList()
+    private var checkpointScanInFlight = false
+
+    /** Jobs started in this session, which the panel highlights as new. */
+    private val sessionJobIds = mutableSetOf<String>()
+    private var generatedPollJob: Job? = null
 
     fun onEnter() {
         if (!entered) {
@@ -74,8 +103,7 @@ class DashboardScreenViewModel(
     }
 
     fun openPreview(sample: SampleItem) {
-        val list = flattenSamples(_uiState.value.samples)
-        val index = list.indexOfFirst { it.path == sample.path }
+        val index = currentPreviewList().indexOfFirst { it.path == sample.path }
         if (index >= 0) {
             _uiState.update { it.copy(previewIndex = index) }
         }
@@ -83,6 +111,263 @@ class DashboardScreenViewModel(
 
     fun closePreview() {
         _uiState.update { it.copy(previewIndex = null) }
+    }
+
+    /**
+     * Ctrl+click on the Avg Loss chart: resolve the checkpoint nearest to [step] from whatever is
+     * already cached, then rescan in the background and re-resolve in place.
+     */
+    fun pickCheckpointAt(step: Float, anchor: Offset) {
+        val previous = _uiState.value.chartPick
+        val defaults = generateFormDefaults(_uiState.value.config)
+        _uiState.update {
+            it.copy(
+                chartPick = ChartPickState(
+                    step = step,
+                    anchor = anchor,
+                    checkpoint = nearestCheckpoint(checkpointsForRun(checkpointCache, it.runId), step),
+                    isLoading = true,
+                    // A prompt typed for an earlier pick survives; an untouched form is re-seeded
+                    // from config.toml's sample settings.
+                    prompt = previous?.prompt?.takeIf { text -> text.isNotBlank() } ?: defaults.prompt,
+                    negativePrompt = previous?.negativePrompt?.takeIf { text -> text.isNotBlank() }
+                        ?: defaults.negativePrompt,
+                    cfg = previous?.cfg?.takeIf { text -> text.isNotBlank() } ?: defaults.cfg,
+                    steps = previous?.steps?.takeIf { text -> text.isNotBlank() } ?: defaults.steps,
+                    seed = previous?.seed?.takeIf { text -> text.isNotBlank() } ?: defaults.seed,
+                    isFormOpen = previous?.isFormOpen ?: false,
+                ),
+            )
+        }
+        rescanCheckpoints()
+        loadGeneratedSamples()
+    }
+
+    private fun rescanCheckpoints() {
+        if (checkpointScanInFlight) return
+        checkpointScanInFlight = true
+        viewModelScope.launch {
+            try {
+                val response = withContext(Dispatchers.IO) { ipc.listCheckpoints() }
+                checkpointCache = response.checkpoints
+                _uiState.update { state ->
+                    val pick = state.chartPick ?: return@update state
+                    state.copy(
+                        chartPick = pick.copy(
+                            checkpoint = nearestCheckpoint(
+                                checkpointsForRun(checkpointCache, state.runId),
+                                pick.step,
+                            ),
+                            isLoading = false,
+                            error = null,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { state ->
+                    val pick = state.chartPick ?: return@update state
+                    state.copy(
+                        chartPick = pick.copy(isLoading = false, error = e.message ?: e.toString()),
+                    )
+                }
+            } finally {
+                checkpointScanInFlight = false
+            }
+        }
+    }
+
+    fun dismissChartPick() {
+        generatedPollJob?.cancel()
+        _uiState.update { it.copy(chartPick = null) }
+    }
+
+    /** Remembers a dragged panel size for the rest of the session; the UI clamps it to the window. */
+    fun setChartPanelSize(size: DpSize) {
+        _uiState.update { it.copy(chartPanelSize = size) }
+    }
+
+    /** Edits the panel's generate form; a change clears the message of the previous attempt. */
+    fun updateChartPickForm(transform: ChartPickState.() -> ChartPickState) {
+        _uiState.update { state ->
+            val pick = state.chartPick ?: return@update state
+            state.copy(chartPick = pick.transform().copy(formError = null))
+        }
+    }
+
+    fun toggleGenerateForm() {
+        updateChartPickForm { copy(isFormOpen = !isFormOpen) }
+    }
+
+    /** Loads the run's generated samples from disk; a job still running keeps the poll loop alive. */
+    fun loadGeneratedSamples() {
+        val runId = _uiState.value.runId
+        if (runId.isNullOrBlank()) return
+        viewModelScope.launch {
+            val jobs = fetchGeneratedJobs(runId)
+            if (jobs.isNotEmpty()) {
+                _uiState.update { state ->
+                    val pick = state.chartPick ?: return@update state
+                    state.copy(chartPick = pick.copy(generatedJobs = jobs))
+                }
+            }
+            if (jobs.any { it.state == JOB_RUNNING }) startGeneratedPolling()
+        }
+    }
+
+    /**
+     * "Generate a sample with this checkpoint": validate the form, hand it to api.py (which spawns
+     * the generator detached) and follow the job until it finishes.
+     *
+     * [rowStep] is the sample row the panel is showing — the checkpoint's own step, or the nearest
+     * sampled step when that one has no images — so the new image lands in the row the user sees.
+     */
+    fun generateSample(rowStep: Int? = null) {
+        val pick = _uiState.value.chartPick ?: return
+        val checkpoint = pick.checkpoint ?: return
+        if (pick.isGenerating) return
+
+        val error = generateFormError(pick.prompt, pick.cfg, pick.steps, pick.seed)
+        if (error != null) {
+            updateChartPickForm { copy(formError = error) }
+            return
+        }
+
+        updateChartPickForm { copy(isGenerating = true, generatedError = null) }
+        viewModelScope.launch {
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    ipc.generateSample(
+                        checkpoint = checkpoint.path,
+                        prompt = pick.prompt,
+                        negativePrompt = pick.negativePrompt,
+                        cfg = pick.cfg.trim().toFloat(),
+                        steps = pick.steps.trim().toInt(),
+                        seed = pick.seed.trim().toLong(),
+                        step = rowStep ?: checkpoint.step,
+                        runId = _uiState.value.runId,
+                    )
+                }
+                sessionJobIds += response.job.id
+                _uiState.update { state ->
+                    val current = state.chartPick ?: return@update state
+                    state.copy(
+                        sessionJobIds = sessionJobIds.toSet(),
+                        chartPick = current.copy(
+                            isGenerating = false,
+                            generatedJobs = (listOf(response.job) + current.generatedJobs)
+                                .distinctBy { it.id },
+                        ),
+                    )
+                }
+                startGeneratedPolling()
+            } catch (e: Exception) {
+                _uiState.update { state ->
+                    val current = state.chartPick ?: return@update state
+                    state.copy(
+                        chartPick = current.copy(
+                            isGenerating = false,
+                            generatedError = e.message ?: e.toString(),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchGeneratedJobs(runId: String): List<GeneratedSampleJob> =
+        try {
+            withContext(Dispatchers.IO) { ipc.listGeneratedSamples(runId = runId) }.jobs
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+    /** 1.5 s poll while a generator works: it runs in its own process and reports through its job file. */
+    private fun startGeneratedPolling() {
+        if (generatedPollJob?.isActive == true) return
+        generatedPollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(GENERATED_POLL_MILLIS.milliseconds)
+                val runId = _uiState.value.runId ?: return@launch
+                val jobs = fetchGeneratedJobs(runId)
+                if (jobs.isEmpty()) return@launch
+                val failed = jobs.firstOrNull { it.state == JOB_ERROR }?.error
+                _uiState.update { state ->
+                    val pick = state.chartPick ?: return@update state
+                    state.copy(
+                        chartPick = pick.copy(
+                            generatedJobs = jobs,
+                            generatedError = failed ?: pick.generatedError,
+                        ),
+                    )
+                }
+                if (jobs.none { it.state == JOB_RUNNING }) return@launch
+            }
+        }
+    }
+
+
+    /**
+     * "Save As" for the picked checkpoint: pick a destination in the OS save dialog, then copy the
+     * LoRA off the run directory. The copy is off-thread and reports progress.
+     */
+    fun saveCheckpointAs() {
+        val pick = _uiState.value.chartPick ?: return
+        val checkpoint = pick.checkpoint ?: return
+        if (pick.isSaving) return
+
+        val source = File(checkpoint.path)
+        if (!source.isFile) {
+            _uiState.update { state ->
+                state.copy(chartPick = state.chartPick?.copy(saveError = "checkpoint file not found: ${checkpoint.path}"))
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val chosen = saveFileDialog(checkpointSaveName(checkpoint), source.parent.orEmpty()) ?: return@launch
+            val selected = File(chosen)
+            val target = File(selected.parentFile, ensureSafetensorsExtension(selected.name))
+            if (target != selected) deleteEmptyPlaceholder(selected)
+
+            _uiState.update { state ->
+                state.copy(
+                    chartPick = state.chartPick?.copy(
+                        isSaving = true,
+                        saveProgress = 0f,
+                        savedPath = null,
+                        saveError = null,
+                    ),
+                )
+            }
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    copyFileWithProgress(source, target) { fraction ->
+                        _uiState.update { state ->
+                            state.copy(chartPick = state.chartPick?.copy(saveProgress = fraction))
+                        }
+                    }
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        chartPick = state.chartPick?.copy(
+                            isSaving = false,
+                            saveProgress = null,
+                            savedPath = "${target.absolutePath} (${formatBytes(bytes)})",
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { state ->
+                    state.copy(
+                        chartPick = state.chartPick?.copy(
+                            isSaving = false,
+                            saveProgress = null,
+                            saveError = e.message ?: e.toString(),
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun previewNext() = movePreview(1)
@@ -219,9 +504,10 @@ class DashboardScreenViewModel(
             val samples = withContext(Dispatchers.IO) { ipc.listSamples() }
             val trainStatus = withContext(Dispatchers.IO) { ipc.trainStatus() }
             _uiState.update { state ->
+                val generated = state.chartPick?.generatedJobs.orEmpty()
                 val previewPath = state.previewIndex
-                    ?.let { flattenSamples(state.samples).getOrNull(it)?.path }
-                val newList = flattenSamples(samples.samples)
+                    ?.let { previewSamples(state.samples, generated).getOrNull(it)?.path }
+                val newList = previewSamples(samples.samples, generated)
                 val newPreview = previewPath?.let { path ->
                     newList.indexOfFirst { it.path == path }.takeIf { it >= 0 }
                 }
@@ -251,7 +537,7 @@ class DashboardScreenViewModel(
     }
 
     private fun movePreview(delta: Int) {
-        val list = flattenSamples(_uiState.value.samples)
+        val list = currentPreviewList()
         if (list.isEmpty()) {
             closePreview()
             return
@@ -260,6 +546,10 @@ class DashboardScreenViewModel(
         val next = (current + delta).mod(list.size)
         _uiState.update { it.copy(previewIndex = next) }
     }
+
+    /** What the fullscreen preview cycles through: the run's samples plus the panel's generated ones. */
+    private fun currentPreviewList(state: DashboardUiState = _uiState.value): List<SampleItem> =
+        previewSamples(state.samples, state.chartPick?.generatedJobs.orEmpty())
 }
 
 internal fun resolvedPending(pending: String?, status: String): String? {
@@ -289,8 +579,29 @@ internal fun flattenSamples(samples: Map<String, List<SampleItem>>): List<Sample
         .flatMap { it.value }
 }
 
+/**
+ * The list the fullscreen preview cycles through: the run's samples, with the panel's generated
+ * images slotted in right after their own step (newest first), so `←`/`→` stays in step order.
+ */
+internal fun previewSamples(
+    samples: Map<String, List<SampleItem>>,
+    jobs: List<GeneratedSampleJob>,
+): List<SampleItem> {
+    val generatedByStep = jobs.filter { it.state == JOB_DONE }
+        .mapNotNull { job -> job.step?.let { it to job } }
+        .groupBy({ it.first }, { it.second })
+    if (generatedByStep.isEmpty()) return flattenSamples(samples)
+
+    val steps = (samples.keys.mapNotNull { it.toIntOrNull() } + generatedByStep.keys).distinct()
+    return steps.sortedDescending().flatMap { step ->
+        val generated = generatedByStep[step].orEmpty().asReversed().mapNotNull { generatedSampleItem(it) }
+        samples[step.toString()].orEmpty() + generated
+    }
+}
+
 private const val HARDWARE_HISTORY_CAP = 360
 private const val BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0
+private const val GENERATED_POLL_MILLIS = 1_500L
 
 internal fun appendHardwareHistory(
     history: HardwareHistory,

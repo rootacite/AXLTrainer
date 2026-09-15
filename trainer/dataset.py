@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Sequence
@@ -13,16 +14,14 @@ from torch.utils.data import Dataset, Sampler
 try:
     from config import TrainConfig
     from utils import (
-        image_has_alpha, image_to_tensor, list_images, load_loss_mask,
-        mask_path_for, pick_bucket_size, read_caption, resize_and_center_crop,
-        sha1_text, shuffle_caption,
+        Geometry, fit_geometry, fit_to_bucket, image_has_alpha, image_to_tensor, list_images,
+        load_loss_mask, mask_path_for, pick_bucket_size, read_caption, sha1_text, shuffle_caption,
     )
 except ImportError:
     from trainer.config import TrainConfig
     from trainer.utils import (
-        image_has_alpha, image_to_tensor, list_images, load_loss_mask,
-        mask_path_for, pick_bucket_size, read_caption, resize_and_center_crop,
-        sha1_text, shuffle_caption,
+        Geometry, fit_geometry, fit_to_bucket, image_has_alpha, image_to_tensor, list_images,
+        load_loss_mask, mask_path_for, pick_bucket_size, read_caption, sha1_text, shuffle_caption,
     )
 
 
@@ -48,6 +47,9 @@ class LoraImageDataset(Dataset):
         self.records: list[dict[str, Any]] = []
         self.buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
         self.n_masked = 0
+        self.n_padded = 0
+        self._pad_total = 0.0
+        self._check_bucket_settings()
         for index, image_path in enumerate(self.images):
             with Image.open(image_path) as img:
                 src_w, src_h = img.size
@@ -59,9 +61,14 @@ class LoraImageDataset(Dataset):
                     max_reso=cfg.max_bucket_reso,
                     step=cfg.bucket_reso_steps,
                     no_upscale=cfg.bucket_no_upscale,
+                    area=cfg.train_resolution ** 2,
                 )
             else:
                 bucket_w = bucket_h = cfg.train_resolution
+            geom = fit_geometry(src_w, src_h, bucket_w, bucket_h)
+            if geom.pad_area > 0:
+                self.n_padded += 1
+            self._pad_total += geom.pad_area
             has_mask = mask_path_for(image_path).is_file() or has_alpha
             if has_mask:
                 self.n_masked += 1
@@ -72,10 +79,27 @@ class LoraImageDataset(Dataset):
                     "src_h": int(src_h),
                     "bucket_w": int(bucket_w),
                     "bucket_h": int(bucket_h),
+                    "geom": geom,
                     "has_mask": has_mask,
                 }
             )
             self.buckets[(int(bucket_w), int(bucket_h))].append(index)
+
+        self.mean_pad = self._pad_total / len(self.records) if self.records else 0.0
+
+    def _check_bucket_settings(self) -> None:
+        """The area budget and the axis clamps must bracket each other, or every bucket is a clamp."""
+        cfg = self.cfg
+        if not cfg.enable_bucket:
+            return
+        reso = int(cfg.train_resolution)
+        if not int(cfg.min_bucket_reso) <= reso <= int(cfg.max_bucket_reso):
+            print(
+                f"[Warn] min_bucket_reso={cfg.min_bucket_reso} / max_bucket_reso={cfg.max_bucket_reso} "
+                f"do not bracket train_resolution={reso}: buckets will sit on a clamp and lose the "
+                f"image's aspect ratio.",
+                file=sys.stderr,
+            )
 
     @property
     def epoch(self) -> int:
@@ -99,8 +123,13 @@ class LoraImageDataset(Dataset):
             cap = shuffle_caption(cap, self.cfg.keep_tokens, rng)
         return cap
 
-    def _cache_path(self, image_path: Path, bucket_w: int, bucket_h: int) -> Path:
-        key = f"{image_path.resolve()}::{bucket_w}x{bucket_h}"
+    def _cache_path(self, image_path: Path, geom: Geometry) -> Path:
+        """Keyed by the fit geometry, not just the bucket: a bucket-size coincidence must not
+        serve a latent that was encoded from differently placed pixels."""
+        key = (
+            f"{image_path.resolve()}::{geom.bucket_w}x{geom.bucket_h}"
+            f"::{geom.left},{geom.top},{geom.fit_w}x{geom.fit_h}"
+        )
         return self.latent_cache_dir / f"{sha1_text(key)}.pt"
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -108,7 +137,8 @@ class LoraImageDataset(Dataset):
         image_path: Path = record["path"]
         bucket_w = record["bucket_w"]
         bucket_h = record["bucket_h"]
-        cache_path = self._cache_path(image_path, bucket_w, bucket_h)
+        geom: Geometry = record["geom"]
+        cache_path = self._cache_path(image_path, geom)
 
         if self.cfg.cache_latents and self.cfg.cache_latents_to_disk and cache_path.exists():
             img_type = "latent"
@@ -116,8 +146,7 @@ class LoraImageDataset(Dataset):
         else:
             img_type = "pixel"
             with Image.open(image_path) as img:
-                img = img.convert("RGB")
-                img = resize_and_center_crop(img, bucket_w, bucket_h)
+                img = fit_to_bucket(img.convert("RGB"), geom)
                 img_data = image_to_tensor(img)
 
         loss_mask = load_loss_mask(
@@ -126,6 +155,7 @@ class LoraImageDataset(Dataset):
             bucket_h,
             record["src_w"],
             record["src_h"],
+            geom=geom,
         )
         return {
             "image_path": str(image_path),

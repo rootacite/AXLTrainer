@@ -381,6 +381,8 @@ def set_sampling(
     denoise_step: int = 0,
     denoise_steps: int = 0,
     global_step: int = 0,
+    prompt_set: int = 0,
+    prompt_sets: int = 0,
 ) -> None:
     current_status = _ensure_state().get("status")
     if active:
@@ -399,6 +401,8 @@ def set_sampling(
                 "denoise_step": int(denoise_step),
                 "denoise_steps": int(denoise_steps),
                 "global_step": int(global_step),
+                "prompt_set": int(prompt_set),
+                "prompt_sets": int(prompt_sets),
             },
         },
         force=not active,

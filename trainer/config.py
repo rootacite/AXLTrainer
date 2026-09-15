@@ -2,7 +2,7 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Optional
 
-def _load_toml_config(file_path: str = "trainer/config.toml") -> dict:
+def _load_toml_config(file_path: str = "config.toml") -> dict:
     try:
         with open(file_path, "rb") as f:
             raw_toml = tomllib.load(f)
@@ -20,6 +20,157 @@ _CONFIG = _load_toml_config()
 
 def get_val(key: str, default):
     return _CONFIG.get(key, default)
+
+
+# Ranges shared with the Ranko Validation form; a value outside them is rejected
+# in the GUI and again here, so a hand-edited config.toml fails at startup with
+# a message naming the offending entry.
+SAMPLE_SIZE_RANGE = (64, 4096)
+SAMPLE_STEPS_RANGE = (1, 150)
+SAMPLE_CFG_RANGE = (0.0, 30.0)
+SAMPLE_SEED_RANGE = (0, 2**32 - 1)
+SAMPLE_REPEAT_RANGE = (1, 32)
+
+
+@dataclass(frozen=True)
+class SampleSet:
+    """One `[[validation.samples]]` entry with every key resolved."""
+
+    name: str
+    prompt: str
+    negative: str
+    width: int
+    height: int
+    steps: int
+    guidance_scale: float
+    seed: int
+    repeat: int
+
+
+def _set_int(value, default: int) -> int:
+    if value is None:
+        return int(default)
+    if isinstance(value, bool):
+        raise ValueError("expected an integer")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("expected an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("expected an integer") from exc
+
+
+def _set_float(value, default: float) -> float:
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        raise ValueError("expected a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("expected a number") from exc
+
+
+def _set_str(value, default: str) -> str:
+    if value is None:
+        return str(default)
+    return str(value)
+
+
+def _check_range(label: str, value, bounds) -> None:
+    low, high = bounds
+    if not (low <= value <= high):
+        raise ValueError(f"{label} must be between {low} and {high}")
+
+
+def _default_set_name(prompt: str, index: int) -> str:
+    tag = prompt.split(",")[0].strip()
+    return tag or f"Set {index}"
+
+
+def _scalar(cfg, key: str, hardcoded):
+    """Flat `[validation]` scalar from a `TrainConfig` or the flattened TOML mapping."""
+    value = cfg.get(key) if isinstance(cfg, dict) else getattr(cfg, key, None)
+    if value is None:
+        value = get_val(key, hardcoded)
+    return value
+
+
+def resolve_sample_sets(cfg) -> list[SampleSet]:
+    """Resolve `[[validation.samples]]` into concrete sets.
+
+    `cfg` is a `TrainConfig` or the flattened TOML mapping. Every key a set omits falls
+    back to the flat `[validation]` scalar of the same shape, and a config with no
+    `[[validation.samples]]` at all yields exactly one set built from those scalars -
+    i.e. the single-prompt behaviour this replaced.
+    """
+    if isinstance(cfg, dict):
+        raw = cfg.get("samples") or []
+    else:
+        raw = getattr(cfg, "samples", None) or []
+    if not isinstance(raw, list):
+        raise ValueError("validation.samples must be an array of tables")
+
+    sets: list[SampleSet] = []
+    for index, entry in enumerate(raw, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"validation.samples[{index}] must be a table")
+        label = f"validation.samples[{index}]"
+        try:
+            prompt = _set_str(entry.get("prompt"), _scalar(cfg, "sample_prompts", ""))
+            negative = _set_str(entry.get("negative"), _scalar(cfg, "sample_negative", ""))
+            width = _set_int(entry.get("width"), _scalar(cfg, "sample_width", 1280))
+            height = _set_int(entry.get("height"), _scalar(cfg, "sample_height", 720))
+            steps = _set_int(entry.get("steps"), _scalar(cfg, "sample_steps", 55))
+            guidance = _set_float(entry.get("guidance_scale"), _scalar(cfg, "guidance_scale", 6.0))
+            seed = _set_int(entry.get("seed"), _scalar(cfg, "sample_seed", 0))
+            repeat = _set_int(entry.get("repeat"), _scalar(cfg, "sample_repeat", 3))
+            if not prompt.strip():
+                raise ValueError("prompt must not be empty")
+            _check_range("width", width, SAMPLE_SIZE_RANGE)
+            _check_range("height", height, SAMPLE_SIZE_RANGE)
+            _check_range("steps", steps, SAMPLE_STEPS_RANGE)
+            _check_range("guidance_scale", guidance, SAMPLE_CFG_RANGE)
+            _check_range("seed", seed, SAMPLE_SEED_RANGE)
+            _check_range("repeat", repeat, SAMPLE_REPEAT_RANGE)
+        except ValueError as exc:
+            raise ValueError(f"{label}: {exc}") from exc
+
+        name = _set_str(entry.get("name"), "").strip() or _default_set_name(prompt, index)
+        sets.append(
+            SampleSet(
+                name=name,
+                prompt=prompt,
+                negative=negative,
+                width=width,
+                height=height,
+                steps=steps,
+                guidance_scale=guidance,
+                seed=seed,
+                repeat=repeat,
+            )
+        )
+
+    if sets:
+        return sets
+
+    prompt = str(_scalar(cfg, "sample_prompts", ""))
+    if not prompt.strip():
+        raise ValueError("validation.samples is empty and sample_prompts is blank")
+    return [
+        SampleSet(
+            name=_default_set_name(prompt, 1),
+            prompt=prompt,
+            negative=str(_scalar(cfg, "sample_negative", "")),
+            width=int(_scalar(cfg, "sample_width", 1280)),
+            height=int(_scalar(cfg, "sample_height", 720)),
+            steps=int(_scalar(cfg, "sample_steps", 55)),
+            guidance_scale=float(_scalar(cfg, "guidance_scale", 6.0)),
+            seed=int(_scalar(cfg, "sample_seed", 0)),
+            repeat=int(_scalar(cfg, "sample_repeat", 3)),
+        )
+    ]
+
 
 @dataclass
 class TrainConfig:
@@ -71,8 +222,8 @@ class TrainConfig:
     bucket_no_upscale: bool = get_val("bucket_no_upscale", True)
     train_resolution: int = get_val("train_resolution", 1024)
     bucket_reso_steps: int = get_val("bucket_reso_steps", 128)
-    min_bucket_reso: int = get_val("min_bucket_reso", 768)
-    max_bucket_reso: int = get_val("max_bucket_reso", 1280)
+    min_bucket_reso: int = get_val("min_bucket_reso", 384)
+    max_bucket_reso: int = get_val("max_bucket_reso", 2688)
 
     # Optimization Features
     cache_latents: bool = get_val("cache_latents", True)
@@ -113,6 +264,9 @@ class TrainConfig:
     sample_seed: int = get_val("sample_seed", 0)
     sample_repeat: int = get_val("sample_repeat", 3)
     guidance_scale: float = get_val("guidance_scale", 6.0)
+    # `[[validation.samples]]`: raw tables, resolved by `resolve_sample_sets`.
+    # Empty means "one set built from the flat sample_* keys above".
+    samples: list = field(default_factory=lambda: list(get_val("samples", []) or []))
 
     # Optional kohya-like bookkeeping (Defaults to None)
     ss_session_id: Optional[int] = get_val("ss_session_id", None)

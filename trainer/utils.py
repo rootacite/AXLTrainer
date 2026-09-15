@@ -1,7 +1,8 @@
 import hashlib
+import math
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, NamedTuple, Tuple
 import numpy as np
 import torch
 from PIL import Image
@@ -35,6 +36,10 @@ def sha1_text(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 MASK_SIDECAR_SUFFIX = ".mask.png"
+
+# Letterbox fill. Mid grey maps to ~0 after image_to_tensor's *2-1 scaling, so the pad is a
+# neutral input rather than a black or white edge; the loss ignores it either way.
+FIT_PAD_VALUE = 127
 
 
 def is_mask_sidecar(path: Path) -> bool:
@@ -76,17 +81,36 @@ def alpha_channel_as_l(img: Image.Image) -> Image.Image | None:
 
 def _mask_tensor_from_l(
     img: Image.Image,
-    bucket_w: int,
-    bucket_h: int,
+    geom: "Geometry",
     src_w: int,
     src_h: int,
 ) -> torch.Tensor:
+    """Resize a content mask onto the bucket canvas; the letterbox pad stays exactly 0.
+
+    The pad is pasted *after* the resize on purpose: pre-padding the source and then resampling
+    lets LANCZOS ringing leak weight into the pad rows.
+    """
     mask = img.convert("L")
     if mask.size != (int(src_w), int(src_h)):
         mask = mask.resize((int(src_w), int(src_h)), Image.Resampling.NEAREST)
-    mask = resize_and_center_crop(mask, bucket_w, bucket_h)
-    arr = torch.from_numpy(np.array(mask)).float() / 255.0
+    if mask.size != (geom.fit_w, geom.fit_h):
+        mask = mask.resize((geom.fit_w, geom.fit_h), Image.Resampling.LANCZOS)
+    canvas = Image.new("L", (geom.bucket_w, geom.bucket_h), 0)
+    canvas.paste(mask, (geom.left, geom.top))
+    arr = torch.from_numpy(np.array(canvas)).float() / 255.0
     return arr.unsqueeze(0)
+
+
+def _pad_only_mask(geom: "Geometry") -> torch.Tensor:
+    """All-ones content area, hard-zero pad: the mask of a sample with no content mask."""
+    arr = torch.ones((1, geom.bucket_h, geom.bucket_w), dtype=torch.float32)
+    if geom.fit_h < geom.bucket_h:
+        arr[:, : geom.top, :] = 0.0
+        arr[:, geom.top + geom.fit_h :, :] = 0.0
+    if geom.fit_w < geom.bucket_w:
+        arr[:, :, : geom.left] = 0.0
+        arr[:, :, geom.left + geom.fit_w :] = 0.0
+    return arr
 
 
 def load_loss_mask(
@@ -95,23 +119,27 @@ def load_loss_mask(
     bucket_h: int,
     src_w: int,
     src_h: int,
+    geom: "Geometry | None" = None,
 ) -> torch.Tensor:
     """Loss weights `[1, bucket_h, bucket_w]` in `[0, 1]`.
 
-    Order: `{stem}.mask.png` sidecar if present; else the training image's
-    alpha channel; else all ones (unmasked MSE). Crop/resize matches the RGB
-    image so the mask stays aligned after bucketing.
+    Content source order: `{stem}.mask.png` sidecar, else the training image's alpha channel,
+    else all ones. Every sample carries the letterbox pad at weight 0, so the returned tensor is
+    always a full-bucket mask; the content is resized exactly like the RGB image.
     """
+    if geom is None:
+        geom = fit_geometry(src_w, src_h, bucket_w, bucket_h)
+
     sidecar = mask_path_for(image_path)
     if sidecar.is_file():
         with Image.open(sidecar) as img:
-            return _mask_tensor_from_l(img, bucket_w, bucket_h, src_w, src_h)
+            return _mask_tensor_from_l(img, geom, src_w, src_h)
 
     with Image.open(image_path) as img:
         alpha = alpha_channel_as_l(img)
-        if alpha is None:
-            return torch.ones((1, int(bucket_h), int(bucket_w)), dtype=torch.float32)
-        return _mask_tensor_from_l(alpha, bucket_w, bucket_h, src_w, src_h)
+    if alpha is None:
+        return _pad_only_mask(geom)
+    return _mask_tensor_from_l(alpha, geom, src_w, src_h)
 
 
 def apply_loss_mask(loss: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
@@ -150,31 +178,112 @@ def shuffle_caption(text: str, keep_tokens: int, rng: random.Random) -> str:
 def round_to_step(value: int, step: int) -> int:
     return max(step, (value // step) * step)
 
+
+def _nearest_step(value: float, step: int) -> int:
+    return max(step, int(round(value / step)) * step)
+
+
+class Geometry(NamedTuple):
+    """Where the (scaled) image content lands inside its bucket."""
+
+    bucket_w: int
+    bucket_h: int
+    fit_w: int
+    fit_h: int
+    left: int
+    top: int
+
+    @property
+    def pad_area(self) -> float:
+        return 1.0 - (self.fit_w * self.fit_h) / float(self.bucket_w * self.bucket_h)
+
+
+def fit_geometry(src_w: int, src_h: int, bucket_w: int, bucket_h: int) -> Geometry:
+    """Scale the whole image into the bucket (contain, not cover) and centre it.
+
+    Pure function of the source and bucket sizes: `pick_bucket_size` already refuses to build a
+    bucket axis larger than the source (`bucket_no_upscale`), so the fit scale is <= 1 except for
+    sources thinner than one step, which that rule floors at one step.
+    """
+    src_w, src_h = int(src_w), int(src_h)
+    bucket_w, bucket_h = int(bucket_w), int(bucket_h)
+    if src_w <= 0 or src_h <= 0 or bucket_w <= 0 or bucket_h <= 0:
+        return Geometry(bucket_w, bucket_h, bucket_w, bucket_h, 0, 0)
+    scale = min(bucket_w / src_w, bucket_h / src_h)
+    fit_w = min(bucket_w, max(1, int(round(src_w * scale))))
+    fit_h = min(bucket_h, max(1, int(round(src_h * scale))))
+    return Geometry(
+        bucket_w=bucket_w,
+        bucket_h=bucket_h,
+        fit_w=fit_w,
+        fit_h=fit_h,
+        left=(bucket_w - fit_w) // 2,
+        top=(bucket_h - fit_h) // 2,
+    )
+
+
+def fit_to_bucket(image: Image.Image, geom: Geometry, fill: int = FIT_PAD_VALUE) -> Image.Image:
+    """Resize `image` into `geom`'s content area and pad the rest with `fill`.
+
+    Only `RGB` and `L` are accepted: the dataset feeds the RGB image and the mask through this
+    same helper so both land on identical pixels.
+    """
+    if image.mode not in ("RGB", "L"):
+        raise ValueError(f"fit_to_bucket expects RGB or L, got {image.mode}")
+    resized = (
+        image
+        if image.size == (geom.fit_w, geom.fit_h)
+        else image.resize((geom.fit_w, geom.fit_h), Image.Resampling.LANCZOS)
+    )
+    if resized.size == (geom.bucket_w, geom.bucket_h):
+        return resized
+    color = (fill, fill, fill) if image.mode == "RGB" else fill
+    canvas = Image.new(image.mode, (geom.bucket_w, geom.bucket_h), color)
+    canvas.paste(resized, (geom.left, geom.top))
+    return canvas
+
+
 def pick_bucket_size(
-    w: int, h: int, min_reso: int, max_reso: int, step: int, no_upscale: bool
+    w: int,
+    h: int,
+    min_reso: int,
+    max_reso: int,
+    step: int,
+    no_upscale: bool,
+    area: int | None = None,
 ) -> Tuple[int, int]:
+    """Bucket whose aspect follows the image and whose pixel count aims at `area`.
+
+    An area budget (`train_resolution ** 2`) is what lets tall images get tall buckets: pinning
+    the short side to `min_reso` instead forced every portrait into one short bucket, where the
+    long side hit `max_reso` and the overflow was cropped away. `min_reso`/`max_reso` are axis
+    clamps here, and `no_upscale` never builds an axis larger than the source's own (sources
+    thinner than one `step` are the exception, floored at one step).
+    """
+    w, h = int(w), int(h)
     if w <= 0 or h <= 0:
         return min_reso, min_reso
+    if not area:
+        # Callers normally pass `train_resolution ** 2`; this fallback is within ~2 % of the
+        # shipped 1024² for the shipped clamps.
+        area = int(min_reso) * int(max_reso)
 
     ar = w / h
-    if ar >= 1.0:
-        bucket_h = min_reso if not (no_upscale and h < min_reso) else round_to_step(h, step)
-        bucket_w = int(round(bucket_h * ar))
-    else:
-        bucket_w = min_reso if not (no_upscale and w < min_reso) else round_to_step(w, step)
-        bucket_h = int(round(bucket_w / ar))
+    bucket_w = _nearest_step(math.sqrt(area * ar), step)
+    bucket_h = _nearest_step(math.sqrt(area / ar), step)
 
-    bucket_w = round_to_step(bucket_w, step)
-    bucket_h = round_to_step(bucket_h, step)
-    bucket_w = max(step, min(bucket_w, max_reso))
-    bucket_h = max(step, min(bucket_h, max_reso))
+    bucket_w = max(int(min_reso), min(bucket_w, int(max_reso)))
+    bucket_h = max(int(min_reso), min(bucket_h, int(max_reso)))
 
-    if (ar >= 1.0 and bucket_w < bucket_h) or (ar < 1.0 and bucket_h < bucket_w):
-        bucket_w, bucket_h = bucket_h, bucket_w
+    if no_upscale:
+        bucket_w = min(bucket_w, round_to_step(w, step))
+        bucket_h = min(bucket_h, round_to_step(h, step))
 
-    return bucket_w, bucket_h
+    return int(bucket_w), int(bucket_h)
 
 def resize_and_center_crop(image: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    """Cover-scale + centre crop. Not used by the training path (that is `fit_to_bucket`); kept
+    for the mask-verification harness's independent implementation and `fixes/` probes."""
     src_w, src_h = image.size
     scale = max(target_w / src_w, target_h / src_h)
     new_w = max(1, int(round(src_w * scale)))

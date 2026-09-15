@@ -29,7 +29,7 @@ AXLTrainer keeps the entire loop on one machine, inside one desktop app, with a 
 
 The rest of the design follows from four decisions:
 
-- **Configuration is TOML-only.** `trainer/main.py` takes no CLI arguments. `trainer/config.toml` is the single source of truth (with fallbacks in `trainer/config.py`).
+- **Configuration is TOML-only.** `trainer/main.py` takes no CLI arguments. `config.toml` at the repo root is the single source of truth (with fallbacks in `trainer/config.py`); it is read relative to the working directory, which is always the repo root.
 - **Training is detached.** `api.py` spawns the trainer with `setsid`, so closing Ranko never stops a run. The dashboard talks to it through one-shot `command.json` files at swap-safe points.
 - **Pause actually frees the GPU.** Pause offloads the denoise network, the text encoders, both optimizers (including Schedule-Free state) and the VAE to CPU, then calls `empty_cache`. Resume reloads what the current phase needs.
 - **Checkpoints are ComfyUI-ready.** PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` keys, stored as bf16, with `modelspec.*` and `ss_*` metadata.
@@ -42,10 +42,10 @@ The rest of the design follows from four decisions:
 
 What stands out when you use the stack, rather than a complete inventory of every toggle.
 
-- **An SDXL LoRA engine that targets AMD.** Mixed precision defaults to bf16. Dual optimizers: Schedule-Free AdamW on the UNet (no LR scheduler) and AdamW on both text encoders with cosine warmup via Accelerator. Aspect-ratio bucketing is ROCm-safe by default (`bucket_reso_steps = 128`). Optional pipelined latent caching (CPU decode → batched VAE encode → atomic `.pt`) runs before training; on-demand encode is the fallback.
+- **An SDXL LoRA engine that targets AMD.** Mixed precision defaults to bf16. Dual optimizers: Schedule-Free AdamW on the UNet (no LR scheduler) and AdamW on both text encoders with cosine warmup via Accelerator. Aspect-ratio bucketing is ROCm-safe by default (`bucket_reso_steps = 128`) and **letterboxes instead of cropping**: the whole image is fitted into its bucket and the leftover bars carry zero loss weight, so a tall full-body drawing keeps its head and feet. Optional pipelined latent caching (CPU decode → batched VAE encode → atomic `.pt`) runs before training; on-demand encode is the fallback.
 - **Long prompts, samples, and kohya metadata.** Prompts past 77 tokens are chunked with `clip_skip` up to `max_token_length`. Periodic sample generation takes a negative prompt, a repeat/seed, and can be interrupted. Checkpoints embed `modelspec.*` / `ss_*` and log a kohya-style `Train/Avg_Loss` window.
 - **A dashboard that is the control plane, not a spectator.** Ranko spawns `api.py` over NDJSON stdin/stdout, reads TensorBoard scalars and sample PNGs, and offers Start / Pause / Resume / Early Stop / Reset. Progress bars cover latent encoding, training steps, and sampling. Closing the window does not kill the run.
-- **Dataset work in the same window.** The Images tab is a thumbnail browser and caption editor with unsaved-change tracking. Statistics scans tag frequency, filters with AND/OR, and bulk-removes tags, batch-adds tags, or probabilistically drops samples. Utils is a structured editor for `trainer/config.toml` with validation and path browsing.
+- **Dataset work in the same window.** The Images tab is a thumbnail browser and caption editor with unsaved-change tracking. Statistics scans tag frequency, filters with AND/OR, and bulk-removes tags, batch-adds tags, or probabilistically drops samples. Utils is a structured editor for `config.toml` with validation and path browsing.
 - **CLIs for scripts and agents.** `tools/` covers caption cleaning, tag filtering/counting, sample dropping and shuffling. `tagger/` is an ONNX WD-style captioner. `ranko/tools/agent.py` mirrors the app's dataset features for non-interactive use.
 
 <p align="center">
@@ -57,7 +57,7 @@ What stands out when you use the stack, rather than a complete inventory of ever
 </p>
 
 <p align="center">
-  <img src="doc/screenshots/utils-tab.png" alt="Utils tab — structured editor for trainer/config.toml"/>
+  <img src="doc/screenshots/utils-tab.png" alt="Utils tab — structured editor for config.toml"/>
 </p>
 
 <p align="center">
@@ -116,13 +116,13 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 
 ## Building and running
 
-There is no `requirements.txt`. Create the conda environment from the manifest (env name `axl_rocm_7_14`, read from `environment.yml`'s `name:`), point `trainer/config.toml` at **your** model, dataset and output paths — the shipped values are the author's machine and will not work elsewhere — then either train from the shell or open Ranko.
+There is no `requirements.txt`. Create the conda environment from the manifest (env name `axl_rocm_7_14`, read from `environment.yml`'s `name:`), point `config.toml` at **your** model, dataset and output paths — the shipped values are the author's machine and will not work elsewhere — then either train from the shell or open Ranko.
 
 ```bash
 conda env create -f environment.yml
 conda activate axl_rocm_7_14
 
-# edit trainer/config.toml  (model / dataset / output paths)
+# edit config.toml  (model / dataset / output paths)
 
 # dataset: one folder of images, each with a same-stem .txt caption (comma-separated tags)
 
@@ -134,19 +134,17 @@ cd ranko && ./gradlew :desktopApp:run
 # ./gradlew :desktopApp:hotRun --auto
 ```
 
-The trainer reads **everything** from `trainer/config.toml`. See [Configuration](doc/configuration.md) and [Installation](doc/installation.md). Ranko locates the repo by walking up from the executable / working directory until it finds `api.py` or `trainer/config.toml`, then runs `$AXL_PYTHON` or `python3 -u api.py`.
+The trainer reads **everything** from `config.toml` at the repo root. See [Configuration](doc/configuration.md) and [Installation](doc/installation.md). Ranko locates the repo by walking up from the executable / working directory until a directory holds `api.py` (or `config.toml` next to the `trainer/` package), then runs `$AXL_PYTHON` or `python3 -u api.py`.
 
 ### Tests
 
 ```bash
-# Python: IPC + train-control state machine
-python -m unittest test_api_ipc test_train_control
-
-# Family catalog / spec checks
-python -m unittest test_family
+# Python: every suite under test/ (cwd = repo root, env `axl_rocm_7_14`)
+python -m unittest discover -s test
+python -m unittest discover -s test -p 'test_family.py'   # one file
 
 # Latent-cache equivalence (mock VAE; add --real for a real VAE smoke test)
-python trainer/test_warm_latent_cache.py [--real]
+python test/test_warm_latent_cache.py [--real]
 
 # Ranko (serialization / IPC models / TOML patch)
 cd ranko && ./gradlew :shared:jvmTest
@@ -192,7 +190,7 @@ Provided as a reference, not a requirement. This is also the machine on which th
 | --- | --- |
 | [Overview](doc/overview.md) | Pieces, data flow, process model. |
 | [Installation](doc/installation.md) | Environment, first run, test suites. |
-| [Configuration](doc/configuration.md) | Every `trainer/config.toml` section and key. |
+| [Configuration](doc/configuration.md) | Every `config.toml` section and key. |
 | [Training](doc/training.md) | CLI runs, lifecycle, pause/resume/stop, checkpoints, offload, cleanup. |
 | [Dashboard](doc/dashboard.md) | Ranko tabs, IPC, train controls, charts. |
 | [Dataset tools](doc/dataset-tools.md) | `tools/`, `tagger/`, `ranko/tools/agent.py`. |

@@ -1,6 +1,6 @@
-# Configuration (`trainer/config.toml`)
+# Configuration (`config.toml`)
 
-All training settings live in a single TOML file, **`trainer/config.toml`**, read at startup by `trainer/config.py`. `trainer/main.py` accepts **no command-line arguments** — the TOML file (plus hardcoded fallbacks in `config.py`) is the only way to configure a run. Where both exist, **the TOML value always wins**.
+All training settings live in a single TOML file, **`config.toml` at the repo root**, read at startup by `trainer/config.py`. `trainer/main.py` accepts **no command-line arguments** — the TOML file (plus hardcoded fallbacks in `config.py`) is the only way to configure a run. Where both exist, **the TOML value always wins**.
 
 You can edit this file by hand or with the Ranko dashboard's **Utils** tab, which validates values and preserves comments/formatting.
 
@@ -8,7 +8,7 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 
 ## Reading order
 
-1. `trainer/config.toml` is parsed with `tomllib` and flattened into one dict (sections are just namespaces).
+1. `config.toml` is parsed with `tomllib` and flattened into one dict (sections are just namespaces). The path is resolved **against the working directory**, so the trainer must be started from the repo root.
 2. A `TrainConfig` dataclass is built from the flattened values; keys absent from the file fall back to hardcoded defaults in `trainer/config.py`.
 3. Any key missing from both falls back to `None`.
 
@@ -68,14 +68,19 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 
 ### `[bucketing]` — aspect-ratio buckets
 
+Each bucket holds about `train_resolution²` pixels and takes its aspect ratio from the image, so a
+tall portrait gets a tall bucket instead of being squeezed into a short one and cropped. Whatever
+mismatch is left between bucket and image is **letterboxed**: the whole image is fitted into the
+bucket and the leftover bars carry loss weight 0, so they neither train nor count as content.
+
 | Key | Default | Notes |
 | --- | --- | --- |
-| `enable_bucket` | `true` | Group images by aspect ratio instead of forcing one resolution. |
-| `bucket_no_upscale` | `true` | If true, images smaller than the bucket are used at native size (no upscaling). |
-| `train_resolution` | `1024` | Base resolution; buckets are derived around it. |
+| `enable_bucket` | `true` | Group images by aspect ratio instead of forcing one resolution. With it off, every image goes to a single `train_resolution × train_resolution` bucket. |
+| `bucket_no_upscale` | `true` | A bucket side is never built larger than the image's own side, so fitting never upscales the image (the one exception: sources thinner than one `bucket_reso_steps`, which are floored at one step). |
+| `train_resolution` | `1024` | Area anchor: each bucket aims at `train_resolution²` pixels (~1.05 MP at 1024) at whatever orientation the image has. |
 | `bucket_reso_steps` | `128` | Bucket size granularity. **Keep at 128 on AMD ROCm** (see [Troubleshooting](troubleshooting.md#rocm-bucket-step-crash) — must be divisible by 16 to keep latent dims aligned). |
-| `min_bucket_reso` | `768` | Smallest bucket side. |
-| `max_bucket_reso` | `1280` | Largest bucket side. |
+| `min_bucket_reso` | `384` | Smallest bucket side. This is the knob for extreme aspect ratios: lower it to give very tall art more resolution, rather than lowering `train_resolution`. |
+| `max_bucket_reso` | `2688` | Largest bucket side. Keep `min_bucket_reso ≤ train_resolution ≤ max_bucket_reso`; otherwise every bucket lands on a clamp, loses the image's aspect ratio, and the trainer warns on stderr. |
 
 ### `[optimization]` — data & training optimizations
 
@@ -123,13 +128,50 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `sample_prompts` | `"(rein_character:1.1), ..."` | Positive prompt used for validation samples. |
-| `sample_negative` | `"worst quality, low quality, ..."` | Negative prompt. |
-| `sample_width` / `sample_height` | `1280` / `720` | Sample image size. |
-| `sample_steps` | `55` | Denoising steps. |
-| `sample_seed` | `0` | `0` = unique random seed per repeat (printed to the log); otherwise `seed + repeat_idx`. |
-| `sample_repeat` | `3` | Number of samples per checkpoint. |
-| `guidance_scale` | `6.0` | CFG scale. |
+| `sample_prompts` | `"(rein_character:1.1), ..."` | Positive prompt used for validation samples. Also the fallback prompt of a `[[validation.samples]]` entry that omits `prompt`. |
+| `sample_negative` | `"worst quality, low quality, ..."` | Negative prompt (fallback for `negative`). |
+| `sample_width` / `sample_height` | `1280` / `720` | Sample image size (fallbacks for `width` / `height`). |
+| `sample_steps` | `55` | Denoising steps (fallback for `steps`). |
+| `sample_seed` | `0` | `0` = unique random seed per image (printed to the log); otherwise `seed + repeat_idx` (fallback for `seed`). |
+| `sample_repeat` | `3` | Number of samples per checkpoint (fallback for `repeat`). |
+| `guidance_scale` | `6.0` | CFG scale (fallback for `guidance_scale`). |
+
+#### `[[validation.samples]]` — one block per prompt set
+
+Any number of these blocks turns validation into a multi-prompt pass. Every set renders its own
+`repeat` images at each sampling point, in block order.
+
+```toml
+[[validation.samples]]
+name = "classroom"        # optional tab label; blank = the prompt's first tag
+prompt = "1girl, classroom, ..."
+negative = "worst quality, ..."
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 1
+repeat = 3
+```
+
+| Key | Required | Falls back to |
+| --- | --- | --- |
+| `prompt` | yes | `sample_prompts` |
+| `negative`, `width`, `height`, `steps`, `guidance_scale`, `seed`, `repeat` | no | the `[validation]` scalar of the same shape |
+| `name` | no | the prompt's first tag, else `Set N` |
+
+- **No blocks at all** = exactly one set built from the scalars above, i.e. the single-prompt
+  behaviour. `validation.sample_*` overrides (used by `fixes/` and `test/verify_mask_pipeline.py`)
+  keep working in that case.
+- **Ranges** (enforced by `trainer/config.py` and by the Utils form): `width`/`height` 64–4096,
+  `steps` 1–150, `guidance_scale` 0–30, `seed` 0–2³²−1, `repeat` 1–32, `prompt` non-empty.
+  A violation aborts the run at startup with the offending index (`validation.samples[2]: steps …`).
+- **Seed**: inside a set the nth image uses `seed + n` (`0` = a fresh random seed per image). Two
+  sets that share a seed therefore start from the same noise, so only the prompt differs.
+- **File names**: `{output_name}_{step:06d}_p{set}_{repeat}.png`, with `set` counting from 0. The
+  two-number form of older runs (`…_{step}_{repeat}.png`) is still parsed, as set 0.
+- Sampling time scales with `Σ repeat`; each set's images are rendered sequentially.
+```
 
 ### `[bookkeeping]`
 
@@ -141,13 +183,19 @@ Intentionally empty. The Python side treats missing keys as `None`; it exists fo
 - **LoRA scale** = `network_alpha / network_dim` (0.5 with the defaults).
 - **Steps per epoch** = `⌈len(dataloader) / gradient_accumulation_steps⌉`; **total steps** = steps-per-epoch × `epoch`.
 - **UNet LR vs TE LR**: the UNet uses Schedule-Free AdamW (its own warmup via `unet_warmup_steps`); the text encoders use plain AdamW with a warmup + `lr_scheduler` decay. The dashboard's "TE LR" card reflects the scheduled TE LR.
+- **Bucket and pad**: `pick_bucket_size` derives the bucket from the image's aspect ratio and the `train_resolution²` budget; `fit_geometry` then places the image inside it as `{fit_w}×{fit_h}` centred at an offset, and the rest of the bucket is pad. The trainer prints the bucket list and the mean pad for a run (`Letterbox: n/m samples padded, mean x%`).
 
 ## Editing from the GUI
 
 The Ranko **Utils** tab is a validated form over exactly these sections/keys:
 
-- Path fields have a Browse button (JVM file chooser).
+- Path fields have a Browse button (OS file dialog: the desktop portal picker on Linux).
 - `mixed_precision` and `lr_scheduler` are segmented buttons / chips.
 - Booleans are switches.
 - Inline hints show derived values (effective batch, LoRA scale, bucket-step divisibility, sample aspect ratio).
-- Save runs full-form validation; on error it jumps to the first section with an invalid field. The writer is a line-preserving TOML patcher, so comments and formatting survive edits.
+- The **Validation** section edits `[[validation.samples]]` as horizontal tabs: one chip per set
+  (its label, a warning icon when the set has an invalid field), `+` clones the open set, and the
+  `×` on a chip deletes that set after a confirmation. The last set cannot be deleted. Saving writes
+  the `[validation]` scalars from the first set plus one fully explicit block per tab (a blank label
+  is left out), so the file never carries two contradictory prompts.
+- Save runs full-form validation; on error it jumps to the first section with an invalid field (and to the offending set's tab). The writer is a line-preserving TOML patcher, so comments and formatting survive edits — except inside the replaced `[[validation.samples]]` blocks.

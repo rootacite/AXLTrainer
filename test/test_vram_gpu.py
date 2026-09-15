@@ -5,6 +5,13 @@ import unittest
 import torch
 from torch import nn
 
+import sys
+from pathlib import Path
+
+# `python test/test_vram_gpu.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from trainer import control
 from trainer.device_swap import SwapContext, run_pause, run_resume
 from trainer.cache import prepare_encoding_devices

@@ -1,5 +1,7 @@
 package com.acite.axlranko.model
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.DpSize
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -22,6 +24,7 @@ data class DashboardResponse(
 @Serializable
 data class SampleItem(
     val filename: String,
+    @SerialName("set_index") val setIndex: Int = 0,
     @SerialName("repeat_idx") val repeatIdx: Int,
     val path: String,
 )
@@ -51,6 +54,41 @@ data class CheckpointItem(
 @Serializable
 data class CheckpointsResponse(
     val checkpoints: List<CheckpointItem> = emptyList(),
+)
+
+/**
+ * One "generate a sample with this checkpoint" job. Mirrored by the JSON file the generator writes
+ * next to its PNG, so the panel can list jobs from disk and follow a run in progress.
+ */
+@Serializable
+data class GeneratedSampleJob(
+    val id: String = "",
+    /** `running` while the generator works, then `done` or `error`. */
+    val state: String = "running",
+    val step: Int? = null,
+    val prompt: String = "",
+    @SerialName("negative_prompt") val negativePrompt: String = "",
+    val cfg: Float? = null,
+    val steps: Int? = null,
+    val seed: Long? = null,
+    val checkpoint: String = "",
+    @SerialName("image_path") val imagePath: String? = null,
+    val error: String? = null,
+    @SerialName("current_step") val currentStep: Int = 0,
+    @SerialName("total_steps") val totalSteps: Int = 0,
+    @SerialName("started_at") val startedAt: Double = 0.0,
+)
+
+@Serializable
+data class GeneratedSamplesResponse(
+    @SerialName("run_id") val runId: String? = null,
+    val jobs: List<GeneratedSampleJob> = emptyList(),
+)
+
+@Serializable
+data class GenerateSampleResponse(
+    val job: GeneratedSampleJob = GeneratedSampleJob(),
+    @SerialName("log_path") val logPath: String? = null,
 )
 
 @Serializable
@@ -104,6 +142,9 @@ data class TrainSampling(
     @SerialName("denoise_step") val denoiseStep: Int = 0,
     @SerialName("denoise_steps") val denoiseSteps: Int = 0,
     @SerialName("global_step") val globalStep: Int = 0,
+    /** Which `[[validation.samples]]` entry the pass is on, 1-based; 0 when the run has no sets. */
+    @SerialName("prompt_set") val promptSet: Int = 0,
+    @SerialName("prompt_sets") val promptSets: Int = 0,
 )
 
 @Serializable
@@ -186,6 +227,34 @@ data class TrainStatus(
     @SerialName("log_path") val logPath: String? = null,
 )
 
+/**
+ * A Ctrl+click on the Avg Loss chart: the step under the pointer, where the panel should open
+ * (window-root pixels), the checkpoint resolved for it and the outcome of a "Save As", plus the
+ * state of the panel's "generate a sample with this checkpoint" form.
+ */
+data class ChartPickState(
+    val step: Float = 0f,
+    val anchor: Offset = Offset.Zero,
+    val checkpoint: CheckpointItem? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val isSaving: Boolean = false,
+    val saveProgress: Float? = null,
+    val savedPath: String? = null,
+    val saveError: String? = null,
+    val isFormOpen: Boolean = false,
+    val prompt: String = "",
+    val negativePrompt: String = "",
+    val cfg: String = "",
+    val steps: String = "",
+    val seed: String = "0",
+    val formError: String? = null,
+    val isGenerating: Boolean = false,
+    /** Newest first, as stored under the run's `{name}_samples/generated/`. */
+    val generatedJobs: List<GeneratedSampleJob> = emptyList(),
+    val generatedError: String? = null,
+)
+
 data class DashboardUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
@@ -200,6 +269,11 @@ data class DashboardUiState(
     val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
     val samples: Map<String, List<SampleItem>> = emptyMap(),
+    val chartPick: ChartPickState? = null,
+    /** Panel size the user dragged to, `null` while the content-derived default applies. */
+    val chartPanelSize: DpSize? = null,
+    /** Ids of generation jobs started in this session, which the panel marks as new. */
+    val sessionJobIds: Set<String> = emptySet(),
     val trainStatus: TrainStatus = TrainStatus(),
     val commandInFlight: Boolean = false,
     val pendingCommand: String? = null,

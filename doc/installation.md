@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Python 3.11+** (3.14 recommended; `trainer/config.toml` parsing uses `tomllib` and `ranko/tools/agent.py` requires 3.11+).
+- **Python 3.11+** (3.14 recommended; `config.toml` parsing uses `tomllib` and `ranko/tools/agent.py` requires 3.11+).
 - **A GPU with enough VRAM for SDXL LoRA training.** The shipped environment targets **AMD ROCm** (MIOpen/MIGraphX). CUDA works too if you install a CUDA build of PyTorch instead (see below).
 - **JDK 17+** only if you want to build/run the Ranko desktop dashboard (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver).
 
@@ -44,7 +44,7 @@ If you skip MIOpen, the ROCm-specific env vars in `start_train.sh` / `start_api.
 
 ## 2. Configure the project
 
-Open `trainer/config.toml` and set at least:
+Open `config.toml` (repo root) and set at least:
 
 - `[environment].pretrained_model_name_or_path` — SDXL model (a diffusers directory, or a single-file checkpoint path).
 - `[environment].train_data_dir` — your dataset folder (images + same-named `.txt` captions).
@@ -84,15 +84,13 @@ printf '%s\n' '{"id":1,"method":"ping","params":{}}' | python -u api.py
 ## Running the tests
 
 ```bash
-# Python: IPC dispatch, sample scanning, avg-loss synthesis
-python -m unittest test_api_ipc
-
-# Python: control-plane state machine, commands, run lock, device-swap helpers
-python -m unittest test_train_control
+# Python: run every suite under test/ (cwd = repo root, env `axl_rocm_7_14`)
+python -m unittest discover -s test
+python -m unittest discover -s test -p 'test_api_ipc.py'   # one file
 
 # Python: latent-cache equivalence against the serial reference implementation
-python trainer/test_warm_latent_cache.py          # mock VAE
-python trainer/test_warm_latent_cache.py --real   # + real SDXL VAE smoke test
+python test/test_warm_latent_cache.py          # mock VAE
+python test/test_warm_latent_cache.py --real   # + real SDXL VAE smoke test
 
 # Kotlin: Ranko unit tests (IPC request/response models)
 cd ranko && ./gradlew :shared:jvmTest
@@ -115,4 +113,4 @@ cd ranko
 ./gradlew :desktopApp:packageDmg   # or packageMsi / packageDeb
 ```
 
-Ranko finds the trainer repo automatically by walking up from the executable and the working directory looking for `api.py` or `trainer/config.toml`, so either run it from inside the repo, or place it so the trainer repo is an ancestor. See [Dashboard](dashboard.md).
+Ranko finds the trainer repo automatically by walking up from the executable and the working directory looking for `api.py` (or a `config.toml` next to the `trainer/` package), so either run it from inside the repo, or place it so the trainer repo is an ancestor. See [Dashboard](dashboard.md).

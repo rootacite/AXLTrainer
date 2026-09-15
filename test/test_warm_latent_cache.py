@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Standalone verification for trainer/cache.py::warm_latent_cache.
 
-Usage:
-    python trainer/test_warm_latent_cache.py          # mock-VAE logic tests
-    python trainer/test_warm_latent_cache.py --real   # + real SDXL VAE smoke test on CPU
+Usage (cwd = repo root):
+    python test/test_warm_latent_cache.py          # mock-VAE logic tests
+    python test/test_warm_latent_cache.py --real   # + real SDXL VAE smoke test on CPU
 
 The real smoke test reads a few images + captions from the configured
 train_data_dir (read-only) and copies them into a temp dir; every cache
@@ -23,17 +23,23 @@ from pathlib import Path
 import torch
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+REPO_ROOT = HERE.parent
+# Package-qualified imports below: putting `trainer/` itself on sys.path would hand the
+# trainer's dual imports (`try: import control / except ImportError: from trainer import ...`)
+# a second, top-level module identity, and `unittest discover` imports this file too.
+sys.path.insert(0, str(REPO_ROOT))
 
-# Isolate control.state.json from the live runtime dir.
-_RUNTIME_DIR = tempfile.TemporaryDirectory(prefix="axl-cache-test-")
-os.environ["AXL_RUNTIME_DIR"] = _RUNTIME_DIR.name
+if __name__ == "__main__":
+    # Isolate control.state.json from the live runtime dir. Script mode only: `unittest
+    # discover` imports this module as well and must not rewrite the shared environment.
+    _RUNTIME_DIR = tempfile.TemporaryDirectory(prefix="axl-cache-test-")
+    os.environ["AXL_RUNTIME_DIR"] = _RUNTIME_DIR.name
 
 from PIL import Image
 
-from config import TrainConfig
-from dataset import LoraImageDataset
-from utils import pick_bucket_size
+from trainer.config import TrainConfig
+from trainer.dataset import LoraImageDataset
+from trainer.utils import fit_geometry, pick_bucket_size
 
 
 # ---------------------------------------------------------------- mock VAE
@@ -78,8 +84,9 @@ def make_cfg(data_dir: Path, **overrides) -> TrainConfig:
     cfg = TrainConfig()
     cfg.train_data_dir = str(data_dir)
     cfg.enable_bucket = True
-    cfg.min_bucket_reso = 768
-    cfg.max_bucket_reso = 1280
+    cfg.train_resolution = 1024
+    cfg.min_bucket_reso = 384
+    cfg.max_bucket_reso = 2688
     cfg.bucket_reso_steps = 128
     cfg.cache_latents = True
     cfg.cache_latents_to_disk = True
@@ -97,6 +104,7 @@ def bucket_for(img: Path, cfg: TrainConfig):
         max_reso=cfg.max_bucket_reso,
         step=cfg.bucket_reso_steps,
         no_upscale=cfg.bucket_no_upscale,
+        area=cfg.train_resolution ** 2,
     )
 
 
@@ -105,11 +113,11 @@ def collect_cached(root: Path) -> dict:
     cfg = make_cfg(root)
     dataset = LoraImageDataset(cfg)
     out = {}
-    for img in sorted(root.glob("*.png")):
-        bw, bh = bucket_for(img, cfg)
-        path = dataset._cache_path(img, bw, bh)
-        assert path.exists(), f"missing cache file for {img.name}"
-        out[img.stem] = (path, torch.load(path, map_location="cpu"))
+    for record in dataset.records:
+        bw, bh = bucket_for(record["path"], cfg)
+        path = dataset._cache_path(record["path"], fit_geometry(record["src_w"], record["src_h"], bw, bh))
+        assert path.exists(), f"missing cache file for {record['path'].name}"
+        out[record["path"].stem] = (path, torch.load(path, map_location="cpu"))
     return out
 
 
@@ -132,7 +140,7 @@ def run_serial(dataset, vae, cfg, device, dtype) -> None:
 
 def test_equivalence_with_serial() -> None:
     """New pipelined impl must produce identical latents to the old loop."""
-    import cache
+    from trainer import cache
 
     with tempfile.TemporaryDirectory() as td:
         dir_a = Path(td) / "a"
@@ -171,7 +179,7 @@ def test_equivalence_with_serial() -> None:
 
 def test_skip_on_second_run() -> None:
     """Warm cache twice; the second run must re-encode nothing."""
-    import cache
+    from trainer import cache
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -200,7 +208,7 @@ def test_skip_on_second_run() -> None:
 
 def test_mixed_precached() -> None:
     """Pre-existing cache files are skipped; the rest are still encoded."""
-    import cache
+    from trainer import cache
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -228,7 +236,7 @@ def test_mixed_precached() -> None:
 
 def test_gate_disabled() -> None:
     """cache_latents=False -> immediate no-op."""
-    import cache
+    from trainer import cache
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -248,7 +256,7 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
 
     Uses GPU/bf16 when available (matching the real training path), else CPU/fp32.
     """
-    import cache
+    from trainer import cache
     from diffusers import AutoencoderKL
 
     use_gpu = torch.cuda.is_available()

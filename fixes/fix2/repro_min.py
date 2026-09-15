@@ -22,8 +22,8 @@ run. The process is expected to die with SIGABRT; the KFD message (kernel name, 
 goes to this script's own log, `repro_min.stderr.log`, because the HIP runtime writes straight to
 file descriptor 2.
 
-Weights are referenced, never copied. `--model` defaults to `trainer/config.toml`'s
-`pretrained_model_name_or_path` when that file is next to this one, else to the author's SDXL base.
+Weights are referenced, never copied. `--model` defaults to `config.toml`'s
+`pretrained_model_name_or_path` when that file is at the repo root, else to the author's SDXL base.
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ TE_LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "out_proj")
 
 
 def default_model() -> str:
-    """`trainer/config.toml` if it is reachable, otherwise the author's local SDXL base."""
-    config = HERE.parents[1] / "trainer" / "config.toml"
+    """`config.toml` if it is reachable, otherwise the author's local SDXL base."""
+    config = HERE.parents[1] / "config.toml"
     try:
         import tomllib
 

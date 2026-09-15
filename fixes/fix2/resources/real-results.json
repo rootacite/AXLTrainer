@@ -17,9 +17,9 @@
     "seconds": 24.0,
     "log": "/tmp/axl-fix2-repro/01_network-dim-32/train.out",
     "reaped_workers": [
-      104291,
-      104351,
-      104352
+      124643,
+      124705,
+      124706
     ],
     "pruned_dirs": 1,
     "killed_after_fault": false,

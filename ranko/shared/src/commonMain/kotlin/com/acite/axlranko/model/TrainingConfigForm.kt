@@ -1,7 +1,31 @@
 package com.acite.axlranko.model
 
 import com.acite.axlranko.data.AxlTrainerConfig
+import com.acite.axlranko.data.SampleSetConfig
 import com.acite.axlranko.data.TomlDocumentPatcher
+import com.acite.axlranko.data.ValidationConfig
+
+/** The TOML section the sample-set blocks live in. */
+const val SAMPLE_SETS_SECTION = "validation.samples"
+
+/** Prefix of the field-error keys that belong to one `[[validation.samples]]` entry. */
+const val SAMPLE_SET_ERROR_PREFIX = "samples."
+
+/**
+ * One `[[validation.samples]]` entry as editable text. A key the file omits is shown with the
+ * value it inherits from the flat `[validation]` scalars, and saving writes every key back.
+ */
+data class SampleSetForm(
+    val name: String = "",
+    val prompt: String = "",
+    val negative: String = "",
+    val width: String = "",
+    val height: String = "",
+    val steps: String = "",
+    val guidanceScale: String = "",
+    val seed: String = "",
+    val repeat: String = ""
+)
 
 data class TrainingConfigForm(
     val pretrainedModelNameOrPath: String = "",
@@ -70,15 +94,29 @@ data class TrainingConfigForm(
     val maxDataLoaderNWorkers: String = "",
     val persistentWorkers: Boolean = true,
 
-    val samplePrompts: String = "",
-    val sampleNegative: String = "",
-    val sampleWidth: String = "",
-    val sampleHeight: String = "",
-    val sampleSteps: String = "",
-    val sampleSeed: String = "",
-    val sampleRepeat: String = "",
-    val guidanceScale: String = ""
+    /** `[[validation.samples]]`, in file order. Never empty: one set always exists. */
+    val sampleSets: List<SampleSetForm> = listOf(SampleSetForm()),
 ) {
+    /** The set the flat `[validation]` scalars mirror: deleting every set falls back to it. */
+    val primarySampleSet: SampleSetForm get() = sampleSets.firstOrNull() ?: SampleSetForm()
+
+    fun withSampleSet(index: Int, set: SampleSetForm): TrainingConfigForm {
+        if (index !in sampleSets.indices) return this
+        return copy(sampleSets = sampleSets.toMutableList().also { it[index] = set })
+    }
+
+    /** `+`: a new set cloned from [cloneOf], so a variant is one edit away. */
+    fun appendSampleSet(cloneOf: Int = sampleSets.lastIndex): TrainingConfigForm {
+        val clone = sampleSets.getOrNull(cloneOf) ?: SampleSetForm()
+        return copy(sampleSets = sampleSets + clone)
+    }
+
+    /** Deletes [index]; the last remaining set stays (the config always needs one prompt). */
+    fun removeSampleSet(index: Int): TrainingConfigForm {
+        if (sampleSets.size <= 1 || index !in sampleSets.indices) return this
+        return copy(sampleSets = sampleSets.filterIndexed { position, _ -> position != index })
+    }
+
     fun validate(): Map<String, String> {
         val errors = mutableMapOf<String, String>()
 
@@ -102,7 +140,7 @@ data class TrainingConfigForm(
 
         fun requireDouble(key: String, value: String, min: Double? = null, max: Double? = null) {
             val parsed = value.trim().toDoubleOrNull()
-            if (parsed == null) {
+            if (parsed == null || !parsed.isFinite()) {
                 errors[key] = "Enter a number"
                 return
             }
@@ -174,14 +212,23 @@ data class TrainingConfigForm(
 
         requireInt("max_data_loader_n_workers", maxDataLoaderNWorkers, min = 0)
 
-        requireText("sample_prompts", samplePrompts)
-        requireText("sample_negative", sampleNegative)
-        requireInt("sample_width", sampleWidth, min = 64)
-        requireInt("sample_height", sampleHeight, min = 64)
-        requireInt("sample_steps", sampleSteps, min = 1)
-        requireLong("sample_seed", sampleSeed)
-        requireInt("sample_repeat", sampleRepeat, min = 1)
-        requireDouble("guidance_scale", guidanceScale, min = 0.0)
+        if (sampleSets.isEmpty()) {
+            errors[SAMPLE_SET_ERROR_PREFIX + "0.prompt"] = "At least one sample set"
+        }
+        sampleSets.forEachIndexed { index, set ->
+            val key = { field: String -> "$SAMPLE_SET_ERROR_PREFIX$index.$field" }
+            requireText(key("prompt"), set.prompt)
+            requireInt(key("width"), set.width, min = 64, max = 4096)
+            requireInt(key("height"), set.height, min = 64, max = 4096)
+            requireInt(key("steps"), set.steps, min = 1, max = 150)
+            requireInt(key("repeat"), set.repeat, min = 1, max = 32)
+            requireDouble(key("guidance_scale"), set.guidanceScale, min = 0.0, max = 30.0)
+            val seedValue = set.seed.trim().toLongOrNull()
+            when {
+                seedValue == null -> errors[key("seed")] = "Enter an integer"
+                seedValue !in 0..4294967295L -> errors[key("seed")] = "0 – 4294967295"
+            }
+        }
 
         val minBucket = minBucketReso.trim().toIntOrNull()
         val maxBucket = maxBucketReso.trim().toIntOrNull()
@@ -197,6 +244,7 @@ data class TrainingConfigForm(
         fun n(value: String) = value.trim()
         fun f(value: String) = TomlDocumentPatcher.float(value)
         fun b(value: Boolean) = if (value) "true" else "false"
+        val primary = primarySampleSet
 
         return mapOf(
             "environment" to mapOf(
@@ -273,17 +321,39 @@ data class TrainingConfigForm(
                 "max_data_loader_n_workers" to n(maxDataLoaderNWorkers),
                 "persistent_workers" to b(persistentWorkers)
             ),
+            // The flat scalars are what a `[[validation.samples]]` key falls back to, so they
+            // mirror the first set: a file never carries two contradictory prompts.
             "validation" to mapOf(
-                "sample_prompts" to q(samplePrompts),
-                "sample_negative" to q(sampleNegative),
-                "sample_width" to n(sampleWidth),
-                "sample_height" to n(sampleHeight),
-                "sample_steps" to n(sampleSteps),
-                "sample_seed" to n(sampleSeed),
-                "sample_repeat" to n(sampleRepeat),
-                "guidance_scale" to f(guidanceScale)
+                "sample_prompts" to q(primary.prompt),
+                "sample_negative" to q(primary.negative),
+                "sample_width" to n(primary.width),
+                "sample_height" to n(primary.height),
+                "sample_steps" to n(primary.steps),
+                "sample_seed" to n(primary.seed),
+                "sample_repeat" to n(primary.repeat),
+                "guidance_scale" to f(primary.guidanceScale)
             )
         )
+    }
+
+    /** The `[[validation.samples]]` blocks, key order fixed so a save is a stable diff. */
+    fun toTomlArrayBlocks(): Map<String, List<Map<String, String>>> {
+        val blocks = sampleSets.map { set ->
+            linkedMapOf<String, String>().apply {
+                // A blank label is left out entirely; the trainer then names the set after
+                // its first prompt tag.
+                if (set.name.isNotBlank()) put("name", TomlDocumentPatcher.quote(set.name.trim()))
+                put("prompt", TomlDocumentPatcher.quote(set.prompt.trim()))
+                put("negative", TomlDocumentPatcher.quote(set.negative.trim()))
+                put("width", set.width.trim())
+                put("height", set.height.trim())
+                put("steps", set.steps.trim())
+                put("guidance_scale", TomlDocumentPatcher.float(set.guidanceScale))
+                put("seed", set.seed.trim())
+                put("repeat", set.repeat.trim())
+            }
+        }
+        return mapOf(SAMPLE_SETS_SECTION to blocks)
     }
 
     fun withBaseModelVersion(version: String): TrainingConfigForm {
@@ -378,15 +448,43 @@ data class TrainingConfigForm(
                 teMaxGradNorm = formatNumber(te.teMaxGradNorm),
                 maxDataLoaderNWorkers = infra.maxDataLoaderNWorkers.toString(),
                 persistentWorkers = infra.persistentWorkers,
-                samplePrompts = vali.samplePrompts,
-                sampleNegative = vali.sampleNegative,
-                sampleWidth = vali.sampleWidth.toString(),
-                sampleHeight = vali.sampleHeight.toString(),
-                sampleSteps = vali.sampleSteps.toString(),
-                sampleSeed = vali.sampleSeed.toString(),
-                sampleRepeat = vali.sampleRepeat.toString(),
-                guidanceScale = formatNumber(vali.guidanceScale)
+                sampleSets = sampleSetsOf(vali)
             )
+        }
+
+        /**
+         * Every `[[validation.samples]]` entry, with a key the entry omits shown as the
+         * `[validation]` scalar it inherits. A config without any entry gets the single set
+         * those scalars describe, which is what the trainer samples with in that case.
+         */
+        private fun sampleSetsOf(validation: ValidationConfig): List<SampleSetForm> {
+            if (validation.samples.isEmpty()) {
+                return listOf(
+                    SampleSetForm(
+                        prompt = validation.samplePrompts,
+                        negative = validation.sampleNegative,
+                        width = validation.sampleWidth.toString(),
+                        height = validation.sampleHeight.toString(),
+                        steps = validation.sampleSteps.toString(),
+                        guidanceScale = formatNumber(validation.guidanceScale),
+                        seed = validation.sampleSeed.toString(),
+                        repeat = validation.sampleRepeat.toString()
+                    )
+                )
+            }
+            return validation.samples.map { set: SampleSetConfig ->
+                SampleSetForm(
+                    name = set.name,
+                    prompt = set.prompt,
+                    negative = set.negative ?: validation.sampleNegative,
+                    width = (set.width ?: validation.sampleWidth).toString(),
+                    height = (set.height ?: validation.sampleHeight).toString(),
+                    steps = (set.steps ?: validation.sampleSteps).toString(),
+                    guidanceScale = formatNumber(set.guidanceScale ?: validation.guidanceScale),
+                    seed = (set.seed ?: validation.sampleSeed).toString(),
+                    repeat = (set.repeat ?: validation.sampleRepeat).toString()
+                )
+            }
         }
 
         /** Display-only: whole-valued doubles show as `5`, not `5.0`. Save uses [TomlDocumentPatcher.float]. */

@@ -3,6 +3,8 @@ package com.acite.axlranko.data
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
+import com.acite.axlranko.model.GenerateSampleResponse
+import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
@@ -163,6 +165,45 @@ class TrainerIpcClient {
         val result = call(
             "list_samples",
             buildJsonObject {
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun listGeneratedSamples(name: String? = null, runId: String? = null): GeneratedSamplesResponse {
+        val result = call(
+            "list_generated_samples",
+            buildJsonObject {
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun generateSample(
+        checkpoint: String,
+        prompt: String,
+        negativePrompt: String,
+        cfg: Float,
+        steps: Int,
+        seed: Long,
+        step: Int? = null,
+        name: String? = null,
+        runId: String? = null,
+    ): GenerateSampleResponse {
+        val result = call(
+            "generate_sample",
+            buildJsonObject {
+                put("checkpoint", checkpoint)
+                put("prompt", prompt)
+                put("negative_prompt", negativePrompt)
+                put("cfg", cfg.toDouble())
+                put("steps", steps)
+                put("seed", seed)
+                step?.let { put("step", it) }
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

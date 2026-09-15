@@ -2,6 +2,7 @@ package com.acite.axlranko.pages
 
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -15,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridOn
@@ -35,6 +37,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -47,6 +50,8 @@ import coil3.compose.AsyncImage
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
+import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
+import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
 import com.acite.axlranko.model.AppearanceSettings
@@ -58,6 +63,7 @@ import com.acite.axlranko.ui.components.RankoChoiceRow
 import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
+import com.acite.axlranko.util.checkpointSubtitle
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 import java.io.File
@@ -318,7 +324,7 @@ private fun SectionNav(
     ) {
         items(ConfigSection.entries.toList(), key = { it.name }) { section ->
             val selected = uiState.selectedSection == section
-            val hasError = section.fieldKeys.any { it in uiState.fieldErrors }
+            val hasError = uiState.fieldErrors.keys.any { section.owns(it) }
             val colors = rankoColors
             RankoChoiceRow(
                 selected = selected,
@@ -389,7 +395,7 @@ private fun SectionFields(
             ConfigSection.UnetOptimizer -> UnetFields(form, errors, viewModel)
             ConfigSection.TeOptimizer -> TeFields(form, errors, viewModel)
             ConfigSection.Infrastructure -> InfrastructureFields(form, errors, viewModel)
-            ConfigSection.Validation -> ValidationFields(form, errors, viewModel)
+            ConfigSection.Validation -> ValidationFields(uiState, form, errors, viewModel)
             ConfigSection.Appearance -> AppearanceFields(uiState, viewModel)
         }
     }
@@ -821,30 +827,6 @@ private fun CheckpointRow(
     }
 }
 
-private fun checkpointSubtitle(checkpoint: CheckpointItem): String {
-    val parts = mutableListOf<String>()
-    parts += checkpoint.runId.ifBlank { "run" }
-    checkpoint.step?.let { parts += "step $it" }
-    val rank = checkpoint.networkDim
-    val alpha = checkpoint.networkAlpha
-    if (rank != null && alpha != null) parts += "r$rank/α$alpha"
-    parts += formatBytes(checkpoint.sizeBytes)
-    if (checkpoint.final) parts += "final"
-    return parts.joinToString(" · ")
-}
-
-private fun formatBytes(bytes: Long): String {
-    if (bytes <= 0) return "0 B"
-    val units = listOf("B", "KB", "MB", "GB")
-    var value = bytes.toDouble()
-    var index = 0
-    while (value >= 1024 && index < units.lastIndex) {
-        value /= 1024
-        index++
-    }
-    return if (index == 0) "$bytes B" else "${(value * 10).toInt() / 10.0} ${units[index]}"
-}
-
 @Composable
 private fun NetworkFields(
     form: TrainingConfigForm,
@@ -1141,74 +1123,218 @@ private fun InfrastructureFields(
 
 @Composable
 private fun ValidationFields(
+    uiState: UtilsUiState,
     form: TrainingConfigForm,
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
 ) {
+    val sets = form.sampleSets
+    val selected = uiState.selectedSampleSet.coerceIn(0, sets.lastIndex.coerceAtLeast(0))
+    val set = sets.getOrNull(selected) ?: SampleSetForm()
+    if (sets.isEmpty()) return
+    val key = { field: String -> "$SAMPLE_SET_ERROR_PREFIX$selected.$field" }
+
+    SampleSetTabs(
+        sets = sets,
+        selected = selected,
+        errors = errors,
+        onSelect = viewModel::selectSampleSet,
+        onAdd = viewModel::addSampleSet,
+        onRemove = viewModel::removeSampleSet,
+    )
     ConfigTextField(
-        label = "Sample prompt",
-        value = form.samplePrompts,
-        error = errors["sample_prompts"],
-        onValueChange = { viewModel.updateForm { copy(samplePrompts = it) } },
+        label = "Label",
+        value = set.name,
+        supporting = "Tab title; left blank it follows the prompt's first tag",
+        onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(name = value) } }
+    )
+    ConfigTextField(
+        label = "Positive prompt",
+        value = set.prompt,
+        error = errors[key("prompt")],
+        onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(prompt = value) } },
         singleLine = false,
         minLines = 4
     )
     ConfigTextField(
         label = "Negative prompt",
-        value = form.sampleNegative,
-        error = errors["sample_negative"],
-        onValueChange = { viewModel.updateForm { copy(sampleNegative = it) } },
+        value = set.negative,
+        error = errors[key("negative")],
+        supporting = "Left blank the set samples without a negative prompt",
+        onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(negative = value) } },
         singleLine = false,
         minLines = 3
     )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Width",
-            value = form.sampleWidth,
-            error = errors["sample_width"],
-            supporting = sampleAspectHint(form),
-            onValueChange = { viewModel.updateForm { copy(sampleWidth = it) } },
+            value = set.width,
+            error = errors[key("width")],
+            supporting = sampleAspectHint(set),
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(width = value) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
             label = "Height",
-            value = form.sampleHeight,
-            error = errors["sample_height"],
-            onValueChange = { viewModel.updateForm { copy(sampleHeight = it) } },
+            value = set.height,
+            error = errors[key("height")],
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(height = value) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
             label = "Steps",
-            value = form.sampleSteps,
-            error = errors["sample_steps"],
-            onValueChange = { viewModel.updateForm { copy(sampleSteps = it) } },
+            value = set.steps,
+            error = errors[key("steps")],
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(steps = value) } },
             modifier = Modifier.weight(1f)
         )
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Guidance scale",
-            value = form.guidanceScale,
-            error = errors["guidance_scale"],
-            onValueChange = { viewModel.updateForm { copy(guidanceScale = it) } },
+            value = set.guidanceScale,
+            error = errors[key("guidance_scale")],
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(guidanceScale = value) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
-            label = "Sample seed",
-            value = form.sampleSeed,
-            error = errors["sample_seed"],
-            supporting = "0 typically means a random seed",
-            onValueChange = { viewModel.updateForm { copy(sampleSeed = it) } },
+            label = "Seed",
+            value = set.seed,
+            error = errors[key("seed")],
+            supporting = "0 = a random seed per image",
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(seed = value) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
             label = "Repeat",
-            value = form.sampleRepeat,
-            error = errors["sample_repeat"],
-            onValueChange = { viewModel.updateForm { copy(sampleRepeat = it) } },
+            value = set.repeat,
+            error = errors[key("repeat")],
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(repeat = value) } },
             modifier = Modifier.weight(1f)
         )
     }
+    Text(
+        text = "Every checkpoint renders these sets in order; a fixed seed gives each set " +
+            "the same starting noise, so only the prompts differ.",
+        style = MaterialTheme.typography.bodySmall,
+        color = rankoColors.textDim,
+    )
+}
+
+/** Horizontal `[[validation.samples]]` tab strip with a trailing `+`. */
+@Composable
+private fun SampleSetTabs(
+    sets: List<SampleSetForm>,
+    selected: Int,
+    errors: Map<String, String>,
+    onSelect: (Int) -> Unit,
+    onAdd: () -> Unit,
+    onRemove: (Int) -> Unit,
+) {
+    var pendingRemoval by remember { mutableStateOf<Int?>(null) }
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        sets.forEachIndexed { index, set ->
+            SampleSetChip(
+                label = sampleSetLabel(set, index),
+                selected = index == selected,
+                hasError = errors.keys.any { it.startsWith("$SAMPLE_SET_ERROR_PREFIX$index.") },
+                onSelect = { onSelect(index) },
+                onRemove = if (sets.size > 1) ({ pendingRemoval = index }) else null,
+            )
+        }
+        CapsuleButton(
+            text = "+",
+            onClick = onAdd,
+            compact = true,
+        )
+    }
+    pendingRemoval?.let { index ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = { Text("Delete ${sampleSetLabel(sets[index], index)}?") },
+            text = {
+                Text(
+                    "The set and its prompt are removed from config.toml on save. " +
+                        "The other sets are left alone."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRemove(index)
+                    pendingRemoval = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SampleSetChip(
+    label: String,
+    selected: Boolean,
+    hasError: Boolean,
+    onSelect: () -> Unit,
+    onRemove: (() -> Unit)?,
+) {
+    val colors = rankoColors
+    Row(
+        modifier = Modifier
+            .clip(rankoTokens.capsule)
+            .background(if (selected) colors.accentPink.copy(alpha = 0.22f) else colors.bgPanel)
+            .border(
+                width = if (selected) 1.dp else 0.dp,
+                color = if (selected) colors.accentPink else Color.Transparent,
+                shape = rankoTokens.capsule
+            )
+            .clickable { onSelect() }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (hasError) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = "Invalid fields",
+                modifier = Modifier.size(14.dp),
+                tint = colors.qualityRed
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) colors.accentPink else colors.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 180.dp)
+        )
+        if (onRemove != null) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Delete this sample set",
+                modifier = Modifier.size(14.dp).clickable { onRemove() },
+                tint = colors.textDim
+            )
+        }
+    }
+}
+
+/**
+ * Tab title: the set's own label, else its prompt's first tag, else the position.
+ * Mirrors what the trainer prints, so a set is recognisable from either side.
+ */
+internal fun sampleSetLabel(set: SampleSetForm, index: Int): String {
+    val name = set.name.trim()
+    if (name.isNotEmpty()) return name
+    val tag = set.prompt.substringBefore(',').trim()
+    return tag.ifEmpty { "Set ${index + 1}" }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1397,9 +1523,9 @@ private fun bucketStepHint(form: TrainingConfigForm): String? {
     else "Not divisible by bucket step $step"
 }
 
-private fun sampleAspectHint(form: TrainingConfigForm): String? {
-    val w = form.sampleWidth.toIntOrNull() ?: return null
-    val h = form.sampleHeight.toIntOrNull() ?: return null
+private fun sampleAspectHint(set: SampleSetForm): String? {
+    val w = set.width.toIntOrNull() ?: return null
+    val h = set.height.toIntOrNull() ?: return null
     if (w <= 0 || h <= 0) return null
     val g = gcd(w, h)
     return "${w / g}:${h / g}"

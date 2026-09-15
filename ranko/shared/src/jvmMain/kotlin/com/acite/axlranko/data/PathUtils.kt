@@ -36,15 +36,19 @@ actual fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
 
 actual fun saveTrainerConfigPatched(
     tomlPath: Path,
-    sectionValues: Map<String, Map<String, String>>
+    sectionValues: Map<String, Map<String, String>>,
+    arrayBlocks: Map<String, List<Map<String, String>>>
 ): Result<Unit> {
     return try {
         val file = File(tomlPath.toString())
         if (!file.exists()) {
             return Result.failure(IllegalStateException("Config file does not exist: $tomlPath"))
         }
-        val original = file.readText()
-        val patched = TomlDocumentPatcher.apply(original, sectionValues)
+        var patched = file.readText()
+        for ((section, blocks) in arrayBlocks) {
+            patched = TomlDocumentPatcher.replaceArrayOfTables(patched, section, blocks)
+        }
+        patched = TomlDocumentPatcher.apply(patched, sectionValues)
         file.writeText(patched)
         Result.success(Unit)
     } catch (e: Exception) {

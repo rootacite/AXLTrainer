@@ -17,7 +17,7 @@ Environment:
 |---|---|
 | `AXL_PYTHON` | Optional. Ranko uses this interpreter instead of `python3`. |
 
-Working directory must be the repo root so `trainer/config.toml` resolves. Ranko locates `api.py` by walking up from the executable / `user.dir`.
+Working directory must be the repo root so `config.toml` resolves. Ranko locates `api.py` by walking up from the executable / `user.dir`.
 
 `start_api.sh` is a debug wrapper. The desktop app owns the process in normal use.
 
@@ -93,11 +93,26 @@ Result:
     "Metric/Tag/Name": [
       { "step": 0, "value": 0.0, "wall_time": 0.0 }
     ]
-  }
+  },
+  "sample_sets": [
+    {
+      "name": "classroom",
+      "prompt": "string",
+      "negative": "string",
+      "width": 1152,
+      "height": 768,
+      "steps": 35,
+      "guidance_scale": 6.0,
+      "seed": 1,
+      "repeat": 3
+    }
+  ]
 }
 ```
 
-`config` is the flattened `TrainConfig` plus a fresh read of `trainer/config.toml` (TOML wins). `run_id` is `null` when no run directory can be resolved; metrics / `latest_stats` are then empty rather than an error. Flat artifacts from before the run-directory layout are not resolved.
+`config` is the flattened `TrainConfig` plus a fresh read of `config.toml` (TOML wins). `run_id` is `null` when no run directory can be resolved; metrics / `latest_stats` are then empty rather than an error. Flat artifacts from before the run-directory layout are not resolved.
+
+`sample_sets` is `resolve_sample_sets` over that config: one entry per `[[validation.samples]]` block, or a single entry built from the flat `sample_*` scalars when the file has none. The flat `sample_prompts` / `sample_negative` / `sample_width` / `sample_height` / `sample_steps` / `sample_seed` / `sample_repeat` / `guidance_scale` keys in `config` mirror the first entry, so a client that only reads those keeps working. A block that fails validation is reported on stderr and yields `[]` rather than an IPC error, so the dashboard keeps rendering.
 
 Training logs `Train/Loss` (per-step) and `Train/Avg_Loss` (Kohya-style epoch-window mean). If TensorBoard only has `Train/Loss` (older runs), `dashboard` synthesizes `Train/Avg_Loss` as a Kohya `LossRecorder` over a window of `min(n, 100)` points.
 
@@ -120,16 +135,103 @@ Result:
   "samples": {
     "1000": [
       {
-        "filename": "sample_1000_0.png",
+        "filename": "sample_1000_p0_0.png",
+        "set_index": 0,
         "repeat_idx": 0,
-        "path": "/absolute/path/to/sample_1000_0.png"
+        "path": "/absolute/path/to/sample_1000_p0_0.png"
       }
     ]
   }
 }
 ```
 
-Filename pattern `_(\d+)_(\d+)\.png$` → `(step, repeat_idx)`. Unmatched files use step `"-1"`. `path` is absolute so the UI can load the file from disk. `samples` is empty (and `run_id` null) when no run resolves.
+Filename pattern `_(\d+)_p(\d+)_(\d+)\.png$` → `(step, set_index, repeat_idx)`; the two-number form written before `[[validation.samples]]` (`_(\d+)_(\d+)\.png$`) still parses, as set `0`. Unmatched files use step `"-1"` and set `0`. Within a step the samples are ordered by `(set_index, repeat_idx)`. `path` is absolute so the UI can load the file from disk. `samples` is empty (and `run_id` null) when no run resolves.
+
+### `generate_sample`
+
+Generates one extra sample image from a LoRA checkpoint of the resolved run, detached from any
+training process. Returns as soon as the generator is spawned; follow it with `list_generated_samples`.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checkpoint` | string | Yes | Path to a `.safetensors` LoRA file (any run's). |
+| `prompt` | string | Yes | Non-empty. |
+| `negative_prompt` | string \| null | No | Defaults to the first `[[validation.samples]]` entry's `negative` (or `sample_negative`). |
+| `cfg` | number \| null | No | 1–30, defaults to that entry's `guidance_scale`. |
+| `steps` | integer \| null | No | 1–150, defaults to that entry's `steps`. |
+| `seed` | integer \| null | No | 0–4294967295, `0` = random (the seed actually used is written back to the job). |
+| `step` | integer \| null | No | Step the checkpoint belongs to; used by the UI to attach the image to that step's samples. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`. |
+
+`width` / `height` default to the first `[[validation.samples]]` entry's (or `[validation].sample_width`
+/ `sample_height`); other image settings (`clip_skip`, `max_token_length`, `network_dim`,
+`network_alpha`, base model) come from the checkpoint's own kohya metadata so an old checkpoint is
+sampled with the settings it was trained with.
+
+Refused with an error when the trainer process is alive (running **or** paused — the GPU is single
+tenant), when a generation for the run is already `running`, or when a value is out of range.
+
+Result:
+
+```json
+{
+  "job": {
+    "id": "rein_s000100_gen_20260915_161123",
+    "state": "running",
+    "run_id": "rein_20260911_120000",
+    "output_name": "rein",
+    "checkpoint": "/out/rein_20260911_120000/rein_s000100/rein.safetensors",
+    "prompt": "1girl, solo",
+    "negative_prompt": "",
+    "cfg": 5.0,
+    "steps": 20,
+    "seed": 12345,
+    "width": 1152,
+    "height": 768,
+    "step": 100,
+    "current_step": 0,
+    "total_steps": 20,
+    "image_path": null,
+    "error": null,
+    "pid": 12345,
+    "started_at": 1757500000.0
+  },
+  "log_path": "/out/rein_20260911_120000/rein_samples/generated/rein_s000100_gen_20260915_161123.log"
+}
+```
+
+### `list_generated_samples`
+
+Lists the generated samples of the resolved run, newest first. Read-only; a job whose generator died
+(reported `running` but its PID is gone) is rewritten to `error` so it never blocks the next one.
+
+Params: `name` / `run_id` as in `list_samples`.
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "jobs": [
+    {
+      "id": "rein_s000100_gen_20260915_161123",
+      "state": "done",
+      "step": 100,
+      "cfg": 5.0,
+      "steps": 20,
+      "seed": 12345,
+      "current_step": 20,
+      "total_steps": 20,
+      "image_path": "/out/rein_20260911_120000/rein_samples/generated/rein_s000100_gen_20260915_161123.png",
+      "error": null
+    }
+  ]
+}
+```
+
+`state` is `running`, `done` or `error`; `jobs` is empty when the run has no `generated/` directory.
 
 ### `list_checkpoints`
 
@@ -182,6 +284,8 @@ Result: the on-disk state plus `alive` (PID is running) and `log_path`. Relevant
 `status` is one of: `idle`, `starting`, `encoding`, `training`, `sampling`, `pausing`, `paused`, `resuming`, `stopping`, `finished`, `error`.
 
 Pause/resume is a GPU swap process. While `pausing` or `resuming`, `swap` is `{stage, detail, current, total}`.
+
+While sampling, `sampling` is `{active, repeat, repeats, denoise_step, denoise_steps, global_step, prompt_set, prompt_sets}`: `repeat`/`repeats` count the images of the whole pass (all `[[validation.samples]]` sets) and `prompt_set`/`prompt_sets` are 1-based (both `0` for a run with no sets).
 
 ### `train_start`
 

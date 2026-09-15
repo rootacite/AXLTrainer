@@ -6,7 +6,7 @@ joint TE+UNet backward page-faults. This script keeps the real UNet (and its LoR
 exact `[M, network_dim] @ [network_dim, 2048]` GEMMs run inside a real graph) and feeds a synthetic
 cross-attention input that carries gradients — i.e. everything from the failing case except CLIP.
 
-Weights are referenced from `trainer/config.toml` (`pretrained_model_name_or_path`), never copied.
+Weights are referenced from `config.toml` (`pretrained_model_name_or_path`), never copied.
 
     python repro_unet.py --batch 2 --chunks 1     # M = 462, the shape fix2 pins the fault on
     python repro_unet.py --batch 1 --chunks 1     # M = 231
@@ -38,7 +38,7 @@ def main() -> int:
     args = parser.parse_args()
 
     sys.path.insert(0, str(REPO_ROOT))
-    os.chdir(REPO_ROOT)  # trainer/config.py resolves trainer/config.toml relative to the cwd
+    os.chdir(REPO_ROOT)  # trainer/config.py resolves config.toml relative to the cwd
     import torch
     import torch.nn.functional as F
 
@@ -60,7 +60,7 @@ def main() -> int:
     seq_len = 77 * args.chunks
     rows = args.batch * seq_len
 
-    print(json.dumps({"config": str(REPO_ROOT / "trainer" / "config.toml"),
+    print(json.dumps({"config": str(REPO_ROOT / "config.toml"),
                       "model": cfg.pretrained_model_name_or_path, "network_dim": cfg.network_dim,
                       "batch": args.batch, "chunks": args.chunks, "seq": seq_len, "M": rows,
                       "bucket": args.bucket, "detach": bool(args.detach),

@@ -516,8 +516,9 @@ private fun samplingTotal(status: TrainStatus): Int {
 
 private fun samplingDetail(status: TrainStatus): String {
     val s = status.sampling
+    val set = if (s.promptSets > 1) "set ${s.promptSet.coerceAtLeast(1)}/${s.promptSets}  " else ""
     return when {
-        s.active -> "image ${s.repeat + 1}/${s.repeats}  denoise ${s.denoiseStep}/${s.denoiseSteps}"
+        s.active -> "${set}image ${s.repeat + 1}/${s.repeats}  denoise ${s.denoiseStep}/${s.denoiseSteps}"
         s.repeats > 0 && s.globalStep > 0 -> "Last at step ${s.globalStep}"
         else -> "Idle"
     }

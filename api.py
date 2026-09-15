@@ -12,7 +12,7 @@ from typing import Any, Optional
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from trainer.checkpoints import discover_checkpoints, resolve_resume_path
-from trainer.config import TrainConfig, _load_toml_config
+from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
@@ -26,6 +26,7 @@ from trainer.control import (
 )
 from trainer.hardware import collect_hardware_status
 from trainer.runs import find_latest_run
+from trainer import genjob
 
 _TAG_BLOCKED = frozenset(
     {
@@ -146,14 +147,35 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
             latest_stats[tag] = data[-1]["value"]
             latest_stats["current_step"] = data[-1]["step"]
 
+    # The flat `sample_*` keys mirror the first `[[validation.samples]]` entry, so the
+    # "generate a sample" form keeps a single place to read its defaults from.
+    sample_sets = _sample_sets_payload()
+    if sample_sets:
+        first = sample_sets[0]
+        cfg = {
+            **cfg,
+            "sample_prompts": first["prompt"],
+            "sample_negative": first["negative"],
+            "sample_width": first["width"],
+            "sample_height": first["height"],
+            "sample_steps": first["steps"],
+            "sample_seed": first["seed"],
+            "sample_repeat": first["repeat"],
+            "guidance_scale": first["guidance_scale"],
+        }
+
     return {
         "config": cfg,
         "run_id": run_id,
         "latest_stats": latest_stats,
         "metrics": metrics,
+        "sample_sets": sample_sets,
     }
 
 
+# `{name}_{step:06d}_p{set}_{repeat}.png` (multi-prompt runs); the two-number form is
+# what runs before `[[validation.samples]]` wrote, and still maps to set 0.
+_SAMPLE_NAME_SET = re.compile(r"_(\d+)_p(\d+)_(\d+)\.png$")
 _SAMPLE_NAME = re.compile(r"_(\d+)_(\d+)\.png$")
 
 
@@ -163,23 +185,41 @@ def scan_samples(sample_dir: Path) -> dict[str, list]:
 
     grouped: dict[int, list] = defaultdict(list)
     for img_path in sample_dir.glob("*.png"):
-        match = _SAMPLE_NAME.search(img_path.name)
+        match = _SAMPLE_NAME_SET.search(img_path.name)
         if match:
-            step, repeat_idx = int(match.group(1)), int(match.group(2))
+            step, set_index, repeat_idx = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
         else:
-            step, repeat_idx = -1, 0
+            legacy = _SAMPLE_NAME.search(img_path.name)
+            if legacy:
+                step, set_index, repeat_idx = int(legacy.group(1)), 0, int(legacy.group(2))
+            else:
+                step, set_index, repeat_idx = -1, 0, 0
         grouped[step].append(
             {
                 "filename": img_path.name,
+                "set_index": set_index,
                 "repeat_idx": repeat_idx,
                 "path": str(img_path.resolve()),
             }
         )
 
     for step in grouped:
-        grouped[step] = sorted(grouped[step], key=lambda x: x["repeat_idx"])
+        grouped[step] = sorted(grouped[step], key=lambda x: (x["set_index"], x["repeat_idx"]))
 
     return {str(k): grouped[k] for k in sorted(grouped.keys(), reverse=True)}
+
+
+def _sample_sets_payload() -> list[dict[str, Any]]:
+    """The resolved `[[validation.samples]]` sets, for the dashboard's sample defaults.
+
+    A broken entry must not take the dashboard down with it: the charts and the run
+    status keep working, and the trainer reports the config error when it starts.
+    """
+    try:
+        return [asdict(sample_set) for sample_set in resolve_sample_sets(_train_config_dict())]
+    except Exception as exc:
+        print(f"[Warn] validation.samples ignored: {exc}", file=sys.stderr)
+        return []
 
 
 def _repo_root() -> Path:
@@ -202,6 +242,8 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
 
     cfg_obj = TrainConfig()
     require_trainable(resolve_family(cfg_obj))
+    # A bad `[[validation.samples]]` entry would otherwise only surface once sampling starts.
+    resolve_sample_sets(cfg_obj)
 
     resume_raw = str(getattr(cfg_obj, "resume_lora_path", "") or "").strip()
     if resume_raw:
@@ -367,6 +409,121 @@ def handle_hardware_status(_params: dict[str, Any]) -> dict[str, Any]:
     return _json_safe(collect_hardware_status())
 
 
+def _samples_dir(cfg: dict[str, Any], run_id: str, output_name: str) -> Path:
+    output_dir = Path(str(cfg.get("output_dir") or ".")).expanduser()
+    return output_dir / str(run_id) / f"{output_name}_samples"
+
+
+def _generated_dir(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[tuple[str, str, Path]]:
+    """(run_id, output_name, generated dir) for the resolved run, or None when no run exists."""
+    run_id = _resolve_run_id(params, cfg)
+    if not run_id:
+        return None
+    output_name = _run_name(params, cfg)
+    return run_id, output_name, genjob.generated_dir(_samples_dir(cfg, run_id, output_name))
+
+
+def _reconcile_generated(generated: Path) -> list[dict[str, Any]]:
+    """A generator killed with its job still `running` (SIGKILL, reboot) must not block the next one."""
+    for job in genjob.list_jobs(generated):
+        if job.get("state") == genjob.STATE_RUNNING and not is_pid_alive(job.get("pid")):
+            genjob.update_job(
+                generated,
+                str(job["id"]),
+                state=genjob.STATE_ERROR,
+                error="the generator exited before finishing (see the job's .log)",
+            )
+    return genjob.list_jobs(generated)
+
+
+def handle_list_generated_samples(params: dict[str, Any]) -> dict[str, Any]:
+    """Generated samples for a run, newest first. Read-only and empty-safe."""
+    cfg = _train_config_dict()
+    resolved = _generated_dir(params, cfg)
+    if resolved is None:
+        return {"run_id": None, "jobs": []}
+    run_id, _output_name, generated = resolved
+    return {"run_id": run_id, "jobs": _json_safe(_reconcile_generated(generated))}
+
+
+def _generator_script() -> Path:
+    script = _repo_root() / "trainer" / "generate_sample.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"missing generator: {script}")
+    return script
+
+
+def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
+    """Start one "sample with this checkpoint" job. Returns immediately; Ranko follows the job file.
+
+    The GPU is single-tenant: a live trainer (running *or* paused) refuses the request outright,
+    because a second SDXL would have to load into the same 16 GB.
+    """
+    current = reconcile()
+    if is_pid_alive(current.get("pid")):
+        raise ValueError(
+            "training is still running; finish or stop the run before generating "
+            "(the GPU is in use)"
+        )
+
+    cfg = _train_config_dict()
+    resolved = _generated_dir(params, cfg)
+    if resolved is None:
+        raise ValueError("no run to attach the sample to; finish a run first")
+    run_id, output_name, generated = resolved
+
+    checkpoint = Path(str(params.get("checkpoint") or "")).expanduser()
+    if not checkpoint.is_file():
+        raise ValueError(f"not a checkpoint file: {checkpoint}")
+
+    first_set = _sample_sets_payload()
+    defaults = first_set[0] if first_set else {"prompt": None}
+    request = genjob.normalize_request(
+        params,
+        defaults={
+            "prompt": defaults.get("prompt") or cfg.get("sample_prompts"),
+            "negative_prompt": defaults.get("negative") or cfg.get("sample_negative"),
+            "cfg": defaults.get("guidance_scale", cfg.get("guidance_scale")),
+            "steps": defaults.get("steps", cfg.get("sample_steps")),
+            "seed": defaults.get("seed", cfg.get("sample_seed")),
+            "width": defaults.get("width", cfg.get("sample_width")),
+            "height": defaults.get("height", cfg.get("sample_height")),
+        },
+    )
+
+    generated.mkdir(parents=True, exist_ok=True)
+    # Reconcile first: a generator killed with its job still `running` must not block this one.
+    running = next(
+        (job for job in _reconcile_generated(generated) if job.get("state") == genjob.STATE_RUNNING),
+        None,
+    )
+    if running is not None:
+        raise ValueError(f"a generation is already running ({running.get('id')})")
+
+    job = genjob.new_job(
+        request,
+        run_id=run_id,
+        output_name=output_name,
+        checkpoint=str(checkpoint),
+    )
+    spec_path = genjob.job_path(generated, job["id"])
+    log = genjob.log_path(generated, job["id"])
+
+    # Write the record before spawning so a click that arrives while the process starts still lists it.
+    genjob.write_job(generated, job)
+    with open(log, "w", encoding="utf-8") as handle:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(_generator_script()), "--spec", str(spec_path)],
+            cwd=str(_repo_root()),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    job = genjob.update_job(generated, job["id"], pid=proc.pid)
+    return {"job": _json_safe(job), "log_path": str(log)}
+
+
 def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
     current = reconcile()
     if current.get("status") in _TAG_BLOCKED and is_pid_alive(current.get("pid")):
@@ -411,6 +568,8 @@ _HANDLERS = {
     "train_reset": handle_train_reset,
     "dataset_tag": handle_dataset_tag,
     "hardware_status": handle_hardware_status,
+    "generate_sample": handle_generate_sample,
+    "list_generated_samples": handle_list_generated_samples,
 }
 
 

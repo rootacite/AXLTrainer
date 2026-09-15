@@ -3,7 +3,7 @@
 
 This is the closest model-backed repro to the original failure that still skips the training loop:
 real SDXL UNet *and* both CLIP text encoders with LoRA adapters, a real tokenized caption, no VAE,
-no DataLoader, no optimizer. Weights are referenced from `trainer/config.toml`, never copied.
+no DataLoader, no optimizer. Weights are referenced from `config.toml`, never copied.
 
     python repro_joint.py --batch 3 --caption-index 2   # 2 CLIP chunks -> seq 154 -> M = 462
     python repro_joint.py --batch 1 --caption-index 0   # 1 chunk -> seq 77  -> M = 77
@@ -77,7 +77,7 @@ def main() -> int:
         encoder.to(device=device, dtype=dtype).train()
 
     print(json.dumps({
-        "config": str(REPO_ROOT / "trainer" / "config.toml"),
+        "config": str(REPO_ROOT / "config.toml"),
         "model": cfg.pretrained_model_name_or_path, "network_dim": cfg.network_dim,
         "batch": args.batch, "bucket": args.bucket,
         "gradient_checkpointing_unet": cfg.gradient_checkpointing_unet,

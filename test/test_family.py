@@ -8,6 +8,12 @@ import torch
 from safetensors.torch import save_file
 from transformers import CLIPTextConfig, CLIPTextModel
 
+import sys
+
+# `python test/test_family.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import api
 from trainer.checkpoints import read_lora_metadata, resolve_resume_path
 from trainer.config import TrainConfig

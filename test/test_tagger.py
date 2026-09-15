@@ -5,6 +5,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import sys
+
+# `python test/test_tagger.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from tagger.main import (
     DEFAULT_THRESHOLD,
     load_labels,

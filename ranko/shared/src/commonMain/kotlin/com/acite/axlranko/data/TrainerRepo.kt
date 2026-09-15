@@ -3,9 +3,18 @@ package com.acite.axlranko.data
 import java.io.File
 
 /**
- * Locates the trainer repo root (the directory that contains `api.py` and/or `trainer/config.toml`).
+ * Locates the trainer repo root (the directory that contains `api.py` and the root `config.toml`).
  */
 object TrainerRepo {
+    /**
+     * A directory is the repo root when it holds `api.py`, or when it holds both `config.toml` and
+     * the `trainer/` package. A lone `config.toml` is not enough: any unrelated directory on the way
+     * up could own one, and the app would then edit a stranger's file.
+     */
+    internal fun looksLikeRepoRoot(dir: File): Boolean =
+        File(dir, "api.py").isFile ||
+            (File(dir, "config.toml").isFile && File(dir, "trainer").isDirectory)
+
     fun findRoot(): File? {
         val starts = buildList {
             val exec = getAppExecutionPath()
@@ -16,9 +25,7 @@ object TrainerRepo {
         for (start in starts) {
             var current: File? = start.absoluteFile
             while (current != null) {
-                val hasApi = File(current, "api.py").isFile
-                val hasConfig = File(File(current, "trainer"), "config.toml").isFile
-                if (hasApi || hasConfig) return current
+                if (looksLikeRepoRoot(current)) return current
                 current = current.parentFile
             }
         }
@@ -26,7 +33,7 @@ object TrainerRepo {
     }
 
     fun configToml(): File? {
-        val file = File(findRoot() ?: return null, "trainer${File.separator}config.toml")
+        val file = File(findRoot() ?: return null, "config.toml")
         return file.takeIf { it.isFile }
     }
 }

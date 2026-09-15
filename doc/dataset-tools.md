@@ -78,7 +78,7 @@ python ranko/tools/agent.py --data-dir ./dataset list --limit 10
 python ranko/tools/agent.py --data-dir ./dataset stats --limit 20
 python ranko/tools/agent.py --data-dir ./dataset filter --tags "solo, 1girl" --mode and
 python ranko/tools/agent.py --data-dir ./dataset remove-tags --tags "blurry" --only "solo" --dry-run
-python ranko/tools/agent.py --config ../trainer/config.toml stats
+python ranko/tools/agent.py --config ../config.toml stats
 python ranko/tools/agent.py --data-dir ./dataset drop --rate 0.2 --seed 42 --dry-run
 python ranko/tools/agent.py --data-dir ./dataset check
 ```

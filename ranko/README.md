@@ -38,7 +38,7 @@ It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training dat
 ## Requirements and configuration
 
 - JDK 17+ and Gradle (the project ships a wrapper)
-- On startup the app locates its config automatically: it walks up from the executable and working directory until it finds `trainer/config.toml` (or `api.py`) at the trainer repo root
+- On startup the app locates its config automatically: it walks up from the executable and working directory until it finds the trainer repo root (`api.py`, or a `config.toml` next to the `trainer/` package)
 - The Dashboard helper is `api.py` at the trainer repo root. Ranko uses the same upward search, then runs `$AXL_PYTHON` or `python3 -u api.py`
 - The config is a TOML file; `[environment].train_data_dir` points to the training dataset directory
 - Dataset layout: image files and same-named `.txt` caption files stored side by side; caption content is a comma-separated list of tags
@@ -74,4 +74,4 @@ It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training dat
 
 ## Note
 
-- An example config lives in `trainer/config.toml` (sibling directory `trainer/` of this repository).
+- An example config lives in `config.toml` at the root of this repository.

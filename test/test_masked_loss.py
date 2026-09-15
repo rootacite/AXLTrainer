@@ -5,10 +5,18 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageDraw
 
+import sys
+
+# `python test/test_masked_loss.py` has to import the repo's own packages, exactly like
+# `unittest discover -s test` does from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from trainer.config import TrainConfig
 from trainer.dataset import LoraImageDataset, collate_fn
 from trainer.utils import (
+    FIT_PAD_VALUE,
     apply_loss_mask,
+    fit_geometry,
     is_mask_sidecar,
     list_images,
     load_loss_mask,
@@ -26,8 +34,8 @@ def _write_mask(path: Path, size, paint) -> None:
     img.save(path)
 
 
-def _cfg(data_dir: str, resolution: int = 64) -> TrainConfig:
-    return TrainConfig(
+def _cfg(data_dir: str, resolution: int = 64, **overrides) -> TrainConfig:
+    cfg = TrainConfig(
         train_data_dir=data_dir,
         enable_bucket=False,
         train_resolution=resolution,
@@ -37,6 +45,9 @@ def _cfg(data_dir: str, resolution: int = 64) -> TrainConfig:
         max_data_loader_n_workers=0,
         persistent_workers=False,
     )
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
 
 
 class MaskSidecarHelpersTest(unittest.TestCase):
@@ -159,24 +170,114 @@ class DatasetMaskTest(unittest.TestCase):
             mask = load_loss_mask(root / "a.png", 64, 64, 64, 64)
             self.assertTrue(torch.allclose(mask, torch.ones(1, 64, 64)))
 
-    def test_load_loss_mask_matches_image_center_crop(self):
+    def test_load_loss_mask_follows_fit_geometry(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             src = (96, 64)
             img_path = root / "c.png"
             _write_rgb(img_path, size=src)
-            # 96x64 → 64x64 center-crops x∈[16,80]. A blob at source (48,32)
-            # lands at destination (32,32).
+            # 96x64 fits into 64x64 at scale 2/3 -> content 64x43, centred: top rows are pad.
+            # A blob at source (48,32) lands at content (32,21), i.e. destination (32,31).
             _write_mask(
                 root / "c.mask.png",
                 src,
                 lambda d: d.ellipse([40, 24, 56, 40], fill=255),
             )
+            geom = fit_geometry(src[0], src[1], 64, 64)
+            self.assertEqual((geom.fit_w, geom.fit_h, geom.left, geom.top), (64, 43, 0, 10))
+
             mask = load_loss_mask(img_path, 64, 64, src[0], src[1])
             self.assertEqual(tuple(mask.shape), (1, 64, 64))
-            self.assertGreater(float(mask[0, 32, 32]), 0.9)
-            self.assertLess(float(mask[0, 0, 0]), 0.1)
-            self.assertLess(float(mask[0, 63, 63]), 0.1)
+            self.assertGreater(float(mask[0, 31, 32]), 0.9)
+            # pad rows above and below the content are exactly zero
+            self.assertEqual(float(mask[0, : geom.top, :].max()), 0.0)
+            self.assertEqual(float(mask[0, geom.top + geom.fit_h :, :].max()), 0.0)
+
+    def test_unmasked_image_still_carries_zero_pad(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _write_rgb(root / "a.png", size=(96, 64))
+            (root / "a.txt").write_text("solo", encoding="utf-8")
+
+            mask = load_loss_mask(root / "a.png", 64, 64, 96, 64)
+            geom = fit_geometry(96, 64, 64, 64)
+            self.assertEqual(float(mask[0, : geom.top, :].max()), 0.0)
+            self.assertGreater(float(mask[0, geom.top : geom.top + geom.fit_h, :].min()), 0.99)
+            # content area is uncovered except for the mask's own resampling edge
+            self.assertGreater(float(mask[:, geom.top : geom.top + geom.fit_h, :].mean()), 0.99)
+
+            ds = LoraImageDataset(_cfg(str(root)))
+            self.assertEqual(ds.n_masked, 0)
+            self.assertEqual(ds.n_padded, 1)
+            item = ds[0]
+            self.assertEqual(float(item["loss_mask"][0, 0, 0]), 0.0)
+            pixels = item["img_data"]
+            pad = pixels[:, : geom.top, :]
+            self.assertTrue(torch.allclose(pad, torch.full_like(pad, (FIT_PAD_VALUE / 255.0) * 2 - 1)))
+
+    def test_tall_image_keeps_head_and_feet(self):
+        """Today's crop rule dropped both end bands of a tall image; fit+pad must keep them."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            src_w, src_h = 512, 1536
+            band = src_h // 20
+            img = Image.new("RGB", (src_w, src_h), (0, 0, 255))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([0, 0, src_w - 1, band - 1], fill=(255, 0, 0))
+            draw.rectangle([0, src_h - band, src_w - 1, src_h - 1], fill=(0, 255, 0))
+            img.save(root / "tall.png")
+            (root / "tall.txt").write_text("tall", encoding="utf-8")
+            # trainable exactly on the two end bands
+            def paint(d):
+                d.rectangle([0, 0, src_w - 1, band - 1], fill=255)
+                d.rectangle([0, src_h - band, src_w - 1, src_h - 1], fill=255)
+
+            _write_mask(root / "tall.mask.png", (src_w, src_h), paint)
+
+            cfg = _cfg(
+                str(root),
+                resolution=512,
+                enable_bucket=True,
+                min_bucket_reso=128,
+                max_bucket_reso=2048,
+            )
+            ds = LoraImageDataset(cfg)
+            record = ds.records[0]
+            self.assertEqual((record["bucket_w"], record["bucket_h"]), (256, 896))
+
+            item = ds[0]
+            pixels = item["img_data"]
+            mask = item["loss_mask"][0]
+            red = (pixels[0] + 1) / 2 > 0.8
+            green = (pixels[1] + 1) / 2 > 0.8
+            self.assertTrue(bool(red.any()), "head band is missing from the sample")
+            self.assertTrue(bool(green.any()), "feet band is missing from the sample")
+            self.assertGreater(float(mask[red].mean()), 0.99)
+            self.assertGreater(float(mask[green].mean()), 0.99)
+            # and the pad left over from fitting a 1:3 image into the bucket carries no weight
+            geom = record["geom"]
+            pad = torch.ones(geom.bucket_h, geom.bucket_w, dtype=torch.bool)
+            pad[geom.top : geom.top + geom.fit_h, geom.left : geom.left + geom.fit_w] = False
+            self.assertTrue(bool(pad.any()), "expected some letterbox pad in this bucket")
+            self.assertEqual(float(mask[pad].max()), 0.0)
+
+    def test_alpha_mask_carries_zero_pad(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            img = Image.new("RGBA", (96, 64), (255, 0, 0, 0))
+            ImageDraw.Draw(img).rectangle([24, 16, 71, 47], fill=(0, 255, 0, 255))
+            img.save(root / "b.png")
+            (root / "b.txt").write_text("solo", encoding="utf-8")
+
+            geom = fit_geometry(96, 64, 64, 64)
+            mask = load_loss_mask(root / "b.png", 64, 64, 96, 64)
+            content = mask[:, geom.top : geom.top + geom.fit_h, :]
+            self.assertEqual(float(mask[:, : geom.top, :].max()), 0.0)
+            self.assertGreater(float(content[0, 21, 32]), 0.9)
+            self.assertLess(float(content[0, 2, 2]), 0.1)
+            # the pad does not change the content's own coverage: the opaque rect is 48x32 of the
+            # 96x64 source, i.e. 25 % of the (whole, uncropped) image
+            self.assertAlmostEqual(float(content.mean()), 0.25, places=2)
 
 
 if __name__ == "__main__":

@@ -118,5 +118,23 @@ data class ValidationConfig(
     @SerialName("sample_steps") val sampleSteps: Int,
     @SerialName("sample_seed") val sampleSeed: Long,
     @SerialName("sample_repeat") val sampleRepeat: Int,
-    @SerialName("guidance_scale") val guidanceScale: Double
+    @SerialName("guidance_scale") val guidanceScale: Double,
+    val samples: List<SampleSetConfig> = emptyList()
+)
+
+/**
+ * One `[[validation.samples]]` entry. `prompt` is the only required key: any other key a set
+ * omits falls back to the flat `[validation]` scalar of the same shape (see `resolve_sample_sets`).
+ */
+@Serializable
+data class SampleSetConfig(
+    val name: String = "",
+    val prompt: String,
+    val negative: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val steps: Int? = null,
+    @SerialName("guidance_scale") val guidanceScale: Double? = null,
+    val seed: Long? = null,
+    val repeat: Int? = null
 )

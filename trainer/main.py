@@ -6,7 +6,7 @@ from pathlib import Path
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
-from config import TrainConfig
+from config import TrainConfig, resolve_sample_sets
 from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
@@ -60,13 +60,29 @@ def main() -> None:
     stopped_during = None
 
     try:
+        # Fail before the model load when a `[[validation.samples]]` entry is unusable.
+        sample_sets = resolve_sample_sets(cfg)
         artifacts = build_train_objects(cfg)
         control.set_resume(artifacts.resume)
         accelerator = artifacts.accelerator
         if accelerator.is_main_process:
+            print(
+                f"Validation: {len(sample_sets)} prompt set(s), "
+                f"{sum(s.repeat for s in sample_sets)} image(s) per sample point: "
+                + ", ".join(f"{s.name} x{s.repeat}" for s in sample_sets)
+            )
+        if accelerator.is_main_process:
             ds = artifacts.train_dataset
             n_masked = getattr(ds, "n_masked", 0)
             print(f"Loss masks: {n_masked}/{len(ds)} samples")
+            n_padded = getattr(ds, "n_padded", 0)
+            if n_padded:
+                dims = sorted({(r["bucket_w"], r["bucket_h"]) for r in ds.records})
+                print(
+                    f"Letterbox: {n_padded}/{len(ds)} samples padded, mean "
+                    f"{getattr(ds, 'mean_pad', 0.0) * 100:.1f}% of the bucket; "
+                    f"buckets: {', '.join(f'{w}x{h}' for w, h in dims)}"
+                )
         device = artifacts.device
         weight_dtype = artifacts.weight_dtype
         swap_ctx = SwapContext(

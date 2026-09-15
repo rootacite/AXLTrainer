@@ -388,11 +388,11 @@ DATASET LAYOUT
 
 DATA DIRECTORY (required, specified at startup)
   The dataset directory is never auto-discovered (the desktop app reads
-  ../trainer/config.toml; this CLI does not). Provide it explicitly on every
+  ../config.toml; this CLI does not). Provide it explicitly on every
   invocation with exactly one of:
     --data-dir DIR   path to the dataset directory
     --config PATH    path to a TOML file whose [environment].train_data_dir is
-                     the dataset directory (e.g. the trainer/config.toml used
+                     the dataset directory (e.g. the config.toml used
                      by the desktop app)
   The option may be given before or after the command.
 
@@ -430,7 +430,7 @@ EXAMPLES
   agent.py --data-dir ./dataset stats --limit 20
   agent.py --data-dir ./dataset filter --tags "solo, 1girl" --mode and
   agent.py --data-dir ./dataset remove-tags --tags "blurry" --only "solo" --mode or --dry-run
-  agent.py --config ../trainer/config.toml stats
+  agent.py --config ../config.toml stats
   agent.py --data-dir ./dataset add-tag --tag "new" --position end
   agent.py --data-dir ./dataset drop --rate 0.2 --seed 42 --dry-run
   agent.py --data-dir ./dataset check

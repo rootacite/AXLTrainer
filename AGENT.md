@@ -25,16 +25,17 @@ Verify after a change (pick the layer you touched):
 
 ```bash
 # Python IPC + control plane (cwd = repo root, env `axl_rocm_7_14`)
-python -m unittest test_api_ipc test_train_control test_family
+python -m unittest discover -s test
+python -m unittest discover -s test -p 'test_validation.py'   # one file only
 
 # Latent-cache pipeline (mock VAE)
-python trainer/test_warm_latent_cache.py
+python test/test_warm_latent_cache.py
 
 # Ranko serialization / IPC models
 cd ranko && ./gradlew :shared:jvmTest
 ```
 
-Do **not** start a real training run to “see if it compiles” unless the task requires GPU behavior. `trainer/config.toml` contains **author-local paths** and will fail on other machines.
+Do **not** start a real training run to “see if it compiles” unless the task requires GPU behavior. `config.toml` contains **author-local paths** and will fail on other machines.
 
 ---
 
@@ -60,7 +61,7 @@ Hard rules:
 - Ranko **never** talks to the GPU. It only spawns `api.py` and renders responses.
 - `api.py` stdout is **NDJSON only**. Logs / tracebacks go to stderr (`run_ipc_loop` redirects `sys.stdout` to stderr after keeping the real stdout for replies).
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (directory that contains `api.py` and `trainer/`).
-- Ranko finds that root by walking up from the executable / `user.dir` until it sees `api.py` **or** `trainer/config.toml` (`TrainerRepo`).
+- Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited.
 
 Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
@@ -112,7 +113,11 @@ Early-stop semantics (keep these):
 
 ## 4. Configuration contract
 
-**Single source of truth:** `trainer/config.toml`. `trainer/main.py` takes **no CLI args**.
+**Single source of truth:** `config.toml` at the **repo root**. `trainer/main.py` takes **no CLI args**.
+
+`_load_toml_config()` resolves that path **relative to the working directory**, which is what lets
+`verify_mask_pipeline.py` / `fixes/fix2/repro_real.py` run an unmodified `trainer/main.py` against a
+throwaway mirror of the repo. Every entry point therefore runs with cwd = repo root.
 
 Load path:
 
@@ -121,7 +126,7 @@ Load path:
 
 Adding a hyperparameter (all four, or the GUI will drift):
 
-1. `trainer/config.toml` — pick an existing table or add one.
+1. `config.toml` — pick an existing table or add one.
 2. `TrainConfig` in `trainer/config.py` — same **flat** key name.
 3. Kotlin `AxlTrainerConfig` + nested data class (`ConfigModel.kt`), `TrainingConfigForm`, Utils UI bind/save map (section name → key → encoded value).
 4. `doc/configuration.md`.
@@ -129,6 +134,48 @@ Adding a hyperparameter (all four, or the GUI will drift):
 If only the trainer needs it, you can skip (3) but document that the Utils editor will not see it until the Kotlin model is updated. ktoml parse of the full file will fail if a **required** Kotlin field is missing — new optional keys are safer as Kotlin defaults.
 
 `run_dir` is the one field that is **not** a user-facing key: `main.py` writes the run directory it created into `cfg.run_dir` at startup, and `artifact_root(cfg)` roots every artifact path at it. Leave it empty in `config.toml`.
+
+### Validation prompt sets (`[[validation.samples]]`)
+
+Validation renders N prompt sets per sampling point, each producing its own `repeat` images. The
+array of tables is the only list-shaped config, and it deliberately leans on the flattening rule: it
+must stay under `[validation]` (a top-level `[[samples]]` would be dropped, because
+`_load_toml_config` only copies **tables**), so the Python side reads it as the flat key `samples`.
+
+- `resolve_sample_sets(cfg)` (`trainer/config.py`, torch-free, accepts a `TrainConfig` *or* the
+  flattened mapping) resolves each entry; a key an entry omits falls back to the flat `sample_*`
+  scalar of the same shape, and **no entries at all yield one set built from those scalars** — the
+  single-prompt behaviour, which is why `validation.sample_*` overrides in `fixes/` and
+  `test/verify_mask_pipeline.py` still work. Ranges and the per-entry error message live there.
+- Seed rule: inside a set the nth image uses `seed + n` (`0` = random per image). Two sets sharing a
+  seed start from the same noise; that is the point (only the prompt differs).
+- Images: `{output_name}_{step:06d}_p{set}_{repeat}.png`, `set` counting from 0. `api.scan_samples`
+  also parses the old two-number name as set 0, and returns `set_index` for the Ranko `Pn` badges.
+  `control.set_sampling` reports a global image counter plus `prompt_set`/`prompt_sets`.
+- Ranko: `SampleSetForm` in `TrainingConfigForm`, tabs in the Utils Validation section,
+  `TomlDocumentPatcher.replaceArrayOfTables` for the blocks. The form writes `[validation]` from the
+  **first** set, so the file never holds two contradictory prompts.
+
+### Bucketing + fit geometry (the geometry contract)
+
+`pick_bucket_size(w, h, min_reso, max_reso, step, no_upscale, area=train_resolution²)` is an **area
+budget** rule: the bucket aims at `area` pixels and takes its aspect ratio from the image, with
+`min/max_bucket_reso` as per-axis clamps and `no_upscale` refusing an axis larger than the source's
+(floored to one step for sources thinner than a step). It replaced a rule that pinned the *short* side
+to `min_bucket_reso` and capped the long side, which forced every portrait into one 0.6-aspect bucket
+and cropped the overflow — 250 of 640 images in the author's dataset lost a mean 54 % of their long
+edge that way. Shipped defaults are therefore `min_bucket_reso = 384`, `max_bucket_reso = 2688`; keep
+`min ≤ train_resolution ≤ max` (the dataset warns on stderr otherwise).
+
+`fit_geometry(src_w, src_h, bucket_w, bucket_h)` then places the whole image inside the bucket
+(contain, centred) and `fit_to_bucket` renders it with a `FIT_PAD_VALUE` (127) fill. There is **no
+crop variant in the training path** — `resize_and_center_crop` survives only for `fixes/` and the
+verification harness's independent implementation. The pad is loss weight exactly 0, produced by
+`load_loss_mask`, which now always returns a full-bucket mask (content resized, then pasted onto a
+zero canvas — never pre-pad-then-resample, LANCZOS ringing leaks weight into the pad rows).
+
+Any change to the rule, the clamps or the interpolators changes every sample's pixels: the latent
+cache key carries the fit geometry for exactly that reason (see §8).
 
 Shipped `config.toml` and `TrainConfig` fallbacks contain **author machine paths**. Never “fix” them to placeholders as part of an unrelated PR unless asked; consumers already know they must edit `[environment]`.
 
@@ -146,10 +193,10 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/family.py` | Catalog (`sdxl_base_v1-0`, `sd3.5-large`), `resolve_family`, `require_trainable`. |
 | `trainer/family_sdxl.py` | SDXL load/unpack/LoRA/encode/loss/save/sample; PEFT → kohya remap **and** the reverse map used by resume (`load_lora`). |
 | `trainer/family_sd35.py` | Stub; every method raises `UnsupportedFamilyError`. |
-| `trainer/dataset.py` | `LoraImageDataset`: images + sidecar captions, buckets, latent `.pt` lookup. |
+| `trainer/dataset.py` | `LoraImageDataset`: images + sidecar captions, buckets + per-record fit geometry, latent `.pt` lookup. |
 | `trainer/cache.py` | Pipelined CPU decode → batched VAE encode → atomic `.pt` in `<data>/.latents_cache`. GPU holds only the VAE; UNet/TEs are offloaded first. |
 | `trainer/loop.py` | `train_one_epoch`: group by bucket, family `compute_loss`, both optimizers, save+sample cadence, `at_safe_point`. |
-| `trainer/sampling.py` | Interruptible SDXL sample gen (called from `SdxlFamily.generate_sample`). Prompt encode → TE offload; denoise → UNet offload then VAE decode; restore UNet+TEs before returning to the train loop. |
+| `trainer/sampling.py` | Interruptible SDXL sample gen (called from `SdxlFamily.generate_sample`). Each `[[validation.samples]]` set is encoded and rendered on its own (its own scheduler sigmas / size / steps / seed, so no set's chunk padding depends on another's prompt); prompt encode → TE offload; denoise → UNet offload then VAE decode; restore UNet+TEs before returning to the train loop. |
 | `trainer/models.py` | Flash attn, optimizers, checkpoint **paths**, kohya metadata helper. |
 | `trainer/control.py` | State machine, atomic JSON, lock, command poll. |
 | `trainer/device_swap.py` | GPU↔CPU offload; `at_safe_point`. |
@@ -157,9 +204,11 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/cleanup.py` | Discover/delete one run's samples, TB logs, optional weight dirs. Shared by `api.py` `train_reset` and `clean.py`. |
 | `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs`. torch-free. |
 | `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
+| `trainer/genjob.py` | Job records for one-off sample generation (`{name}_samples/generated/*.json`): naming, request validation, atomic write, listing. torch-free. |
+| `trainer/generate_sample.py` | `python -u trainer/generate_sample.py --spec <job.json>`: loads the base + a kohya LoRA (reusing `SdxlFamily.apply_lora`/`load_lora`), samples with the run's own scheduler/settings taken from the checkpoint metadata, writes the PNG + progress into the job file. Detached, never touches `state.json`/the lock. |
 | `trainer/env.py` | MIGraphX cache dir, `flush_memory`. |
 | `trainer/hardware.py` | Ranko hardware panel: nvtop snapshot, AMD edge/junction, CPU util/temp, RAM. |
-| `trainer/utils.py` | Image list, caption shuffle, bucket math, `build_time_ids`. |
+| `trainer/utils.py` | Image list, caption shuffle, bucket math (`pick_bucket_size`), fit geometry (`fit_geometry`/`fit_to_bucket`), loss masks, `build_time_ids`. |
 | `text_processing.py` | **Repo root**, not under `trainer/`. Long-prompt chunking + dual CLIP encode. `family_sdxl.py` adds `os.getcwd()` to `sys.path` to import it. |
 
 ### Import dualism (easy to break)
@@ -237,6 +286,8 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | `train_pause` / `train_resume` / `train_stop` | write `command.json` |
 | `train_reset` | `run_cleanup` (resolved run) + `reset_to_idle` |
 | `dataset_tag` | spawn `tagger/main.py` (GPU ONNX); overwrites sidecar `.txt` |
+| `generate_sample` | spawn `trainer/generate_sample.py` **detached** (returns immediately; refuses while any trainer PID is alive, and while another job is running) |
+| `list_generated_samples` | read-only: the run's `generated/*.json` jobs, newest first; a `running` job whose PID died is rewritten to `error` |
 | `hardware_status` | `nvtop -s` JSON + DRM hwmon temps + `/proc` CPU (read-only) |
 
 `dashboard` synthesizes `Train/Avg_Loss` from `Train/Loss` via `synthesize_avg_loss` when the tag is missing (old runs). Do not rename TensorBoard tags without updating Ranko chart cards.
@@ -268,6 +319,10 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 
 Screens: `Images` | `Statistics` | `Utils` | `Dashboard` (`Stage.kt` enum).
 
+Every file/folder/save dialog goes through `util/FileDialogs.kt` (FileKit: XDG desktop portal on Linux, so the KDE/GNOME picker, `IFileDialog` / `NSOpenPanel` elsewhere). Do not reintroduce `JFileChooser`: it is Swing-drawn and ignores the desktop theme, and FileKit only falls back to it when no portal is reachable. The functions are suspend and are called from a ViewModel's `viewModelScope` (no parent-window handle is passed, matching the reference setup). `initialDirectoryFor` seeds the dialog from the current field value; `saveFileDialog` lets FileKit create the destination file, so the Save As path overwrites it and `deleteEmptyPlaceholder` removes the leftover when the appended `.safetensors` renamed it.
+
+Dashboard charts: the five training charts draw an always-on hover cursor with the exact step under the pointer, and mark the clicked step (dashed) plus the step a pick matched (bold, flagged). The **Train / Avg Loss** card additionally owns the checkpoint panel, opened by `Ctrl`+left click or by a left double click — the pick fires on the *picking* click, so a double click anchors at the second click, and the 400 ms window rule lives in `completesDoubleClick` (`pages/components/ChartPick.kt`). The panel shows the matched checkpoint highlighted, the clicked step's `Avg Loss`/`Loss`/UNet+TE LR, that step's samples with any generated ones, and can be dismissed by a click outside / close / `Esc`. It is resizable by dragging its bottom-right grip: placement is decided once from the click and the *default* size so a drag can never move the panel (`placePanelOrigin`/`clampPanelOrigin`), and the slots fill the dragged width (`sampleSlotWidth`, no 400 dp cap) with extra images wrapping instead of scrolling. `Save As` copies the LoRA file out through the OS save dialog with progress; `Generate sample` renders one extra image per §5. Pure helpers for the mapping, the nearest-checkpoint/sample selection, the click timing, the panel sizing/placement, the training-stat lookup and the generate-form validation live in `pages/components/ChartPick.kt`; the checkpoint list is scanned on click (2 s for 60+ files) and cached per session; the copy lives in `util/FileCopy.kt` and refuses to overwrite the source.
+
 Dataset scan in the GUI is **non-recursive**, one folder, image + same-stem `.txt`. Orphan captions **abort** the statistics scan. `ranko/tools/agent.py` mirrors this (`--allow-orphans` to inspect anyway). Trash for GUI/agent drops: `/tmp/axlranko/trash` (not the dataset’s own `trash/` used by some `tools/` scripts).
 
 Mask painting does **not** use Compose pointer APIs: `maskPaintInput` (`pages/components/MaskPaint.kt` expect, `jvmMain/.../MaskPaint.jvm.kt` actual) attaches a global AWT mouse listener to the host window (both buttons are reported) plus a 4 ms `MouseInfo` sampler while a stroke is active, because AWT coalesces motion events and fast strokes used to land as separate dots. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
@@ -282,11 +337,11 @@ Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopAp
 
 ## 8. Dataset contract
 
-Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp. Optional loss mask: `{stem}.mask.png` next to `{stem}.png` (always PNG). If the sidecar exists, MSE is weighted by that mask (white=train, black=ignore). If it is missing and the training image has an alpha channel, that alpha is the mask (0=ignore, 255=train). Otherwise loss is unchanged. **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`). Drop/trash moves the sidecar with the pair.
+Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp. Optional loss mask: `{stem}.mask.png` next to `{stem}.png` (always PNG). If the sidecar exists, MSE is weighted by that mask (white=train, black=ignore). If it is missing and the training image has an alpha channel, that alpha is the mask (0=ignore, 255=train). Either way the letterbox pad is weight 0, so **every** sample returns a full-bucket mask from `load_loss_mask`; only sidecar/alpha images count into `n_masked` (`Loss masks: n/m samples`). **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`). Drop/trash moves the sidecar with the pair.
 
 Python trainer `list_images` / Ranko / `agent.py` should stay consistent on extensions and “same stem” pairing. Ranko `parse_tags` = split `,` → trim → drop empty. Duplicates preserved in captions; stats dedupe per file.
 
-Latent cache: `<train_data_dir>/.latents_cache/{sha1(abs_path::WxH)}.pt`. Changing bucket math invalidates keys; do not hand-edit cache files.
+Latent cache: `<train_data_dir>/.latents_cache/{sha1(abs_path::bucket_w x bucket_h::left,top,fit_w x fit_h)}.pt`. The key carries the fit geometry, so any change to the bucket rule, the clamps or the fit path forces a one-time re-encode instead of silently serving latents built from differently placed pixels (a mask edit does *not* move the key — masks are not cached). Do not hand-edit cache files.
 
 `tagger/` is an ONNX WD-tagger (`python tagger/main.py DIR --threshold 0.35`). Model files sit next to the script (`model.onnx`, `selected_tags.csv`). `migraphx_cache/` is generated — do not treat as source. Ranko Utils → Environment **Tag dataset** uses IPC `dataset_tag`.
 
@@ -301,7 +356,7 @@ Latent cache: `<train_data_dir>/.latents_cache/{sha1(abs_path::WxH)}.pt`. Changi
 1. `handle_*` + `_HANDLERS` in `api.py`.
 2. Request/response in `API.md`.
 3. `TrainerIpcClient` method + kotlinx.serialization models.
-4. Test in `test_api_ipc.py` (and Kotlin `DashboardIpcTest.kt` if the payload is parsed).
+4. Test in `test/test_api_ipc.py` (and Kotlin `DashboardIpcTest.kt` if the payload is parsed).
 5. Never print to stdout from the handler.
 
 ### Add a base family
@@ -340,18 +395,27 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 
 | Suite | Command | Covers |
 | --- | --- | --- |
-| IPC | `python -m unittest test_api_ipc` | ping, dashboard empty logs, sample grouping, avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset |
-| Tagger | `python -m unittest test_tagger` | CLI parse, dummy-session sidecar writes |
-| Control | `python -m unittest test_train_control` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
-| Runs | `python -m unittest test_runs` | run id format/collision, run dir creation, latest-run lookup, run listing |
-| Family | `python -m unittest test_family` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
-| Sample offload | `python -m unittest test_sampling_offload` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
-| GPU smoke | `python -m unittest test_vram_gpu` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
-| Latent cache | `python trainer/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
-| Masked loss | `python -m unittest test_masked_loss` | sidecar exclusion, ones/zero/gray weights, alpha fallback, crop alignment |
-| Masked loss GPU | `python -m unittest test_masked_loss_gpu` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
-| Mask verifier | `python verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl_rocm_7_14`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
-| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch, catalog form, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
+| IPC | `python -m unittest discover -s test -p 'test_api_ipc.py'` | ping, dashboard empty logs, sample grouping (incl. `_p{set}_` names), avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset, `sample_sets` payload |
+| Validation sets | `python -m unittest discover -s test -p 'test_validation.py'` | `resolve_sample_sets`: no entries → one set from the scalars, per-key fallback, name defaulting, ranges with the entry index, matching seed sequences |
+| Tagger | `python -m unittest discover -s test -p 'test_tagger.py'` | CLI parse, dummy-session sidecar writes |
+| Control | `python -m unittest discover -s test -p 'test_train_control.py'` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
+| Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing |
+| Gen jobs | `python -m unittest discover -s test -p 'test_genjob.py'` | job naming/stem, request validation ranges, atomic write, listing order, done/error transitions (no GPU) |
+| Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
+| Sample offload | `python -m unittest discover -s test -p 'test_sampling_offload.py'` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
+| GPU smoke | `python -m unittest discover -s test -p 'test_vram_gpu.py'` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
+| Latent cache | `python test/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
+| Buckets | `python -m unittest discover -s test -p 'test_bucket_sampler.py'` | sampler batching/remainders, fit-geometry sweep (step alignment, clamps, no upscale, zero pad, cache key) |
+| Masked loss | `python -m unittest discover -s test -p 'test_masked_loss.py'` | sidecar exclusion, ones/zero/gray weights, alpha fallback, fit+pad alignment, zero-weight pad, a tall sample keeping both end bands |
+| Masked loss GPU | `python -m unittest discover -s test -p 'test_masked_loss_gpu.py'` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
+| Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl_rocm_7_14`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
+| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
+
+Python suites live in `test/` — a plain namespace directory, deliberately **without**
+`__init__.py`, so `import test` still resolves to the standard library package. Run them from the
+repo root; `unittest discover -s test` puts `test/` on `sys.path` while `python -m` keeps the repo
+root there, which is what the suites' `import api` / `from trainer…` need. A single file:
+`python -m unittest discover -s test -p 'test_runs.py'`.
 
 Cwd for Python tests: **repo root**. Use the env named in `environment.yml` (`axl_rocm_7_14`) so `torch` / `tensorboard` import.
 

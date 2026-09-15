@@ -32,7 +32,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RESOURCES = HERE / "resources"
 REPO_ROOT = next(parent for parent in (HERE, *HERE.parents)
-                 if (parent / "trainer" / "config.toml").is_file())
+                 if (parent / "config.toml").is_file())
 
 
 def toml_value(value: object) -> str:
@@ -72,14 +72,13 @@ def build_config(work: Path, *, dataset: Path, batch_size: int | None, steps: in
                 continue
             lines.append(f"{key} = {toml_value(value)}")
         lines.append("")
-    # `trainer/config.py` reads the relative path `trainer/config.toml`, so the work dir has to
-    # look like a repo root.
-    (work / "trainer").mkdir(parents=True, exist_ok=True)
-    (work / "trainer" / "config.toml").write_text("\n".join(lines), encoding="utf-8")
+    # `trainer/config.py` reads the relative path `config.toml`, so the work dir has to look
+    # like a repo root.
+    (work / "config.toml").write_text("\n".join(lines), encoding="utf-8")
 
     sys.path.insert(0, str(REPO_ROOT / "trainer"))
     previous = os.getcwd()
-    os.chdir(work)  # `_load_toml_config` resolves `trainer/config.toml` against the cwd
+    os.chdir(work)  # `_load_toml_config` resolves `config.toml` against the cwd
     try:
         from config import TrainConfig  # noqa: PLC0415  (import needs the cwd above)
 

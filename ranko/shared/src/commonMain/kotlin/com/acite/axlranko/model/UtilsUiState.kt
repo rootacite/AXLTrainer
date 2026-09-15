@@ -117,7 +117,7 @@ enum class ConfigSection(
     ),
     Validation(
         title = "Validation",
-        description = "Sample prompts and preview generation",
+        description = "Sample prompt sets and preview generation",
         fieldKeys = setOf(
             "sample_prompts",
             "sample_negative",
@@ -134,6 +134,13 @@ enum class ConfigSection(
         description = "Background style, blur strength, and font/icon scale",
         fieldKeys = emptySet(),
     ),
+    ;
+
+    /**
+     * Whether a `fieldErrors` key belongs to this section. Sample-set errors
+     * (`samples.2.steps`) are spelled with the entry index, so they need a prefix match.
+     */
+    fun owns(key: String): Boolean = key in fieldKeys || (this == Validation && key.startsWith(SAMPLE_SET_ERROR_PREFIX))
 }
 
 data class UtilsUiState(
@@ -145,6 +152,8 @@ data class UtilsUiState(
     val statusMessage: String? = null,
     val configPath: String = "",
     val selectedSection: ConfigSection = ConfigSection.Environment,
+    /** Open tab in the Validation section's `[[validation.samples]]` editor. */
+    val selectedSampleSet: Int = 0,
     val form: TrainingConfigForm = TrainingConfigForm(),
     val savedForm: TrainingConfigForm = TrainingConfigForm(),
     val fieldErrors: Map<String, String> = emptyMap(),
