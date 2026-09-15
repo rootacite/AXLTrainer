@@ -8,6 +8,16 @@ Working notes for coding agents. Human-facing docs live under `doc/` and `README
 
 ---
 
+## 0. Working agreement (read first)
+
+The maintainer drives this repo one step at a time. Do exactly what the current instruction asks, and nothing more:
+
+- No unrelated fixes, refactors, cleanups or "while I'm here" edits — not even small ones.
+- Stop at the end of the requested step. Do not run ahead into the step after it.
+- Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
+
+---
+
 ## 1. First 60 seconds
 
 | Need | Go here |
