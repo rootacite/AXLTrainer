@@ -40,8 +40,8 @@ save_every_n_steps = 50
 resume_lora_path = ""
 
 [network]
-network_dim = 64
-network_alpha = 32
+network_dim = 48
+network_alpha = 24
 network_dropout = 0.2
 clip_skip = 1
 max_token_length = 225
@@ -71,7 +71,7 @@ noise_offset = 0.05
 flush_memory_every_step = true
 
 [unet_optimizer]
-unet_learning_rate = 2.5E-5
+unet_learning_rate = 5.0E-5
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -79,7 +79,7 @@ unet_eps = 1.0E-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 2.5E-6
+te_learning_rate = 6.0E-6
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99
@@ -96,7 +96,7 @@ sample_width = 1152
 sample_height = 768
 sample_steps = 35
 sample_seed = 0
-sample_repeat = 2
+sample_repeat = 1
 guidance_scale = 6.0
 
 [[validation.samples]]
@@ -108,7 +108,7 @@ height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 2
+repeat = 1
 
 [[validation.samples]]
 name = "rir"
@@ -119,7 +119,7 @@ height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 2
+repeat = 1
 
 [[validation.samples]]
 name = "anj"
