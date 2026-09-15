@@ -1,0 +1,137 @@
+[environment]
+pretrained_model_name_or_path = "/opt/models/diffusers/waillu_170"
+
+output_dir = "/home/acite/LLM/axltrainer/outputs"
+logging_dir = "/home/acite/LLM/axltrainer/logs"
+
+# Alternatives:
+train_data_dir = "/home/acite/LLM/Character/LLLJ/"
+output_name = "lllj"
+# train_data_dir = "/home/acite/LLM/Character/Towa/"
+# output_name = "towa"
+# train_data_dir = "/home/acite/Pictures/05_babara"
+# output_name = "babara"
+# train_data_dir = "/home/acite/Pictures/05_miyako"
+# output_name = "miyako"
+
+[model_spec]
+base_model_version = "sdxl_base_v1-0"
+modelspec_architecture = "stable-diffusion-xl-v1-base/lora"
+modelspec_implementation = "https://github.com/Stability-AI/generative-models"
+modelspec_sai_model_spec = "1.0.0"
+
+[training]
+is_vpred = false
+min_snr_gamma = 5.0
+seed = 1145141919
+mixed_precision = "bf16"
+train_batch_size = 2
+gradient_accumulation_steps = 1
+learning_rate = 1.0
+lr_scheduler = "cosine"
+lr_warmup_steps = 100
+max_grad_norm = 1.0
+epoch = 10
+save_every_n_epochs = 1
+save_every_n_steps = 50
+# Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
+# training starts. Weights only: step/epoch counting still starts at 0, and this
+# run writes into its own timestamped run directory.
+resume_lora_path = ""
+
+[network]
+network_dim = 48
+network_alpha = 24
+network_dropout = 0.2
+clip_skip = 1
+max_token_length = 225
+
+[bucketing]
+enable_bucket = true
+bucket_no_upscale = true
+# Area anchor: a bucket holds about train_resolution² pixels and keeps the image's own aspect
+# ratio, so tall images get tall buckets. min/max only clamp the two sides; leftover mismatch is
+# letterboxed (pad gets loss weight 0).
+train_resolution = 1024
+bucket_reso_steps = 128
+min_bucket_reso = 384
+max_bucket_reso = 2688
+
+[optimization]
+cache_latents = true
+cache_latents_to_disk = true
+# Recompute activations in backward to save VRAM. Turn off for faster steps
+# if the GPU has headroom (UNet is the bigger win; TE is smaller).
+gradient_checkpointing_unet = true
+gradient_checkpointing_te = false
+shuffle_caption = true
+keep_tokens = 2
+caption_extension = ".txt"
+noise_offset = 0.05
+flush_memory_every_step = true
+
+[unet_optimizer]
+unet_learning_rate = 5.0E-5
+unet_weight_decay = 0.01
+unet_betas_1 = 0.9
+unet_betas_2 = 0.99
+unet_eps = 1.0E-8
+unet_warmup_steps = 100
+
+[te_optimizer]
+te_learning_rate = 6.0E-6
+te_weight_decay = 0.01
+te_betas_1 = 0.9
+te_betas_2 = 0.99
+te_max_grad_norm = 0.3
+
+[infrastructure]
+max_data_loader_n_workers = 20
+persistent_workers = true
+
+[validation]
+sample_prompts = "yuzu_style, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+sample_width = 1152
+sample_height = 768
+sample_steps = 35
+sample_seed = 0
+sample_repeat = 1
+guidance_scale = 6.0
+
+[[validation.samples]]
+name = "yuzu"
+prompt = "yuzu_style, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[[validation.samples]]
+name = "rir"
+prompt = "yuzu_style, rir_character, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[[validation.samples]]
+name = "anj"
+prompt = "yuzu_style, anj_character, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[bookkeeping]
+# TOML doesn't support Null directly in standard key-value pairs without specific schema handling,
+# so we omit them here. The Python script will fallback to None.

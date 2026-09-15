@@ -1,0 +1,304 @@
+{
+  "rows": [
+    {
+      "row": "dim scan: network_dim 8",
+      "overrides": {
+        "network_dim": 8,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 12,
+      "fault": null,
+      "oom": false,
+      "exit": -15,
+      "killed_after_fault": false,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 12.28,
+      "kernel": null,
+      "seconds": 26.9,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/01_dim-scan-network-dim-8"
+    },
+    {
+      "row": "dim scan: network_dim 12",
+      "overrides": {
+        "network_dim": 12,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 12,
+      "fault": null,
+      "oom": false,
+      "exit": -15,
+      "killed_after_fault": false,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 12.63,
+      "kernel": null,
+      "seconds": 26.9,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/02_dim-scan-network-dim-12"
+    },
+    {
+      "row": "dim scan: network_dim 16",
+      "overrides": {
+        "network_dim": 16,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 12,
+      "fault": null,
+      "oom": false,
+      "exit": -15,
+      "killed_after_fault": false,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 12.87,
+      "kernel": null,
+      "seconds": 26.9,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/03_dim-scan-network-dim-16"
+    },
+    {
+      "row": "dim scan: network_dim 20",
+      "overrides": {
+        "network_dim": 20,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 12,
+      "fault": null,
+      "oom": false,
+      "exit": -15,
+      "killed_after_fault": false,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 13.19,
+      "kernel": null,
+      "seconds": 27.3,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/04_dim-scan-network-dim-20"
+    },
+    {
+      "row": "dim scan: network_dim 24",
+      "overrides": {
+        "network_dim": 24,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 1,
+      "fault": "Memory access fault by GPU node",
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": true,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 10.69,
+      "kernel": "Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x128x16_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0_AFEM1_AFEM1_ASEM1_CD1_1_CLR1_CLS0_CADS0_DTLA0_DTLB0_DTLM0_DTVA1_DTVB1_DTVMXSA0_DTVMXSB0_DTVSM0_DPLB0_EPS0_ELFLR0_EMLLn1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_HPLR0_ISA1201_ICIW0_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPMXSA0_LBSPPMXSB0_LBSPPM0_LPA0_LPB0_LPMXSA0_LPMXSB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT1_8_MXLIBL_MXSFNS_MO40_MGRIPM1_NTn1_NTA0_NTB0_NTC0_NTD0_NTE0_NTMXSA0_NTMXSB0_NTM0_NTWS0_NVn1_NVA0_NVB0_NVC0_NVD0_NVE0_NVMXSA0_NVMXSB0_NVM0_NVWS0_NEPBS0_NLCA1_NLCB8_ONLL0_PAP0_PGL0_PGR1_PLR0_PKA0_SGROB0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKFDPO0_SKXCCM0_SNLL0_SIP1_SGRO0_TDMI0_TDMIM0_TDMS0_TIN0_THn1_THA0_THB0_THC0_THD0_THE0_THMXSA0_THMXSB0_THM0_THWS0_TLDS0_TLDSM1_ULSGRO0_USL1_USLMX0_UIOFGRO0_UPLRP0_USFGROn1_USI0_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG64_2_1]",
+      "seconds": 16.1,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/05_dim-scan-network-dim-24"
+    },
+    {
+      "row": "dim scan: network_dim 28",
+      "overrides": {
+        "network_dim": 28,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 6,
+      "fault": "Memory access fault by GPU node",
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": true,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 12.89,
+      "kernel": "Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x128x16_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0_AFEM1_AFEM1_ASEM1_CD1_1_CLR1_CLS0_CADS0_DTLA0_DTLB0_DTLM0_DTVA1_DTVB1_DTVMXSA0_DTVMXSB0_DTVSM0_DPLB0_EPS0_ELFLR0_EMLLn1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_HPLR0_ISA1201_ICIW0_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPMXSA0_LBSPPMXSB0_LBSPPM0_LPA0_LPB0_LPMXSA0_LPMXSB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT1_8_MXLIBL_MXSFNS_MO40_MGRIPM1_NTn1_NTA0_NTB0_NTC0_NTD0_NTE0_NTMXSA0_NTMXSB0_NTM0_NTWS0_NVn1_NVA0_NVB0_NVC0_NVD0_NVE0_NVMXSA0_NVMXSB0_NVM0_NVWS0_NEPBS0_NLCA1_NLCB8_ONLL0_PAP0_PGL0_PGR1_PLR0_PKA0_SGROB0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKFDPO0_SKXCCM0_SNLL0_SIP1_SGRO0_TDMI0_TDMIM0_TDMS0_TIN0_THn1_THA0_THB0_THC0_THD0_THE0_THMXSA0_THMXSB0_THM0_THWS0_TLDS0_TLDSM1_ULSGRO0_USL1_USLMX0_UIOFGRO0_UPLRP0_USFGROn1_USI0_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG64_2_1]",
+      "seconds": 21.7,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/06_dim-scan-network-dim-28"
+    },
+    {
+      "row": "dim scan: network_dim 32",
+      "overrides": {
+        "network_dim": 32,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 11,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 13.97,
+      "kernel": null,
+      "seconds": 26.6,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/07_dim-scan-network-dim-32"
+    },
+    {
+      "row": "dim scan: network_dim 36",
+      "overrides": {
+        "network_dim": 36,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 2,
+      "fault": "Memory access fault by GPU node",
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": true,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 12.37,
+      "kernel": "Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x64x64_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0_AFEM1_AFEM1_ASEM1_CD1_1_CLR1_CLS0_CADS0_DTLA0_DTLB0_DTLM0_DTVA1_DTVB0_DTVMXSA0_DTVMXSB0_DTVSM0_DPLB0_EPS0_ELFLR0_EMLLn1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_HPLR0_ISA1201_ICIW0_IU1_K1_LDSTI0_LBSPPA0_LBSPPB1024_LBSPPMXSA0_LBSPPMXSB0_LBSPPM0_LPA0_LPB32_LPMXSA0_LPMXSB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT2_2_MXLIBL_MXSFNS_MO40_MGRIPM1_NTn1_NTA0_NTB0_NTC0_NTD0_NTE0_NTMXSA0_NTMXSB0_NTM0_NTWS0_NVn1_NVA0_NVB0_NVC0_NVD0_NVE0_NVMXSA0_NVMXSB0_NVM0_NVWS0_NEPBS0_NLCA2_NLCB1_ONLL0_PAP0_PGL0_PGR2_PLR1_PKA0_SGROB0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKFDPO0_SKXCCM0_SNLL0_SIP1_SGRO0_TDMI0_TDMIM0_TDMS0_TIN0_THn1_THA0_THB0_THC0_THD0_THE0_THMXSA0_THMXSB0_THM0_THWS0_TLDS0_TLDSM1_ULSGRO0_USL1_USLMX0_UIOFGRO0_UPLRP0_USFGROn1_USI0_VSn1_VWA1_VWB2_WSGRA0_WSGRB0_WS32_WG32_4_1]",
+      "seconds": 17.7,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/08_dim-scan-network-dim-36"
+    },
+    {
+      "row": "dim scan: network_dim 40",
+      "overrides": {
+        "network_dim": 40,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 5,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 13.68,
+      "kernel": null,
+      "seconds": 20.2,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/09_dim-scan-network-dim-40"
+    },
+    {
+      "row": "dim scan: network_dim 44",
+      "overrides": {
+        "network_dim": 44,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 5,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 13.98,
+      "kernel": null,
+      "seconds": 20.1,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/10_dim-scan-network-dim-44"
+    },
+    {
+      "row": "dim scan: network_dim 48",
+      "overrides": {
+        "network_dim": 48,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 0,
+      "fault": "Memory access fault by GPU node",
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": true,
+      "vram_killed": false,
+      "timed_out": false,
+      "peak_vram_gb": 9.91,
+      "kernel": "Cijk_Ailk_Bjlk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT64x128x16_MI16x16x1_SN_LDSB0_AFC1_AG0_AGGSUA0_AGNTAB0_AFEM1_AFEM1_ASEM1_CD1_1_CLR1_CLS0_CADS0_DTLA0_DTLB0_DTLM0_DTVA1_DTVB1_DTVMXSA0_DTVMXSB0_DTVSM0_DPLB0_EPS0_ELFLR0_EMLLn1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_HPLR0_ISA1201_ICIW0_IU1_K1_LDSTI0_LBSPPA0_LBSPPB0_LBSPPMXSA0_LBSPPMXSB0_LBSPPM0_LPA0_LPB0_LPMXSA0_LPMXSB0_LPM0_LRVW8_LWPMn1_MIAV1_MIWT1_8_MXLIBL_MXSFNS_MO40_MGRIPM1_NTn1_NTA0_NTB0_NTC0_NTD0_NTE0_NTMXSA0_NTMXSB0_NTM0_NTWS0_NVn1_NVA0_NVB0_NVC0_NVD0_NVE0_NVMXSA0_NVMXSB0_NVM0_NVWS0_NEPBS0_NLCA1_NLCB8_ONLL0_PAP0_PGL0_PGR1_PLR0_PKA0_SGROB0_SIA3_SS0_SPO0_SRVW0_SSO0_SVW8_SK0_SKFTR0_SKFDPO0_SKXCCM0_SNLL0_SIP1_SGRO0_TDMI0_TDMIM0_TDMS0_TIN0_THn1_THA0_THB0_THC0_THD0_THE0_THMXSA0_THMXSB0_THM0_THWS0_TLDS0_TLDSM1_ULSGRO0_USL1_USLMX0_UIOFGRO0_UPLRP0_USFGROn1_USI0_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG64_2_1]",
+      "seconds": 14.9,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/11_dim-scan-network-dim-48"
+    },
+    {
+      "row": "dim scan: network_dim 52",
+      "overrides": {
+        "network_dim": 52,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 5,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 14.18,
+      "kernel": null,
+      "seconds": 20.1,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/12_dim-scan-network-dim-52"
+    },
+    {
+      "row": "dim scan: network_dim 56",
+      "overrides": {
+        "network_dim": 56,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 5,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 14.23,
+      "kernel": null,
+      "seconds": 20.1,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/13_dim-scan-network-dim-56"
+    },
+    {
+      "row": "dim scan: network_dim 60",
+      "overrides": {
+        "network_dim": 60,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 2,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 13.71,
+      "kernel": null,
+      "seconds": 17.3,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/14_dim-scan-network-dim-60"
+    },
+    {
+      "row": "dim scan: network_dim 64",
+      "overrides": {
+        "network_dim": 64,
+        "steps": 12
+      },
+      "images": 640,
+      "steps_reached": 2,
+      "fault": null,
+      "oom": false,
+      "exit": -9,
+      "killed_after_fault": false,
+      "vram_killed": true,
+      "timed_out": false,
+      "peak_vram_gb": 13.88,
+      "kernel": null,
+      "seconds": 16.9,
+      "reaped_workers": 0,
+      "run_root": "/tmp/axl-fix3-repro/15_dim-scan-network-dim-64"
+    }
+  ]
+}
