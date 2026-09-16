@@ -1144,3 +1144,137 @@ they show.)
 The per-run logs of the tables above are the `/tmp/axl-hip1/repro_standalone_<dtype>.log`,
 `repro_rocblas_<dtype>.log` and `rep_<dtype>_<n>.log` files of the 2026-09-16 session, and the two sweep
 transcripts the tables were read from.
+
+---
+
+## 13. Paused: rebuild, patch, deploy, host-level A/B (2026-09-16)
+
+This phase left black-box testing behind: it took the ROCm source at the tag the environment was built
+from, rebuilt the family the faulting kernel belongs to, tried three generator-side repairs, then a
+selection-side one, and finally drove the whole thing through the real hipBLASLt entry points. It ends
+**paused on a measured negative result** and with the target moved:
+
+> The GLTr guard that §3 of `fixes/hip1/source-trace.md` traces is *not* the only over-reading mechanism
+> in this family. A bf16 GEMM with bias and activation on the plugin's 64×1280×308 faults through
+> hipBLASLt in **12 of 12** runs — on the installed library, on a rebuilt `.co` with the guard's
+> solutions renamed, and on one with the vendor's `BoundSizeMultiple` rule in place, where the host
+> visibly selects a **different, non-DTV kernel** and that kernel faults too.
+
+Full write-up, with the file:line references and the fix-space argument: `fixes/hip1/source-trace.md`
+§5 (and §3 for the read itself, §6 for the open items).
+
+### 13.1 What was built, and is reusable
+
+| Piece | Where | Cost |
+| --- | --- | --- |
+| Rebuild of the one logic file (427 kernels) | `/home/acite/axl-tensile-build/build.sh <outdir>` | **15 s**; prebuilt `_rocisa.abi3.so` from the env's `_rocm_sdk_libraries/.../rocisa/` symlinked into the source package instead of building nanobind; `joblib` in a venv |
+| Rebuild fidelity check | kernel-name sets | 427 = 427, and an unmodified rebuild reproduces the fault at the same address |
+| Staging a deployable tree | `stage_deploy.py`, `stage_nopred.py` | copies the installed `gfx1201/` (170 MB) and swaps the family's `.co` + `.dat.zlib`, keeping every installed index (106810..107282) |
+| Loader override | `HIPBLASLT_TENSILE_LIBPATH` | must point at the directory that **holds** the files; the loader concatenates the file name onto it (a bogus path shows `hipModuleLoad failed: /nonexistent/Kernels.so-000-gfx1201-xnack-.hsaco`) |
+| Verifier 1, code | `fixes/hip1/launch_kernels.hip` | forces a kernel by name and manufactures the page-boundary placement |
+| Verifier 2, selection + results | `/home/acite/axl-tensile-build/ltcheck.cpp` | real hipBLASLt calls, reference check, timing; built against the repo's own headers plus a two-file shim for the generated `hipblaslt-export.h` / `hipblaslt-version.h` |
+
+### 13.2 What was measured
+
+Generator-side candidates, each patched → rebuilt → run on the trainer's shape and the ten-shape ladder
+("wrong" = D no longer matches the CPU reference):
+
+| Candidate | Edit | trainer shape (M=1280 N=64 K=308) | ladder |
+| --- | --- | --- | --- |
+| A | cap − one access width (14 B) | CLEAN, crc exact | **7/10 wrong** |
+| B | reads above the cap read the block start | still faults | 10/10 clean, crc exact |
+| C | cap := min(cap, bytes left in the operand − one access) | CLEAN, crc exact | 7/10 wrong, crcs identical to A |
+
+A and C move the same reads; B moves fewer and keeps every crc. Together: the reads crossing the
+operand's end are *partly inside it*, and that part is tail-block data. The access can be neither
+narrowed (the transposed load has only 8- and 16-byte encodings) nor bounded (2-SGPR address, no record
+count). **The generator cannot repair this guard.**
+
+Selection-side rule (the vendor's own idiom, extended to the layouts its two DTV rules miss:
+`AssertSummationElementMultiple = DepthU` for GLTr solutions, 10 lines in
+`SolutionStructs/Solution.py`):
+
+| Check | Result |
+| --- | --- |
+| Solutions renamed in the family | 157 of 473, ASEM 16/32/64/128 by their own `DepthU` |
+| Rule present in the `.dat` | first problem predicate becomes `BoundSizeMultiple` (absent in the installed file) |
+| Rule honoured by the host | yes, visibly: with the predicate the selected kernel changes from `…ASEM64…DTVA0_DTVB1` to `…ASEM1…DTVA0_DTVB0…GRVWA1_GRVWB1` |
+| Crash removed | **no** — 12/12 runs faulted; the fallback kernel over-reads too |
+| Code changed | no — the renamed kernel still has 36 transposed loads and 5 tail labels, so `ASEM → NoTailLoop` does not remove the guarded read |
+| Cost, structurally | 157 of 473 solutions refused whenever K is not a multiple of their `DepthU`; the file's own tuning table (7768 problems, 6345 won by a DTV solution) has `K % DepthU == 0` for all of them, so the vendor's benchmark set is unaffected — the K-tail DTV case was never in it |
+
+**Retraction.** A ladder run was earlier read as evidence that the rule removes the over-read
+("10/10 no faults"). That build also carried candidate C, and the zero faults came from that; with the
+generator restored to upstream the renamed kernel faults on the same six shapes.
+
+Ladder partition, now settled: faults on `k-tail`, `m-edge+k-tail`, `n-edge`, `m+n-edges+k-tail`, `min`,
+`edges-minus-4+k-tail`; clean on `control-full-tiles`, `n-edge+k-tail`, `m-edge`, `multi-tile-edges`
+(`clean 4  fault 6`). Every faulting shape has `K % DepthU != 0`.
+
+### 13.3 Where to resume
+
+1. **The second over-reader — the real target now.** `MT32x32x64_MI16x16x1_…_DTVA0_DTVB0_…
+   GRVWA1_GRVWB1_…_LDSB1_…_EPS1`, a non-DTV kernel of the same family, selected by the host once the
+   DTV ones are refused, faulting on the crash shapes. It reads with 1-element `buffer_load`s, so its
+   over-read is *not* the GLTr guard. Start from `ltcheck.cpp` (12/12 stable reproduction), extract
+   that kernel from the family `.co` and disassemble it the way §12.3 does.
+2. **Population (M4, unchanged).** 1830 launchable bf16 kernels × 10 shapes; the plan's cost estimate
+   was wrong (the ~7 s device reset per fault dominates), and `fixes/hip1/resources/bf16-overrun-jobs.tsv`
+   is already built for it.
+3. **The exact byte distance** in the GLTr case (M1 vs M2) — now a curiosity, since §5.1 says no
+   address-side change can be safe either way. Needs the `GLOBAL_OFFSET_x` macro expansion or Tensile's
+   annotated assembly.
+4. **Nothing here should be deployed.** The library tree that carries the rule sits outside the
+   environment with the wiring off; see 13.5.
+
+### 13.4 Artifacts
+
+| Path | What | In the repo? |
+| --- | --- | --- |
+| `fixes/hip1/source-trace.md` | the full write-up of this phase (§3 the read, §4 `HasPartialOOB`, §5 fix space + measurements, §6 open items) | yes |
+| `conclusions/bf16-kernel-overrun.md` | the measured claim and its evidence chain (predates this phase; §3 has been updated once) | yes |
+| `fixes/hip1/hip1.md` §13 | this archive | yes |
+| `/home/acite/Deeppin/rocm-libraries` | ROCm checkout; **one modified file**: `projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py` (+10 lines, the rule). Two untracked symlinks in `tensilelite/rocisa/rocisa/` (`_rocisa.abi3.so`, `libstinkytofu.so.0`) are needed by the rebuild | no |
+| `/home/acite/axl-tensile-build/` | `build.sh`, `stage_deploy.py`, `stage_nopred.py`, `check_gemm.py`, `slack_sweep.py`, `ltcheck.cpp` + binary, builds `out`/`expA`–`expE`, staged trees `deploy`/`nopred` (≈750 MB, disposable) | no |
+| `/home/acite/axl-hipblaslt/` | the patched library tree (`gfx1201/`, 170 MB) + `enable.sh` / `disable.sh` for `HIPBLASLT_TENSILE_LIBPATH`, **off** | no |
+| `/tmp/axl-hip1/` | the harness binaries, the per-kernel job lists, and the session logs the tables were read from | no |
+| `/home/acite/axl-tensile-build/ltinclude/hipblaslt/` | the two-header shim that lets `ltcheck.cpp` include the repo's hipBLASLt headers | no |
+
+### 13.5 Resume recipe
+
+```bash
+# rebuild the family from whatever the source tree says now (15 s)
+bash /home/acite/axl-tensile-build/build.sh /home/acite/axl-tensile-build/expF
+# stage a library tree from that build (keeps installed indices; renames ASEM-carrying solutions)
+/usr/bin/python3 /home/acite/axl-tensile-build/stage_deploy.py \
+    /home/acite/axl-tensile-build/expF/library/gfx1201 /home/acite/axl-tensile-build/deploy
+/usr/bin/python3 /home/acite/axl-tensile-build/stage_nopred.py     # same tree, predicates stripped
+
+# verifier 1: the code, with the harness (pad 0 manufactures the page-boundary placement)
+cd /home/acite/Deeppin/AxlTrainer
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate axl_rocm_7_14
+hipcc --offload-arch=gfx1201 -O2 -Wall -std=c++17 fixes/hip1/launch_kernels.hip -o /tmp/axl-hip1/launch_kernels
+K=$(/usr/bin/python3 -c "import sys;sys.path.insert(0,'fixes/hip1');import kernel_inventory as ki;print(ki.fix3_kernel_name())")
+/tmp/axl-hip1/launch_kernels --jobs fixes/hip1/resources/bf16-overrun-jobs.tsv --kernel "$K" \
+    --shape 1280 64 308 --dcrc 0x4ec0d5e7 --tier packed --pad 0 --libdir <tree>/gfx1201
+
+# verifier 2: selection and results through hipBLASLt (12/12 faults on the crash shapes, all configs)
+HIPBLASLT_TENSILE_LIBPATH=<tree>/gfx1201 /home/acite/axl-tensile-build/ltcheck --only v1 --repeat 5
+
+# to make the environment use the patched tree (off by default; see source-trace.md §5.2 for why)
+source /home/acite/axl-hipblaslt/enable.sh --persist     # and disable.sh to undo
+```
+
+Reverting everything: `git -C /home/acite/Deeppin/rocm-libraries checkout -- projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py`,
+`bash /home/acite/axl-hipblaslt/disable.sh`, then delete `/home/acite/axl-tensile-build`, `/home/acite/axl-hipblaslt`
+and `/tmp/axl-hip1` (nothing in the trainer's environment depends on them; a fresh shell has
+`HIPBLASLT_TENSILE_LIBPATH` unset — checked).
+
+### 13.6 What this phase did not do
+
+- No fix was deployed, and nothing in the environment was changed (`config.toml`, `trainer/`, `ranko/`
+  untouched; the ROCm checkout carries the one modified file).
+- The ASEM rule's performance cost was not timed: every shape where it changes selection faults, so the
+  run dies before a timing line. Only the structural count above is available.
+- `conclusions/bf16-kernel-overrun.md` does not yet mention the second over-reader or the host-level A/B;
+  that needs one pointer line to this section, left for whoever resumes.

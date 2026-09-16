@@ -1,0 +1,28 @@
+# The patch attempted in source-trace.md 5.2 and archived in hip1.md 13: the vendor's own rule
+# for tail-loop cases (AssertSummationElementMultiple raised to DepthU, which becomes the runtime's
+# BoundSizeMultiple predicate), extended to the GLTr layouts its two existing DTV rules miss.
+# Measured: it moves selection off the DTV solutions and does not stop the crash.
+#
+# Apply from the ROCm checkout root:  git apply <this file>
+# Revert:                            git checkout -- projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py
+diff --git a/projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py b/projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py
+index 78f718a3..3da6fba6 100644
+--- a/projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py
++++ b/projects/hipblaslt/tensilelite/Tensile/SolutionStructs/Solution.py
+@@ -1319,6 +1319,16 @@ class Solution(collections.abc.Mapping):
+         # Use AssertSummationElementMultiple (BoundSizeMultiple in predicates) to exclude failed tail-loop cases
+         state["AssertSummationElementMultiple"] = max(state["AssertSummationElementMultiple"], state["DepthU"])
+ 
++    # The transposed global load (GLTr) addresses its operand with a plain address, so unlike
++    # buffer_load it has no record-count bound to drop a read that runs past the end of the operand:
++    # the guard's own cap is a tile-derived offset (SizesSum % DepthU plus the tile geometry) and can
++    # sit past the operand, which is how a tail-loop read faults on the operand's last page.  Cover
++    # the layouts the two rules above miss the same way: require the summation dim to be a multiple of
++    # DepthU, so ASEM (BoundSizeMultiple in the runtime predicates) keeps the solution away from the
++    # problems that need a tail loop.
++    if state["enableGLTrA"] or state["enableGLTrB"]:
++        state["AssertSummationElementMultiple"] = max(state["AssertSummationElementMultiple"], state["DepthU"])
++
+     # Does not work with DirectToLDS
+     # -> this will be checked after DirectToLDS doable check is done
+ 
