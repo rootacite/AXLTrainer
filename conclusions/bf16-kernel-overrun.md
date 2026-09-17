@@ -274,4 +274,6 @@ K=$(/usr/bin/python3 -c "import sys;sys.path.insert(0,'fixes/hip1');import kerne
 | `fixes/hip1/resources/bf16-overrun-jobs.tsv` | 18300 jobs: 1830 launchable kernels × 10 shapes |
 | `fixes/hip1/hip1.md` | The investigation this conclusion rests on (§12.9 the standalone launcher, §12.10 the rocBLAS route and the grid, §12.12 the withdrawn fp16 sibling) |
 | `fixes/hip1/source-trace.md` | Where the kernel comes from (logic file, solution index, runtime record), which generator function emits the guarded read, and where a code-level fix would go |
+| `conclusions/bf16-overrun-mitigations.md` | What keeps a run alive anyway: the working measures, each one's measured cost, and what they leave unaddressed |
+| `conclusions/gfx1201-fault-response-wedge.md` | What the GPU and driver do with this over-read when it works, and the state observed on 2026-09-16 in which the read stopped being reported at all (a hang instead of a kill) |
 | `/home/acite/LLM/axltrainer/outputs/lllj_20260916_062841` | The crashed run |

@@ -3,7 +3,7 @@
 
 Run from the repo root in the conda env named by `environment.yml`:
 
-    conda activate axl_rocm_7_14
+    conda activate axl
     python test/verify_mask_pipeline.py --tiers all
 
 Tiers
@@ -121,7 +121,7 @@ def project_env_name() -> str:
                 return line.split(":", 1)[1].strip()
     except OSError:
         pass
-    return "axl_rocm_7_14"
+    return "axl"
 
 
 def guard_environment(args: argparse.Namespace, rep: Report) -> Any:

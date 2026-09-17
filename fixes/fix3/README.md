@@ -3,7 +3,7 @@
 > **Reproduced 2026-09-15 23:16 through 2026-09-16 00:30, before and after a host reboot.** `config.toml`
 > as committed dies inside the **first** training step — encoding finishes, the epoch progress bar
 > appears, and the process is killed by the gfx1201 Tensile page fault. Every run, in ~15 s. This is not
-> the stopgap `doc/troubleshooting.md` describes: on the pinned stack (`torch 2.12.0+rocm7.14.1`, HIP
+> the stopgap `doc/troubleshooting.md` describes: on the stack then pinned (`torch 2.12.0+rocm7.14.1`, HIP
 > `7.14.60850`) the trainer *does* abort, it just had not been pointed at this configuration before.
 
 This directory is the reproducer, the evidence, and the analysis. The sibling packs:

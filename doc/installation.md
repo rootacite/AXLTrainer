@@ -6,13 +6,13 @@
 - **A GPU with enough VRAM for SDXL LoRA training.** The shipped environment targets **AMD ROCm** (MIOpen/MIGraphX). CUDA works too if you install a CUDA build of PyTorch instead (see below).
 - **JDK 17+** only if you want to build/run the Ranko desktop dashboard (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver).
 
-> There is **no `requirements.txt`** and no `pyproject.toml`. The only dependency manifest is `environment.yml`, whose `name:` is the environment to use — currently `axl_rocm_7_14`.
+> There is **no `requirements.txt`** and no `pyproject.toml`. The only dependency manifest is `environment.yml`, whose `name:` is the environment to use — currently `axl`.
 
 ## 1. Create the environment
 
 ```bash
 conda env create -f environment.yml
-conda activate axl_rocm_7_14
+conda activate axl
 ```
 
 The manifest pins the ROCm stack used during development, including:
@@ -84,7 +84,7 @@ printf '%s\n' '{"id":1,"method":"ping","params":{}}' | python -u api.py
 ## Running the tests
 
 ```bash
-# Python: run every suite under test/ (cwd = repo root, env `axl_rocm_7_14`)
+# Python: run every suite under test/ (cwd = repo root, env `axl`)
 python -m unittest discover -s test
 python -m unittest discover -s test -p 'test_api_ipc.py'   # one file
 

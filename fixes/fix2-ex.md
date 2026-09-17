@@ -204,7 +204,7 @@ Practical rules that *are* measured:
 #### 2026-09-15 — the stack matters as much as the shapes
 
 Everything above was measured on `torch 2.13.0+rocm10.0.0` (HIP `7.15.26333`). On
-`torch 2.12.0+rocm7.14.1` (HIP `7.14.60850`, now pinned in `environment.yml`) the author reports the
+`torch 2.12.0+rocm7.14.1` (HIP `7.14.60850`, `environment.yml`'s pin at the time) the author reports the
 packaged repros no longer abort. Local corroboration: the last attempt of the `network_dim 32` row
 ran under that env and was stopped by hand at step 2 with no fault marker, where it used to die at
 step 4; and the author's live run on that stack has trained 700+ steps with sampling every 50 without

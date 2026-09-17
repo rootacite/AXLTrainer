@@ -31,7 +31,7 @@ learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 10
+epoch = 20
 save_every_n_epochs = 1
 save_every_n_steps = 50
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
@@ -41,7 +41,7 @@ resume_lora_path = ""
 
 [network]
 network_dim = 48
-network_alpha = 24
+network_alpha = 32
 network_dropout = 0.2
 clip_skip = 1
 max_token_length = 225
@@ -63,7 +63,7 @@ cache_latents_to_disk = true
 # Recompute activations in backward to save VRAM. Turn off for faster steps
 # if the GPU has headroom (UNet is the bigger win; TE is smaller).
 gradient_checkpointing_unet = true
-gradient_checkpointing_te = false
+gradient_checkpointing_te = true
 shuffle_caption = true
 keep_tokens = 2
 caption_extension = ".txt"

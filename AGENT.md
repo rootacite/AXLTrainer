@@ -34,7 +34,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 Verify after a change (pick the layer you touched):
 
 ```bash
-# Python IPC + control plane (cwd = repo root, env `axl_rocm_7_14`)
+# Python IPC + control plane (cwd = repo root, env `axl`)
 python -m unittest discover -s test
 python -m unittest discover -s test -p 'test_validation.py'   # one file only
 
@@ -69,6 +69,7 @@ Hard rules:
 
 - Training is **detached**. `api.py` `train_start` uses `start_new_session=True` (`setsid`). Closing Ranko must not kill the run.
 - Ranko **never** talks to the GPU. It only spawns `api.py` and renders responses.
+- The trainer is `exec`'d by `start_train.sh`, so that shell's PID and **session** become the trainer's. A GPU fault aborts the trainer from inside HIP (`conclusions/bf16-kernel-overrun.md`) without running Python's `atexit`; its DataLoader forkserver then keeps the workers it forked alive, reparented to init, each holding `/dev/kfd` and ~0.5 GB. `start_train.sh` therefore starts `trainer/orphans.py` first, detached, to reap that session once the trainer is gone — keep it, and keep it unable to touch a session that is not the trainer's.
 - `api.py` stdout is **NDJSON only**. Logs / tracebacks go to stderr (`run_ipc_loop` redirects `sys.stdout` to stderr after keeping the real stdout for replies).
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (directory that contains `api.py` and `trainer/`).
 - Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited.
@@ -81,7 +82,7 @@ Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
 Files: `state.json`, `command.json`, `train.lock`, `train.log`. Tests **must** set `AXL_RUNTIME_DIR` to a temp dir (see `test_train_control.py`).
 
-Interpreter override: Ranko uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl_rocm_7_14` (torch `2.12.0+rocm7.14.1`, HIP `7.14.60850`). There is **no** `requirements.txt`.
+Interpreter override: Ranko uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl` (torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`). There is **no** `requirements.txt`.
 
 ---
 
@@ -213,6 +214,7 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/loss_log.py` | Kohya-style `Train/Avg_Loss` window (`LossRecorder`). |
 | `trainer/cleanup.py` | Discover/delete one run's samples, TB logs, optional weight dirs. Shared by `api.py` `train_reset` and `clean.py`. |
 | `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs`. torch-free. |
+| `trainer/orphans.py` | Reaps what a signal-killed trainer leaves behind: `start_train.sh` starts it detached before `exec`ing the trainer, it waits for that PID (start-time guarded, zombies count as gone) and then kills the trainer's session, or the forkservers matching a `trainer/main.py` path when it is not the session leader. torch-free. |
 | `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
 | `trainer/genjob.py` | Job records for one-off sample generation (`{name}_samples/generated/*.json`): naming, request validation, atomic write, listing. torch-free. |
 | `trainer/generate_sample.py` | `python -u trainer/generate_sample.py --spec <job.json>`: loads the base + a kohya LoRA (reusing `SdxlFamily.apply_lora`/`load_lora`), samples with the run's own scheduler/settings taken from the checkpoint metadata, writes the PNG + progress into the job file. Detached, never touches `state.json`/the lock. |
@@ -315,6 +317,7 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 | Path | Role |
 | --- | --- |
 | `ranko/desktopApp/…/main.kt` | Window; `createGraph<AppGraph>()` |
+| `…/util/ProcessExitGuard.kt` (jvmMain) | One watcher per quit, armed from `main.kt`'s close request and from a shutdown hook: it kills the JVM if it is still there `DEFAULT_GRACE_SECONDS` later, start-time guarded so a reused PID is left alone. A hang inside the VM cannot be undone from inside the VM, and a windowless Ranko keeps the GPU render nodes and its `api.py` child. |
 | `ranko/shared/src/commonMain/…/App.kt`, `Stage.kt` | Shell + four screens |
 | `…/ui/theme/` | Sky & Sakura palette, tokens, Nunito, `RankoTheme` |
 | `…/ui/components/` | Backdrop, porcelain/frosted surfaces, capsule controls |
@@ -410,6 +413,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Tagger | `python -m unittest discover -s test -p 'test_tagger.py'` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest discover -s test -p 'test_train_control.py'` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
 | Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing |
+| Orphans | `python -m unittest discover -s test -p 'test_orphans.py'` | start-time identity, an unreaped child counting as gone, session membership, reaping a session, watching a leader die, the forkserver command-line fallback (no GPU) |
 | Gen jobs | `python -m unittest discover -s test -p 'test_genjob.py'` | job naming/stem, request validation ranges, atomic write, listing order, done/error transitions (no GPU) |
 | Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
 | Sample offload | `python -m unittest discover -s test -p 'test_sampling_offload.py'` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
@@ -418,7 +422,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Buckets | `python -m unittest discover -s test -p 'test_bucket_sampler.py'` | sampler batching/remainders, fit-geometry sweep (step alignment, clamps, no upscale, zero pad, cache key) |
 | Masked loss | `python -m unittest discover -s test -p 'test_masked_loss.py'` | sidecar exclusion, ones/zero/gray weights, alpha fallback, fit+pad alignment, zero-weight pad, a tall sample keeping both end bands |
 | Masked loss GPU | `python -m unittest discover -s test -p 'test_masked_loss_gpu.py'` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
-| Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl_rocm_7_14`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
+| Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
 | Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
 
 Python suites live in `test/` — a plain namespace directory, deliberately **without**
@@ -427,7 +431,7 @@ repo root; `unittest discover -s test` puts `test/` on `sys.path` while `python 
 root there, which is what the suites' `import api` / `from trainer…` need. A single file:
 `python -m unittest discover -s test -p 'test_runs.py'`.
 
-Cwd for Python tests: **repo root**. Use the env named in `environment.yml` (`axl_rocm_7_14`) so `torch` / `tensorboard` import.
+Cwd for Python tests: **repo root**. Use the env named in `environment.yml` (`axl`) so `torch` / `tensorboard` import.
 
 Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped when `torch.cuda.is_available()` is false. `test_train_control` may import `torch` for tensor device checks.
 
@@ -455,7 +459,7 @@ Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped whe
 | `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
 | `MIOPEN_*` / `AMD_LOG_LEVEL` | `start_train.sh` | Quiet ROCm, pin cache |
 
-Python: 3.14, PyTorch `2.12.0+rocm7.14.1` per `environment.yml` (CUDA torch also works if you swap the wheel). PyTorch `2.13.0+rocm10.0.0` is the newer stack and is where the gfx1201 Tensile page fault reproduces; `2.12.0+rocm7.14.1` is the stack in use because it does not. Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
+Python: 3.14, PyTorch `2.13.0+rocm10.0.0` (HIP `7.15.26333`) per `environment.yml` (CUDA torch also works if you swap the wheel). That is also the stack on which the gfx1201 Tensile page fault reproduces most readily — the `fixes/fix2` repros die on demand on it; the pin that preceded it, `2.12.0+rocm7.14.1`, faults as well under other configurations (`fixes/fix3`) — the pin changes which shapes and allocator layouts lose the guard-page lottery, not whether the kernels over-read (`conclusions/bf16-overrun-mitigations.md`). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
 
 Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD ROCm**, not NVIDIA.
 

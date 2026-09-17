@@ -1,6 +1,6 @@
 // hip_smoke.hip — toolchain smoke test: device properties, HIP versions, one kernel.
 //
-//   conda activate axl_rocm_7_14
+//   conda activate axl
 //   hipcc -O3 tools/hip/hip_smoke.hip -o /tmp/hip_smoke && /tmp/hip_smoke
 //
 // This is what tools/hip/setup_rocm_dev.sh --verify builds. It exits non-zero when

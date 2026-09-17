@@ -1,6 +1,6 @@
 # HIP development on this machine
 
-How to compile and run HIP code against the ROCm stack in the `axl_rocm_7_14`
+How to compile and run HIP code against the ROCm stack in the `axl`
 conda environment (the environment `environment.yml` names). The trainer and
 Ranko never build HIP code — this exists for probes, kernel experiments, and
 anything that needs to touch the driver directly (see `fixes/fix3/`).
@@ -11,13 +11,13 @@ ROCm is installed as **PyPI wheels**, not as a distribution package:
 
 | Component | Version | Location |
 | --- | --- | --- |
-| `rocm` metapackage | 7.14.1 | `pip` metadata only |
-| `rocm-sdk-core` → `_rocm_sdk_core` | 7.14.1 | `$CONDA_PREFIX/lib/python3.14/site-packages/_rocm_sdk_core` |
-| `rocm-sdk-libraries` → `_rocm_sdk_libraries` | 7.14.1 | `…/site-packages/_rocm_sdk_libraries` |
-| `rocm-sdk-device-gfx1201` | 7.14.1 | kpack archives + gfx1201 Tensile DBs |
-| HIP | 7.14.60850 | `_rocm_sdk_core/lib/libamdhip64.so.7` |
-| clang | 23.0.0git (`+PATCHED` build) | `_rocm_sdk_core/lib/llvm/bin/clang-23` |
-| torch | 2.12.0+rocm7.14.1 | `torch.version.hip == 7.14.60850` |
+| `rocm` metapackage | 10.0.0 | `pip` metadata only |
+| `rocm-sdk-core` → `_rocm_sdk_core` | 10.0.0 | `$CONDA_PREFIX/lib/python3.14/site-packages/_rocm_sdk_core` |
+| `rocm-sdk-libraries` → `_rocm_sdk_libraries` | 10.0.0 | `…/site-packages/_rocm_sdk_libraries` |
+| `rocm-sdk-device-gfx1201` | 10.0.0 | kpack archives + gfx1201 Tensile DBs |
+| HIP | 7.15.26333 | `_rocm_sdk_core/lib/libamdhip64.so.7` |
+| clang | 23.0.0git (`8f497e09`) | `_rocm_sdk_core/lib/llvm/bin/clang-23` |
+| torch | 2.13.0+rocm10.0.0 | `torch.version.hip == 7.15.26333` |
 
 Paths inside `_rocm_sdk_core`:
 
@@ -31,15 +31,18 @@ Paths inside `_rocm_sdk_core`:
 | Compressed BLAS kernels | `_rocm_sdk_libraries/.kpack/*.kpack` |
 
 There is a **second, unrelated ROCm** on this machine: `/opt/rocm/core`, owned by
-the Arch package `rocm-gfx120x-bin 10.0.0-2`, which is HIP **7.15.26333** with a
-different clang build. `~/.zshrc` exports `HIP_PATH`/`ROCM_PATH=/opt/rocm/core`,
+the Arch package `rocm-gfx120x-bin 10.0.0-2`. It is the same ROCm release as the
+wheels above — HIP **7.15.26333**, same clang revision — but a separate
+installation (its `libamdhip64.so.7` is a different build: `4ac6ac42…` against the
+wheel's `1a8bcd00…`). `~/.zshrc` exports `HIP_PATH`/`ROCM_PATH=/opt/rocm/core`,
 `/etc/profile.d/rocm-bin.sh` appends `/opt/rocm/core/{bin,lib/llvm/bin}` to
 `PATH`, and `/etc/ld.so.conf.d/rocm-bin.conf` puts `/opt/rocm/core/lib` on the
 default library search path. Those three are why an unmodified environment mixes
-the two stacks. The trainer does not care: torch dlopens the environment's
-libraries by absolute path at import (`torch/_rocm_init.py` →
-`rocm_sdk.initialize_process`, `RTLD_GLOBAL`), so `LD_LIBRARY_PATH` is irrelevant
-to it.
+the two stacks — and since both now report HIP 7.15.26333, the version a program
+prints no longer tells you which library it loaded; `ldd` does. The trainer does
+not care: torch dlopens the environment's libraries by absolute path at import
+(`torch/_rocm_init.py` → `rocm_sdk.initialize_process`, `RTLD_GLOBAL`), so
+`LD_LIBRARY_PATH` is irrelevant to it.
 
 ## 2. One-time setup
 
@@ -52,7 +55,7 @@ The script is idempotent and applies four things:
 
 | # | Change | Why |
 | --- | --- | --- |
-| 1 | Unversioned `libfoo.so → libfoo.so.N` symlinks for every library in `_rocm_sdk_core/lib` and `_rocm_sdk_libraries/lib` (43 of them) | The linker looks for `libfoo.so`; the wheels ship only the versioned name, so `hipcc` fails with `cannot open …/lib/libamdhip64.so` |
+| 1 | Unversioned `libfoo.so → libfoo.so.N` symlinks for every library in `_rocm_sdk_core/lib` and `_rocm_sdk_libraries/lib` (44 of them in the 10.0.0 wheels) | The linker looks for `libfoo.so`; the wheels ship only the versioned name, so `hipcc` fails with `cannot open …/lib/libamdhip64.so` |
 | 2 | `_rocm_sdk_core/amdgcn → lib/llvm/amdgcn` | hipcc derives the device bitcode path from `ROCM_PATH`; in the system layout it is `<root>/amdgcn` |
 | 3 | `_rocm_sdk_core/include/{thrust,rocprim,hipcub} → /opt/rocm/core/include/<same>` | These header-only libraries are in no ROCm wheel, and torch's headers include `<thrust/complex.h>`, so extension builds need them |
 | 4 | `$CONDA_PREFIX/etc/conda/activate.d/axl_rocm_hip_toolchain.sh` + the matching `deactivate.d` script | Activating points `HIP_PATH`/`ROCM_PATH`/`HIP_CLANG_PATH` at the environment and prepends its `lib` directories to `LD_LIBRARY_PATH`; deactivating restores the previous values |
@@ -62,7 +65,7 @@ Nothing outside the conda environment is touched; `/opt/rocm` is left as it is.
 ## 3. Compile and run
 
 ```bash
-conda activate axl_rocm_7_14
+conda activate axl
 hipcc -O3 tools/hip/hip_smoke.hip -o /tmp/hip_smoke
 /tmp/hip_smoke
 ```
@@ -75,14 +78,19 @@ stack:
 ```
 device        : AMD Radeon RX 9070 XT
 arch          : gfx1201 (12.0, 32 CUs, warp 32)
-HIP header    : 7.14.60850
-HIP runtime   : 7.14.60850
+HIP header    : 7.15.26333
+HIP runtime   : 7.15.26333
 kernel        : 0/1024 wrong
 PASS
 ```
 
-Without activation the same binary reports `HIP runtime : 7.15.26333` — the
-code is the environment's, the library is the system's.
+Without activation the same binary prints the same two versions, because both
+stacks are HIP 7.15.26333 — so this output no longer says which library was
+loaded; `ldd /tmp/hip_smoke | grep amdhip64` does. Built in an environment that
+has not had §2's setup script applied, it resolves to
+`/opt/rocm/core/lib/libamdhip64.so.7`: the wheels ship only the versioned
+`libamdhip64.so.7`, so the loader falls back to the system search path. Run the
+script once per environment before trusting a HIP measurement.
 
 Useful variants:
 
@@ -122,7 +130,8 @@ environment.
 
 Both exist in both stacks: declared in `_rocm_sdk_core/include/hip/hip_runtime_api.h`
 (doxygen group `Virtual`), exported by `libamdhip64.so` with symbol version `hip_5.1`
-(environment 7.14.60850, `/opt` 7.15.26333). They are the driver-level VMM API — the
+in both — the environment's 10.0.0 wheels and `/opt`'s 10.0.0 package are both HIP
+7.15.26333. They are the driver-level VMM API — the
 HIP spelling of `cuMemAddressReserve`/`cuMemMap` — and they decouple *where* a buffer
 lives in the address space from *which physical allocation* backs it:
 
@@ -149,7 +158,8 @@ hipcc -O3 tools/hip/hip_vmm_probe.hip -o /tmp/hip_vmm_probe && /tmp/hip_vmm_prob
 
 `hip_vmm_probe.hip` runs the full device cycle (granularity → create → reserve → map →
 set access → kernel writes the mapping → unmap/free/release), a POSIX-fd export/import
-round trip, and a host-location cycle. On gfx1201 / 7.14.60850 it prints `PASS`:
+round trip, and a host-location cycle. On gfx1201 under the 7.14.1 stack it printed
+`PASS` (the probe has not been re-run on 10.0.0):
 
 - granularity is 4096 B; `hipMemGetAccess` reports 3 (read-write);
   `hipMemRetainAllocationHandle` returns a handle equal to the created one.
@@ -212,7 +222,7 @@ switches it on; the shipped `start_train.sh` sets none of them to
   `/opt/rocm`, because no ROCm wheel ships cmake configs.
 - **`rocm-sdk path --root|--bin|--cmake` fails** with "Could not load the
   `rocm[devel]` package". That package is the upstream home of everything §2 does
-  by hand; install `rocm[devel]==7.14.1` if you want the full set (cmake configs,
+  by hand; install `rocm[devel]==10.0.0` if you want the full set (cmake configs,
   `$CONDA_PREFIX/bin/clang*` links) instead of this script.
 - **`hipconfig` prints `llc: No such file or directory`** — cosmetic, hipcc drives
   clang directly. Its `HIP_PATH`/`ROCM_PATH` lines report its own resolution, not
