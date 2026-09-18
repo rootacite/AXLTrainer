@@ -25,11 +25,12 @@ pub unsafe extern "C" fn hipMalloc(ptr: *mut *mut c_void, size: usize) -> HipErr
         unsafe { *ptr = record.address.as_ptr() };
         if let Origin::Extent(extent) = &record.origin {
             log::info!(
-                "hipMalloc(size={size}) -> ret=0 served va={} block={} extent={} pad={}",
+                "hipMalloc(size={size}) -> ret=0 served va={} block={} extent={} pad={} device={}",
                 record.address,
                 extent.block,
                 extent.total,
                 extent.pad.unwrap_or(0),
+                extent.device,
             );
         }
         if let Some(replaced) = registry::insert(record) {
@@ -78,7 +79,10 @@ pub unsafe extern "C" fn hipFree(ptr: *mut c_void) -> HipError {
             origin: Origin::Extent(extent),
         }) => {
             let outcome = peralloc::release(address, extent);
-            log::info!("hipFree(ptr={address}) -> {outcome} size={size}");
+            log::info!(
+                "hipFree(ptr={address}) -> {outcome} size={size} device={}",
+                extent.device
+            );
             HIP_SUCCESS
         }
         Some(HookData {

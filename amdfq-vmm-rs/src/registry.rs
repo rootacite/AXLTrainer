@@ -64,6 +64,9 @@ pub(crate) struct Extent {
     pub(crate) handle: Handle,
     /* The shared pad granule mapped behind the block, when that mapping succeeded. */
     pub(crate) pad: Option<usize>,
+    /* The device the block was made on. The VMM calls a free needs act on the current device, so the
+     * record carries it and the free switches back before tearing anything down (DESIGN.md D11). */
+    pub(crate) device: i32,
 }
 
 static REGISTRY: LazyLock<RwLock<HashMap<Address, HookData>>> =

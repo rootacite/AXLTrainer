@@ -17,17 +17,27 @@
  * One hipMemAddressReserve per allocation, given back by hipMemAddressFree when the pointer is freed:
  * no arena base, no bump pointer and no free list.
  *
- * State is per process, and whichever process first calls hipMalloc builds it and owns it. A process
- * that inherited another's state through fork touches none of it: it serves nothing, and it releases
- * nothing, because the handle belongs to the parent, which is still using it. Ownership is the pid
- * recorded when the state was built, so a process that forked before its parent ever allocated builds
- * a state of its own and serves out of that.
+ * State is per device, not per process: whichever device a gate runs on has its own granularity, its
+ * own shared pad granule and its own peer set, built on that device's first use (D11). The device is
+ * read at the gate, never remembered, and every served block records the device it was made on, so a
+ * free can switch back to it — the VMM calls act on the current device.
+ *
+ * The grant a block gets is its own device, every device that can reach this one, and the host. A
+ * mapping's reach comes only from hipMemSetAccess, and hipDeviceEnablePeerAccess adds nothing to a
+ * mapping it did not make, so the peers are asked for here; without them a kernel, a peer copy or a
+ * collective on another card would meet a page with no permission where a hipMalloc'd block is
+ * reachable.
+ *
+ * A request is served only when every step of it succeeded, and the steps that can end a request
+ * with a warning instead of a failure say so: a block whose device+host grant did not land is given
+ * back and forwarded rather than handed out — device-only and ungranted ranges fault the reader — and
+ * a pad that could not be mapped costs this allocation its protection.
  *
  * Nothing here locks: concurrent hipMalloc calls run their own reserve/create/map sequences at the
  * same time, and that is the runtime's business to get right (DESIGN.md D2). */
 
 use crate::hip::{
-    AccessDesc, AllocationProp, HIP_SUCCESS, Handle, MEM_ACCESS_PROT_READWRITE,
+    AccessDesc, AllocationProp, HIP_SUCCESS, Handle, HipError, MEM_ACCESS_PROT_READWRITE,
     MEM_ALLOCATION_TYPE_PINNED, MEM_GRANULARITY_MINIMUM, MEM_GRANULARITY_RECOMMENDED,
     MEM_HANDLE_TYPE_NONE, MEM_LOCATION_DEVICE, MEM_LOCATION_HOST, MemLocation,
 };
@@ -36,13 +46,14 @@ use crate::registry::{Address, Extent, HookData, Origin};
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 /* The runtime entry points the route needs, resolved as a set: the route stays off unless all of
  * them are there, rather than failing halfway through a request. */
 #[derive(Clone, Copy)]
 struct Entries {
     get_device: real::HipGetDeviceFn,
+    set_device: real::HipSetDeviceFn,
     get_granularity: real::HipMemGetAllocationGranularityFn,
     reserve: real::HipMemAddressReserveFn,
     address_free: real::HipMemAddressFreeFn,
@@ -53,12 +64,16 @@ struct Entries {
     set_access: real::HipMemSetAccessFn,
     get_last_error: real::HipGetLastErrorFn,
     device_synchronize: real::HipDeviceSynchronizeFn,
+    /* Optional: without them the route still serves, it just cannot grant peers (D11). */
+    device_count: Option<real::HipGetDeviceCountFn>,
+    can_access_peer: Option<real::HipDeviceCanAccessPeerFn>,
 }
 
 impl Entries {
     fn resolve() -> Option<Self> {
         Some(Entries {
             get_device: (*real::HIP_GET_DEVICE)?,
+            set_device: (*real::HIP_SET_DEVICE)?,
             get_granularity: (*real::HIP_MEM_GET_ALLOCATION_GRANULARITY)?,
             reserve: (*real::HIP_MEM_ADDRESS_RESERVE)?,
             address_free: (*real::HIP_MEM_ADDRESS_FREE)?,
@@ -69,37 +84,49 @@ impl Entries {
             set_access: (*real::HIP_MEM_SET_ACCESS)?,
             get_last_error: (*real::HIP_GET_LAST_ERROR)?,
             device_synchronize: (*real::HIP_DEVICE_SYNCHRONIZE)?,
+            device_count: *real::HIP_GET_DEVICE_COUNT,
+            can_access_peer: *real::HIP_DEVICE_CAN_ACCESS_PEER,
         })
     }
 }
 
-/* What the route knows once it is running. */
-#[derive(Clone, Copy)]
-struct Setup {
-    entries: Entries,
-    device_id: i32,
+/* What the route knows about one device: its allocation granularity, the shared pad granule mapped
+ * behind that device's blocks, and the devices that may reach them. */
+struct Device {
+    id: i32,
     /* Block rounding and pad size, both the recommended granularity — the same magnitude the
      * runtime's own pool charges, so rounding costs nothing hipMalloc would not have cost anyway
      * (measured: a 1/2/4/8/32/44 MiB request all cost the request). */
     granule: usize,
-    /* The pid that built this state; a fork child finds its parent's here. */
-    owner: u32,
+    /* The one physical object on this device that every served block's pad is a mapping of: created
+     * once, released never. */
+    pad: Handle,
+    /* Devices that can read and write this device's memory (hipDeviceCanAccessPeer). */
+    peers: Vec<i32>,
 }
 
-/* Built on the first hipMalloc this process makes, when the real entry points are resolvable. A
- * failure is remembered, and later calls forward without asking the runtime again (DESIGN.md D7). */
-static SETUP: LazyLock<Option<Setup>> = LazyLock::new(build);
+/* The entry points the route needs, resolved as a set: the route stays off unless all of them are
+ * there, rather than failing halfway through a request. A failure is remembered (DESIGN.md D7). */
+static ENTRIES: LazyLock<Option<Entries>> = LazyLock::new(Entries::resolve);
 
-/* The one physical object every served block's pad is a mapping of: created once, released never. */
-static PAD: LazyLock<Option<Handle>> = LazyLock::new(build_pad);
+/* One slot per device ordinal, built on that device's first hipMalloc. The list of globals is closed
+ * (D5), so a device ordinal past the end of this table is forwarded rather than remembered. */
+const MAX_DEVICES: usize = 32;
 
-fn build() -> Option<Setup> {
-    let entries = Entries::resolve()?;
-    let mut device_id = 0;
-    if unsafe { (entries.get_device)(&mut device_id) } != HIP_SUCCESS {
+static DEVICES: [OnceLock<Option<Device>>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
+
+/* The state of one device, built on its first use and remembered even when the build failed. */
+fn device_state(entries: &Entries, id: i32) -> Option<&'static Device> {
+    let index = usize::try_from(id).ok()?;
+    let Some(slot) = DEVICES.get(index) else {
+        log::warn!("device ordinal {id} is past the {MAX_DEVICES}-slot device table, forwarding");
         return None;
-    }
-    let prop = prop(device_id);
+    };
+    slot.get_or_init(|| build_device(entries, id)).as_ref()
+}
+
+fn build_device(entries: &Entries, id: i32) -> Option<Device> {
+    let prop = prop(id);
     let mut minimum = 0;
     if unsafe { (entries.get_granularity)(&mut minimum, &prop, MEM_GRANULARITY_MINIMUM) }
         != HIP_SUCCESS
@@ -114,23 +141,75 @@ fn build() -> Option<Setup> {
     {
         recommended = minimum;
     }
-    Some(Setup {
-        entries,
-        device_id,
+    let mut raw: *mut c_void = ptr::null_mut();
+    if unsafe { (entries.create)(&mut raw, recommended, &prop, 0) } != HIP_SUCCESS {
+        return None;
+    }
+    /* Once per device per process: what this device's blocks are rounded to, and which other devices
+     * their mappings are granted to (D11). */
+    let peers = peers_of(entries, id);
+    log::info!("device {id}: granule={recommended} peers={peers:?}");
+    Some(Device {
+        id,
         granule: recommended,
-        owner: std::process::id(),
+        pad: Handle::from_raw(raw),
+        peers,
     })
 }
 
-fn build_pad() -> Option<Handle> {
-    let setup = (*SETUP).as_ref()?;
-    let mut raw: *mut c_void = ptr::null_mut();
-    if unsafe { (setup.entries.create)(&mut raw, setup.granule, &prop(setup.device_id), 0) }
-        != HIP_SUCCESS
-    {
+/* The devices that may reach memory on `id`. Capability, not hipDeviceEnablePeerAccess: that gate adds
+ * nothing to a mapping this route made, and asking for capability covers peers the app turns on later.
+ * The query is the one the current device can make — this device reaching the other — and is taken as
+ * symmetric, which is what AMD's topology gives. */
+fn peers_of(entries: &Entries, id: i32) -> Vec<i32> {
+    let (Some(device_count), Some(can_access_peer)) =
+        (entries.device_count, entries.can_access_peer)
+    else {
+        log::warn!(
+            "hipGetDeviceCount/hipDeviceCanAccessPeer not resolvable: served blocks get no peer grant"
+        );
+        return Vec::new();
+    };
+    let mut count = 0;
+    if unsafe { device_count(&mut count) } != HIP_SUCCESS {
+        clear_error(entries);
+        return Vec::new();
+    }
+    let mut peers = Vec::new();
+    for peer in 0..count {
+        if peer == id {
+            continue;
+        }
+        /* The grant is written into a fixed-size descriptor set: this device, one entry per peer, and
+         * the host. */
+        if peers.len() == MAX_DEVICES - 1 {
+            log::warn!(
+                "device {id} can reach more devices than the descriptor set holds ({}), the rest get no grant",
+                MAX_DEVICES - 1
+            );
+            break;
+        }
+        let mut can = 0;
+        if unsafe { can_access_peer(&mut can, id, peer) } != HIP_SUCCESS {
+            clear_error(entries);
+            continue;
+        }
+        if can != 0 {
+            peers.push(peer);
+        }
+    }
+    peers
+}
+
+/* The device the calling thread is on, read at the gate rather than remembered (D11). A failure here
+ * leaves the runtime's sticky error set, and it is consumed before forwarding. */
+fn current_device(entries: &Entries) -> Option<i32> {
+    let mut id = 0;
+    if unsafe { (entries.get_device)(&mut id) } != HIP_SUCCESS {
+        clear_error(entries);
         return None;
     }
-    Some(Handle::from_raw(raw))
+    Some(id)
 }
 
 fn prop(device_id: i32) -> AllocationProp {
@@ -147,52 +226,100 @@ fn prop(device_id: i32) -> AllocationProp {
 
 /* Serves one hipMalloc request, or returns None to have the hook forward it unchanged. */
 pub(crate) fn serve(size: usize) -> Option<HookData> {
-    let setup = (*SETUP).as_ref()?;
-    /* A fork child never touches state it inherited. */
-    if setup.owner != std::process::id() {
-        return None;
-    }
+    let entries = (*ENTRIES).as_ref()?;
     if size == 0 {
         return None;
     }
+    /* The device this request belongs to is the one the caller is on, read here (D11). */
+    let id = current_device(entries)?;
+    /* A device whose state cannot be built serves nothing: its pad granule would be missing (the C
+     * version disabled the route the same way). */
+    let dev = device_state(entries, id)?;
     /* The block rounds up to the granularity and the pad is one granule behind it, so the request has
      * to leave room for both. */
-    if size > usize::MAX - 2 * setup.granule {
+    if size > usize::MAX - 2 * dev.granule {
         return None;
     }
-    /* A block without its pad behind it is not worth serving: a process whose pad could not be
-     * created forwards everything (the C version disabled the route the same way). */
-    let pad = (*PAD)?;
 
-    let block = size.div_ceil(setup.granule) * setup.granule;
-    let total = block + setup.granule;
+    let block = size.div_ceil(dev.granule) * dev.granule;
+    let total = block + dev.granule;
 
-    let address = reserve(&setup.entries, total, setup.granule)?;
-
-    let Some(handle) = create(&setup.entries, block, setup.device_id) else {
-        free_address(&setup.entries, address, total);
-        return None;
+    let address = match reserve(entries, total, dev.granule) {
+        Ok(address) => address,
+        Err(ret) => {
+            log::warn!(
+                "hipMalloc(size={size}) hipMemAddressReserve(total={total}) -> {ret}, forwarding"
+            );
+            return None;
+        }
     };
-    if unsafe { (setup.entries.map)(address.as_ptr(), block, 0, handle.as_raw(), 0) } != HIP_SUCCESS
-    {
-        unsafe { (setup.entries.release)(handle.as_raw()) };
-        free_address(&setup.entries, address, total);
+
+    let handle = match create(entries, block, dev.id) {
+        Ok(handle) => handle,
+        Err(ret) => {
+            log::warn!("hipMalloc(size={size}) hipMemCreate(block={block}) -> {ret}, forwarding");
+            warn_if_failed(
+                "hipMemAddressFree",
+                address,
+                free_address(entries, address, total),
+            );
+            return None;
+        }
+    };
+    let mapped = unsafe { (entries.map)(address.as_ptr(), block, 0, handle.as_raw(), 0) };
+    if mapped != HIP_SUCCESS {
+        log::warn!(
+            "hipMalloc(size={size}) hipMemMap(va={address} block={block}) -> {mapped}, forwarding"
+        );
+        warn_if_failed("hipMemRelease", address, unsafe {
+            (entries.release)(handle.as_raw())
+        });
+        warn_if_failed(
+            "hipMemAddressFree",
+            address,
+            free_address(entries, address, total),
+        );
         return None;
     }
-    set_access(setup, address, block);
+    /* A block whose grant did not land is not served: with device-only the host read faults, with no
+     * grant the device read does, and the runtime never sees this pointer either way (DESIGN.md D10),
+     * so the three steps that built it are undone here. */
+    if set_access(entries, dev, address, block, "block") != Access::Granted {
+        log::warn!(
+            "hipMalloc(size={size}) not served: va={address} block={block} has no device+host grant"
+        );
+        warn_if_failed("hipMemUnmap", address, unsafe {
+            (entries.unmap)(address.as_ptr(), block)
+        });
+        warn_if_failed("hipMemRelease", address, unsafe {
+            (entries.release)(handle.as_raw())
+        });
+        warn_if_failed(
+            "hipMemAddressFree",
+            address,
+            free_address(entries, address, total),
+        );
+        return None;
+    }
 
     /* The block is valid and usable without the slack behind it, so a pad mapping that fails costs
      * this allocation its protection and nothing else. */
     let pad_behind = address.offset(block);
-    let pad_size =
-        if unsafe { (setup.entries.map)(pad_behind.as_ptr(), setup.granule, 0, pad.as_raw(), 0) }
-            == HIP_SUCCESS
-        {
-            set_access(setup, pad_behind, setup.granule);
-            Some(setup.granule)
-        } else {
-            None
-        };
+    let mapped_pad =
+        unsafe { (entries.map)(pad_behind.as_ptr(), dev.granule, 0, dev.pad.as_raw(), 0) };
+    let pad_size = if mapped_pad == HIP_SUCCESS {
+        if set_access(entries, dev, pad_behind, dev.granule, "pad") != Access::Granted {
+            log::warn!(
+                "hipMalloc(size={size}) pad at {pad_behind} has no device+host grant: the slack behind this block is unprotected"
+            );
+        }
+        Some(dev.granule)
+    } else {
+        log::warn!(
+            "hipMalloc(size={size}) hipMemMap(pad va={pad_behind}) -> {mapped_pad}: the slack behind this block is unmapped"
+        );
+        None
+    };
 
     Some(HookData {
         address,
@@ -202,6 +329,7 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
             total,
             handle,
             pad: pad_size,
+            device: dev.id,
         }),
     })
 }
@@ -211,15 +339,16 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
 pub(crate) enum Outcome {
     /* Unmapped and given back here; the runtime never saw the pointer. */
     Released,
-    /* Inherited through fork: left alone, because the parent is still using that handle. */
-    Inherited,
+    /* Some step of the teardown failed. The record is out of the map either way (DESIGN.md D6), so
+     * the warnings it left are the only record that this extent was not fully given back. */
+    Incomplete,
 }
 
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Outcome::Released => write!(f, "released"),
-            Outcome::Inherited => write!(f, "inherited, left to the parent"),
+            Outcome::Incomplete => write!(f, "released with failures, see the warnings"),
         }
     }
 }
@@ -227,13 +356,22 @@ impl fmt::Display for Outcome {
 /* Gives one served extent back. Only called for a record whose origin is an extent, so the pointer is
  * one of ours: the runtime must not see it either way. */
 pub(crate) fn release(address: Address, extent: Extent) -> Outcome {
-    let Some(setup) = (*SETUP).as_ref() else {
-        /* Nothing to undo the mapping with — better to leave it than to hand a pointer the runtime
-         * never allocated to hipFree. */
-        return Outcome::Inherited;
+    let Some(entries) = (*ENTRIES).as_ref() else {
+        /* Without the entry points nothing was ever served, so this cannot be reached; the extent is
+         * not handed to hipFree either way, and saying it was given back would be a lie. */
+        log::warn!("hipFree(va={address}): no runtime entry points to undo an extent with");
+        return Outcome::Incomplete;
     };
-    if setup.owner != std::process::id() {
-        return Outcome::Inherited;
+
+    /* The block belongs to the device it was made on, and every call below acts on the current device,
+     * which the caller may have moved away from (D11). */
+    let switched = unsafe { (entries.set_device)(extent.device) };
+    if switched != HIP_SUCCESS {
+        log::warn!(
+            "hipSetDevice({}) -> {switched}: the teardown of va={address} runs on whatever device is current",
+            extent.device
+        );
+        clear_error(entries);
     }
 
     /* hipFree is not a bare teardown: ihipFree waits for the device (SyncAllStreams, before the
@@ -242,83 +380,158 @@ pub(crate) fn release(address: Address, extent: Extent) -> Outcome {
      * apart itself, so it owes the same wait — there is no public "sync all streams", the device-wide
      * sync is the equivalent. Kept for that parity, not as a fix: the NaN and the hang survive it
      * (../conclusions/hook-free-path-nan-vs-oom.md §6). */
-    let synced = unsafe { (setup.entries.device_synchronize)() };
+    let synced = unsafe { (entries.device_synchronize)() };
 
     if synced != HIP_SUCCESS {
         /* A wait that failed reports a fault the workload already had pending; the teardown still
          * has to happen, and a failure left sticky here would be read as the next call's own. */
-        clear_error(setup);
+        clear_error(entries);
     }
 
-    unsafe { (setup.entries.unmap)(address.as_ptr(), extent.block) };
+    /* Every one of these four can fail, and none of them is allowed to fail quietly: a block that was
+     * not unmapped is a live mapping, an address that was not given back is leaked VA, and the only
+     * thing that says so afterwards is this warning. */
+    let mut incomplete = false;
+    let unmapped = unsafe { (entries.unmap)(address.as_ptr(), extent.block) };
+    incomplete |= unmapped != HIP_SUCCESS;
+    warn_if_failed("hipMemUnmap(block)", address, unmapped);
+
     if let Some(pad) = extent.pad {
-        unsafe { (setup.entries.unmap)(address.offset(extent.block).as_ptr(), pad) };
+        let pad_behind = address.offset(extent.block);
+        let unmapped_pad = unsafe { (entries.unmap)(pad_behind.as_ptr(), pad) };
+        incomplete |= unmapped_pad != HIP_SUCCESS;
+        warn_if_failed("hipMemUnmap(pad)", pad_behind, unmapped_pad);
     }
-    unsafe { (setup.entries.release)(extent.handle.as_raw()) };
-    free_address(&setup.entries, address, extent.total);
-    Outcome::Released
+    let released = unsafe { (entries.release)(extent.handle.as_raw()) };
+    incomplete |= released != HIP_SUCCESS;
+    warn_if_failed("hipMemRelease", address, released);
+
+    let freed = free_address(entries, address, extent.total);
+    incomplete |= freed != HIP_SUCCESS;
+    warn_if_failed("hipMemAddressFree", address, freed);
+
+    if incomplete {
+        Outcome::Incomplete
+    } else {
+        Outcome::Released
+    }
 }
 
-fn reserve(entries: &Entries, total: usize, granule: usize) -> Option<Address> {
+/* Both of these hand the runtime's own return code back: a request the route cannot set up is
+ * forwarded, and why it was forwarded is the only thing that makes that visible. */
+fn reserve(entries: &Entries, total: usize, granule: usize) -> Result<Address, HipError> {
     let mut raw: *mut c_void = ptr::null_mut();
-    if unsafe { (entries.reserve)(&mut raw, total, granule, ptr::null_mut(), 0) } != HIP_SUCCESS {
-        return None;
+    let ret = unsafe { (entries.reserve)(&mut raw, total, granule, ptr::null_mut(), 0) };
+    if ret != HIP_SUCCESS {
+        return Err(ret);
     }
-    Some(Address::from_ptr(raw))
+    Ok(Address::from_ptr(raw))
 }
 
-fn create(entries: &Entries, block: usize, device_id: i32) -> Option<Handle> {
+fn create(entries: &Entries, block: usize, device_id: i32) -> Result<Handle, HipError> {
     let mut raw: *mut c_void = ptr::null_mut();
-    if unsafe { (entries.create)(&mut raw, block, &prop(device_id), 0) } != HIP_SUCCESS {
-        return None;
+    let ret = unsafe { (entries.create)(&mut raw, block, &prop(device_id), 0) };
+    if ret != HIP_SUCCESS {
+        return Err(ret);
     }
-    Some(Handle::from_raw(raw))
+    Ok(Handle::from_raw(raw))
 }
 
-fn free_address(entries: &Entries, address: Address, total: usize) {
-    unsafe { (entries.address_free)(address.as_ptr(), total) };
+fn free_address(entries: &Entries, address: Address, total: usize) -> HipError {
+    unsafe { (entries.address_free)(address.as_ptr(), total) }
 }
 
-/* Two locations, because hipMalloc's memory is readable by the CPU at the same address and a
+/* A step of a teardown that returned an error, if it did. None of them is supposed to fail, so a
+ * failure is a warning and not a reason to keep the caller waiting; the record leaves the map either
+ * way (DESIGN.md D6), and the warning is the only trace it leaves. */
+fn warn_if_failed(what: &str, address: Address, ret: HipError) {
+    if ret != HIP_SUCCESS {
+        log::warn!("{what}(va={address}) -> {ret}");
+    }
+}
+
+/* What the access grant for one range came to. */
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /* Every location that needs it may read and write the range: the block's device, its peers, the
+     * host. What a served block needs. */
+    Granted,
+    /* The device alone. Its own kernels are fine; the host read torch's `.item()` does, and any peer,
+     * meet a page with no permission. */
+    DeviceOnly,
+    /* Neither grant landed: nothing may touch the range. */
+    None,
+}
+
+fn device_desc(id: i32) -> AccessDesc {
+    AccessDesc {
+        location: MemLocation {
+            type_: MEM_LOCATION_DEVICE,
+            id,
+        },
+        flags: MEM_ACCESS_PROT_READWRITE,
+    }
+}
+
+/* More than one location, because hipMalloc's memory is readable by the CPU at the same address and a
  * device-only mapping is not: measured 2026-09-17 by reading a mapped block from host code
  * (../amdfq-vmm/vmm_probe.c `hostaccess`), after a training run died in
  * at::native::_local_scalar_dense_cuda doing exactly that read — torch's `.item()` reads a device
  * pointer from the host on this stack. A range with an unmapped gap in it is rejected outright, so
- * this is done per region. */
-fn set_access(setup: &Setup, address: Address, size: usize) {
-    let desc = [
-        AccessDesc {
-            location: MemLocation {
-                type_: MEM_LOCATION_DEVICE,
-                id: setup.device_id,
-            },
-            flags: MEM_ACCESS_PROT_READWRITE,
-        },
-        AccessDesc {
-            location: MemLocation {
-                type_: MEM_LOCATION_HOST,
-                id: 0,
-            },
-            flags: MEM_ACCESS_PROT_READWRITE,
-        },
-    ];
-    if unsafe { (setup.entries.set_access)(address.as_ptr(), size, desc.as_ptr(), 2) }
-        == HIP_SUCCESS
-    {
-        return;
+ * this is done per region.
+ *
+ * The peer descriptors are the part a mapping does not get for free (D11): hipDeviceEnablePeerAccess
+ * grants nothing to a mapping this route made, so a device that can reach this one is written into
+ * the set here. What came of the grant is reported rather than swallowed: the second call asks for the
+ * device alone, which says whether the range is unusable or only unreachable from outside the device. */
+fn set_access(
+    entries: &Entries,
+    dev: &Device,
+    address: Address,
+    size: usize,
+    what: &str,
+) -> Access {
+    let mut desc = [AccessDesc::default(); MAX_DEVICES + 2];
+    let mut count = 0;
+    desc[count] = device_desc(dev.id);
+    count += 1;
+    for peer in &dev.peers {
+        desc[count] = device_desc(*peer);
+        count += 1;
     }
-    clear_error(setup);
-    if unsafe { (setup.entries.set_access)(address.as_ptr(), size, desc.as_ptr(), 1) }
-        == HIP_SUCCESS
-    {
-        return;
+    desc[count] = AccessDesc {
+        location: MemLocation {
+            type_: MEM_LOCATION_HOST,
+            id: 0,
+        },
+        flags: MEM_ACCESS_PROT_READWRITE,
+    };
+    count += 1;
+
+    let both = unsafe { (entries.set_access)(address.as_ptr(), size, desc.as_ptr(), count) };
+    if both == HIP_SUCCESS {
+        return Access::Granted;
     }
-    clear_error(setup);
+    clear_error(entries);
+    let device = unsafe { (entries.set_access)(address.as_ptr(), size, desc.as_ptr(), 1) };
+    if device == HIP_SUCCESS {
+        log::warn!(
+            "set_access({what} va={address} size={size}): device+{} peer(s)+host -> {both}, device-only -> {device}: host and peer reads of this range fault",
+            dev.peers.len()
+        );
+        return Access::DeviceOnly;
+    }
+    clear_error(entries);
+    log::warn!(
+        "set_access({what} va={address} size={size}): device+{} peer(s)+host -> {both}, device-only -> {device}: no access granted",
+        dev.peers.len()
+    );
+    Access::None
 }
 
 /* Consume the runtime's sticky error state after a call of ours that was allowed to fail. Nothing can
  * set that state back, so a failure the caller had left pending before entering our hook is lost with
  * it; that is the price of asking the runtime a question whose answer is an error. */
-fn clear_error(setup: &Setup) {
-    unsafe { (setup.entries.get_last_error)() };
+fn clear_error(entries: &Entries) {
+    unsafe { (entries.get_last_error)() };
 }

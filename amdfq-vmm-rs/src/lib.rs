@@ -2,11 +2,11 @@
 //!
 //! `hipMalloc` is served by the peralloc route (`peralloc.rs`, ../amdfq.md §12): a per-request
 //! `hipMemAddressReserve`, the block mapped from a handle created for it, and one shared pad granule
-//! mapped behind every block, so the slack a bf16 kernel over-reads costs one granule for the whole
-//! process instead of one granule of VRAM per live allocation. Everything the route declines to serve
-//! — a fork child, a runtime without the VMM entry points, a failed reserve/create/map — is forwarded
-//! to the runtime with the caller's size unchanged, and a free is only ever unmapped here if it came
-//! out of an extent this crate reserved.
+//! mapped behind every block, so the slack a bf16 kernel over-reads costs one granule per device
+//! instead of one granule of VRAM per live allocation. Everything the route declines to serve — a
+//! runtime without the VMM entry points, a failed reserve/create/map, a device whose state could not
+//! be built — is forwarded to the runtime with the caller's size unchanged, and a free is only ever
+//! unmapped here if it came out of an extent this crate reserved.
 //!
 //! ```bash
 //! cargo build --release --offline                 # -> target/release/libamdfq_vmm_rs.so
@@ -28,7 +28,7 @@
 //! | module | role |
 //! | --- | --- |
 //! | `hooks.rs` | the C symbols themselves: `#[unsafe(no_mangle)] pub unsafe extern "C" fn` |
-//! | `peralloc.rs` | the VMM route: `serve` / `release`, the shared pad, the per-process state |
+//! | `peralloc.rs` | the VMM route: `serve` / `release`, the per-device state (granularity, pad, peers) |
 //! | `real.rs` | the only place a real symbol is resolved: next-object lookup, then cached |
 //! | `registry.rs` | `Address -> HookData`, the only shared state and the only lock |
 //! | `logging.rs` | the `log` sink (stderr, one `write(2)` per line) |

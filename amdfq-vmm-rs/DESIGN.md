@@ -21,6 +21,7 @@
 | `Extent::total` | 该地址上 reserve 的总字节数：`block` + 一颗 pad granule，`hipMemAddressFree` 用的就是它 |
 | `Extent::handle` | 块自己的 `hipMemGenericAllocationHandle_t`，free 时 `hipMemRelease` |
 | `Extent::pad` | 块后面那颗共享 pad granule 的字节数；映射失败就是 `None` |
+| `Extent::device` | 这块属于哪张卡：teardown 的三次调用都作用于「当前设备」，free 先 `hipSetDevice` 切回去（D11） |
 
 布局本身（`\|---- block ----\|---- pad（共享 handle）----\|`）和它的来由写在 `peralloc.rs` 头部。
 没有并行的计数器、标志位、名字表——所以也就不会出现 C 版那种「计数和实际块对不上」。
@@ -45,9 +46,10 @@
 
 hook 里只写 `log::info!` / `log::warn!`：不自己建文件、管道、序号表。sink 是 `logging.rs` 里的
 stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`off`/`error`/`warn`/`info`/`debug`/
-`trace`，默认 `info`）控级别，`warn` 只留两种异常——地址重复（`duplicate`）和释放一个 registry 里
-没有的地址（`untracked`）。宿主已经装了 logger 时不抢：`set_logger` 失败，我们的记录就顺着宿主的
-sink 走。
+`trace`，默认 `info`）控级别，`warn` 只留异常——地址重复（`duplicate`）、释放一个 registry 里
+没有的地址（`untracked`），以及路线自己没做成的那几步：授权没授上（含只授到设备本身）、pad 没映射
+成、撤销的四步里有失败、切设备或 peer 查询没成（D11）、设备序号超出设备表。宿主已经装了 logger
+时不抢：`set_logger` 失败，我们的记录就顺着宿主的 sink 走。
 
 ## D5 全局清单是封闭的
 
@@ -56,9 +58,9 @@ sink 走。
 | 全局 | 位置 | 用途 |
 | --- | --- | --- |
 | `REGISTRY: LazyLock<RwLock<HashMap<Address, HookData>>>` | `registry.rs` | 唯一的分配状态，也是全 crate 唯一一把锁 |
-| `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + 路线用的 10 个 VMM 入口 + 释放路径上的 `hipDeviceSynchronize` |
-| `SETUP: LazyLock<Option<Setup>>` | `peralloc.rs` | 路线是否就绪：device id、分配粒度、建这份状态的 pid |
-| `PAD: LazyLock<Option<Handle>>` | `peralloc.rs` | 所有块共用那一颗 pad granule 的物理对象，建一次、永不释放 |
+| `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + 路线的 8 个 VMM 入口（`hipMemSetAccess`、`hipMemCreate`/`Map`/`Unmap`/`Release`、`hipMemAddressReserve`/`Free`、`hipMemGetAllocationGranularity`）+ `hipGetDevice`/`hipSetDevice`/`hipGetLastError`/`hipDeviceSynchronize` + 2 个可选的 peer 查询（`hipGetDeviceCount`、`hipDeviceCanAccessPeer`） |
+| `ENTRIES: LazyLock<Option<Entries>>` | `peralloc.rs` | 路线是否就绪：这一组入口全都解析到了才开 |
+| `DEVICES: [OnceLock<Option<Device>>; 32]` | `peralloc.rs` | 每张卡一份状态（D11）：分配粒度、该卡共享的 pad granule、能访问它的 peer 表；建失败也记住，序号超出上界直接转发 |
 | `INSTALL: LazyLock<()>` | `logging.rs` | 装 logger 并设级别 |
 | `LOGGER` | `logging.rs` | 无状态 sink |
 
@@ -72,8 +74,9 @@ sink 走。
 
 ## D7 没有 init / fini / 退出摘要
 
-惰性初始化交给 `LazyLock`。进程被 HIP 从内部 abort 时不存在「状态没来得及打出来」的问题；没有
-需要按顺序执行的生命周期，也就没有第二个可以出错的地方。
+惰性初始化交给 `LazyLock`（每张卡那份状态用 `OnceLock`：它是按设备序号取的槽位）。进程被 HIP 从
+内部 abort 时不存在「状态没来得及打出来」的问题；没有需要按顺序执行的生命周期，也就没有第二个可以
+出错的地方。
 
 ## D8 真符号解析只有一处
 
@@ -91,5 +94,30 @@ sink 走。
 
 `peralloc::release` 只对 `origin` 是 `Extent` 的记录生效；`Runtime` 的记录和 registry 里查不到的指针
 一律原样交给 `hipFree`，我们不做 unmap / release / address_free。反过来，只要记录是 `Extent`，撤销
-就由我们做完，绝不让 runtime 看见那个指针——唯一的例外是 fork 继承来的块：那是父进程还在用的 handle，
-我们什么都不做（`peralloc::Outcome::Inherited`），也不把它转给 runtime。
+就由我们做完，绝不让 runtime 看见那个指针——撤销前先把当前设备切回记录里的那一张（`Extent::device`），
+因为 unmap / release / address_free 都作用于当前设备（D11）。
+
+这里曾有一条例外：「fork 继承来的块什么都不做」（旧的 `Outcome::Inherited`），已删。理由不是它多余，
+而是它照顾的场景在 HIP 的界外——`hipInit` 的 note（`hip/hip_runtime_api.h:2223`，本机副本在
+`_rocm_sdk_core/include/hip/`）写明：子进程在 fork 之后还要继续跑 HIP 代码、又不立刻 `exec()` 时，
+进程不应在 fork 之前初始化 HIP runtime，父子应各自在 fork 之后初始化，「跨 fork 继承 runtime state
+可能带来未定义行为或初始化失败」。也就是说「子进程 free 掉父进程的块」不是要支持的行为，本文不为
+fork 之后定义任何行为（同一段也记在 `../conclusions/hip-runtime-calls.md` §3）。
+
+## D11 状态按设备分，授权含 peer
+
+多卡进程里没有「进程级 device」这回事：
+
+- device 在挂钩点取（`hipGetDevice`），不缓存、不记在全局；每张卡一份状态（`DEVICES`），第一次在
+  哪张卡上分配就在哪张卡上建，建出来的粒度、pad granule、peer 表都只属于那张卡；
+- 每笔分配带自己的 device（`Extent::device`），free 先 `hipSetDevice` 切回去再 teardown；
+- 授权集合 = 本卡 + 能访问本卡的卡 + HOST。mapping 的权限只来自 `hipMemSetAccess`，
+  `hipDeviceEnablePeerAccess` 不会回头给我们建的 mapping 加 grant，所以 peer 在这里一次问清
+  （`hipDeviceCanAccessPeer` 的能力判断，顺带覆盖应用之后才打开的 peer）。缺 peer 的后果不是慢：
+  对端 kernel、peer copy、RCCL 在页表上没权限——静默错数或 fault，而真 hipMalloc 的块不会这样。
+
+设备序号超过 `DEVICES` 的长度（32）就转发：全局清单是封闭的（D5），表不能在运行时长大。peer 的判据
+是「本卡能不能访问对端」这一个方向，取对称；这台机器只有一张卡，这一条没有实测。
+
+一张卡第一次被用到时，该卡的 `OnceLock` 会让并发的 `hipMalloc` 等这一次建立（建好之后是纯读）——
+和旧版首次 init 同一性质，多卡只是把这一次挪到每张卡的头一笔分配上。

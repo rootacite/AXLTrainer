@@ -13,6 +13,12 @@ pub(crate) type HipFreeFn = unsafe extern "C" fn(ptr: *mut c_void) -> HipError;
 
 /* The VMM entry points the peralloc route builds on (../amdfq.md §12). */
 pub(crate) type HipGetDeviceFn = unsafe extern "C" fn(device: *mut i32) -> HipError;
+/* hipSetDevice: a free runs its teardown calls on the block's own device (DESIGN.md D11). */
+pub(crate) type HipSetDeviceFn = unsafe extern "C" fn(device: i32) -> HipError;
+/* The peer pair is optional: the route serves without them, it just cannot grant peers (D11). */
+pub(crate) type HipGetDeviceCountFn = unsafe extern "C" fn(count: *mut i32) -> HipError;
+pub(crate) type HipDeviceCanAccessPeerFn =
+    unsafe extern "C" fn(can_access_peer: *mut i32, device: i32, peer_device: i32) -> HipError;
 pub(crate) type HipMemGetAllocationGranularityFn = unsafe extern "C" fn(
     granularity: *mut usize,
     prop: *const AllocationProp,
@@ -89,6 +95,12 @@ pub(crate) static HIP_FREE: LazyLock<Option<HipFreeFn>> = LazyLock::new(|| resol
 
 pub(crate) static HIP_GET_DEVICE: LazyLock<Option<HipGetDeviceFn>> =
     LazyLock::new(|| resolve(c"hipGetDevice"));
+pub(crate) static HIP_SET_DEVICE: LazyLock<Option<HipSetDeviceFn>> =
+    LazyLock::new(|| resolve(c"hipSetDevice"));
+pub(crate) static HIP_GET_DEVICE_COUNT: LazyLock<Option<HipGetDeviceCountFn>> =
+    LazyLock::new(|| resolve(c"hipGetDeviceCount"));
+pub(crate) static HIP_DEVICE_CAN_ACCESS_PEER: LazyLock<Option<HipDeviceCanAccessPeerFn>> =
+    LazyLock::new(|| resolve(c"hipDeviceCanAccessPeer"));
 pub(crate) static HIP_MEM_GET_ALLOCATION_GRANULARITY: LazyLock<
     Option<HipMemGetAllocationGranularityFn>,
 > = LazyLock::new(|| resolve(c"hipMemGetAllocationGranularity"));
