@@ -15,6 +15,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 - No unrelated fixes, refactors, cleanups or "while I'm here" edits — not even small ones.
 - Stop at the end of the requested step. Do not run ahead into the step after it.
 - Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
+- Terminology: **"the hook"** means `amdfq-vmm-rs/` in its peralloc mode — the Rust `LD_PRELOAD` interposer that serves `hipMalloc` from address ranges it reserves itself (`amdfq-vmm-rs/DESIGN.md`). Say "the C hook" (or `amdfq-vmm/`) when that older implementation is meant.
 
 ---
 
