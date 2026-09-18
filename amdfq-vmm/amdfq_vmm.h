@@ -32,15 +32,14 @@
 
 #include <stddef.h>
 
-/* The HIP types this module needs, copied from the ROCm 10.0.0 headers the way amdfq_gates.h copies
- * its three prototypes, so this object still builds with no ROCm headers present:
+/* The HIP types this module needs, copied from the ROCm 10.0.0 headers so this object still builds
+ * with no ROCm headers present:
  *   hip/hip_runtime_api.h — hipMemAddressReserve, hipMemCreate, hipMemMap, hipMemUnmap,
  *                           hipMemRelease, hipMemSetAccess, hipMemGetAllocationGranularity
  *   hip/driver_types.h    — hipMemLocation, hipMemAllocationProp, hipMemAccessDesc
  */
 typedef int hipError_t;
-/* The two hipError_t values this module names, copied the way amdfq_gates.h copies them, so the two
- * headers stay interchangeable in a translation unit that includes both. */
+/* The two hipError_t values this module names. */
 #define HIP_SUCCESS 0
 #define HIP_ERROR_NOT_FOUND 500
 typedef struct ihipMemGenericAllocationHandle *hipMemGenericAllocationHandle_t;
@@ -77,12 +76,9 @@ enum {
     AMDFQ_GRANULARITY_RECOMMENDED = 0x1,
 };
 
-/* What a served allocation looks like, for the interposer's log line. */
+/* What a served allocation looks like to the caller. */
 struct amdfq_vmm_result {
     void *va;
-    size_t block;
-    size_t pad;
-    void *handle;
 };
 
 /* Guard against the runtime re-entering the interposer from inside our own VMM calls: the caller
@@ -90,11 +86,12 @@ struct amdfq_vmm_result {
 int amdfq_vmm_begin(void);
 void amdfq_vmm_end(void);
 
-/* 0 = served, `*result` filled. -1 = not served, `*why` names the reason for the log line. */
-int amdfq_vmm_malloc(size_t size, struct amdfq_vmm_result *result, const char **why);
-int amdfq_vmm_free(void *ptr, const char **why);
+/* 0 = served, `*result` filled. -1 = not served; the caller forwards the call to the runtime. */
+int amdfq_vmm_malloc(size_t size, struct amdfq_vmm_result *result);
+/* 0 = this module's block and released here (the runtime must not see the pointer). -1 = not ours. */
+int amdfq_vmm_free(void *ptr);
 
-/* The closing summary: route parameters, blocks created and released, and every fallback count. */
-void amdfq_vmm_report(void);
+/* The real implementation of `name`, via dlsym(RTLD_NEXT): NULL when this runtime lacks it. */
+void *amdfq_symbol(const char *name);
 
 #endif /* AMDFQ_VMM_H */

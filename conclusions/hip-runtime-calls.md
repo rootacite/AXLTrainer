@@ -710,13 +710,163 @@ loads the `.co`, `hipModuleGetFunction`s the kernel, and fires it here.
 
 ---
 
-## 12. Sources
+## 12. `trainer/main.py` vs `test/torch-test.py`
+
+The same agent (2934 `hip*` entry points, module observer, caller sampling) was pointed at
+`python -u test/torch-test.py`, and the trainer's run was re-used as the other column. The two are
+not the same size of workload, so every row is given as a total **and** as a rate per unit of work:
+one training step for the trainer, one stress iteration for the script.
+
+**How the per-iteration column was obtained.** `torch-test.py --time-scale N` runs `5N`
+iterations of the same loop, so the loop's own traffic is the difference between two scales:
+
+| Run | Iterations | Calls (last poll) |
+| --- | ---: | ---: |
+| `--time-scale 0` (checks only, loop and verification skipped) | 0 | 7,118 |
+| `--time-scale 1` | 5 | 112,051 |
+| `--time-scale 2` | 10 | 145,086 |
+| `--time-scale 4` | 20 | 211,140 |
+
+`(211,140 − 112,051) / 15 = 6,606` calls per iteration, and `(145,086 − 112,051) / 5 = 6,607` —
+the two independent differences agree to one call in 6,600. The part that does not scale with the
+loop (checks + plateau allocation + the whole verification pass) is
+`112,051 − 5 × 6,606 = 79,021`.
+
+**Run-level comparison.**
+
+| | trainer (`lllj_20260918_073313`) | `test/torch-test.py --time-scale 1` |
+| --- | --- | --- |
+| Counted window | 28.2 s, 10 training steps | 3.2 s, 5 iterations + verification |
+| HIP calls in that window | 9,460,399 | 112,051 |
+| Distinct `hip*` functions called | 30 | 24 |
+| Calls/s | 335,119 | 34,691 |
+| One-time part (init, weights, cache check / checks + plateau + verification) | 2,388,638 (25.2%) | 79,021 (70.5%) |
+| Steady-state part | 785,751 per step | 6,606 per iteration |
+| Ratio of the two steady states | 1 step = 119 script iterations | |
+| Environment | `start_train.sh` exports | same exports (re-run without them differs by 5 calls in 112 k) |
+| Process lifetime | died at 35.2 s in the gfx1201 fault | exited normally at 7.4 s |
+
+**Per API.** "—" means the function was not called by that target at all.
+
+| API | trainer total | share | trainer /step | torch-test total | share | torch-test /iter |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hipGetDevice` | 6,474,280 | 68.44% | 558,396 | 43,422 | 38.75% | 5,024 |
+| `hipGetDevicePropertiesR0600` | 1,953,423 | 20.65% | 135,011 | 15,174 | 13.54% | 40 |
+| `hipGetLastError` | 370,231 | 3.91% | 34,957 | 1,627 | 1.45% | 252 |
+| `hipLaunchKernel` | 240,692 | 2.54% | 22,824 | 1,442 | 1.29% | 235 |
+| `hipDeviceGetAttribute` | 173,915 | 1.84% | 12,765 | 29,815 | 26.61% | 4 |
+| `hipExtModuleLaunchKernel` | 95,297 | 1.01% | 9,141 | 59 | 0.05% | 9 |
+| `hipDevicePrimaryCtxGetState` | 49,049 | 0.52% | 4,232 | 1,425 | 1.27% | 274 |
+| `hipStreamGetCaptureInfo` | 44,396 | 0.47% | 4,221 | 26 | 0.02% | 0 |
+| `hipStreamGetDevice` | 20,130 | 0.21% | 1,915 | — | — | — |
+| `hipStreamIsCapturing` | 9,173 | 0.10% | 351 | 1,491 | 1.33% | 285 |
+| `hipModuleLaunchKernel` | 8,574 | 0.09% | 826 | — | — | — |
+| `hipMalloc` | 4,719 | 0.05% | 342 | 110 | 0.10% | 12 |
+| `hipMemcpyWithStream` | 4,408 | 0.05% | 4 | 1,383 | 1.23% | 273 |
+| `hipFree` | 3,693 | 0.04% | 339 | 106 | 0.09% | 12 |
+| `hipSetDevice` | 3,615 | 0.04% | 338 | — | — | — |
+| `hipRuntimeGetVersion` | 2,138 | 0.02% | 0 | 14,893 | 13.29% | 0 |
+| `hipModuleGetFunction` | 1,150 | 0.01% | 72 | 27 | 0.02% | 0 |
+| `hipMemcpyAsync` | 1,143 | 0.01% | 2 | 8 | 0.01% | 1 |
+| `hipMemsetAsync` | 135 | 0.00% | 13 | 494 | 0.44% | 86 |
+| `hipPointerGetAttributes` | 102 | 0.00% | 2 | — | — | — |
+| `hipHostMalloc` | 84 | 0.00% | 0 | 4 | 0.00% | 0 |
+| `hipModuleLoadDataEx` | 16 | 0.00% | 0 | — | — | — |
+| `hipStreamSynchronize` | 10 | 0.00% | 1 | 524 | 0.47% | 98 |
+| `hipMemset` | 6 | 0.00% | 0 | 2 | 0.00% | 0 |
+| `hipModuleLoadData` | 5 | 0.00% | 0 | — | — | — |
+| `hipModuleLoad` | 5 | 0.00% | 0 | 6 | 0.01% | 0 |
+| `hipGetDeviceCount` | 5 | 0.00% | 0 | 5 | 0.00% | 0 |
+| `hipInit` | 2 | 0.00% | 0 | — | — | — |
+| `hipMemGetInfo` | 2 | 0.00% | 0 | — | — | — |
+| `hipDeviceGetStreamPriorityRange` | 1 | 0.00% | 0 | 1 | 0.00% | 0 |
+| `hipModuleUnload` | — | — | — | 1 | 0.00% | 0 |
+| `hipDeviceSynchronize` | — | — | — | 6 | 0.01% | 1 |
+
+**By category.**
+
+| Category | trainer total | share | trainer /step | torch-test total | share | torch-test /iter |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| device query | 8,977,712 | 94.90% | 741,468 | 104,943 | 93.66% | 5,321 |
+| kernel launch | 344,563 | 3.64% | 32,791 | 1,501 | 1.34% | 244 |
+| stream/event | 73,709 | 0.78% | 6,488 | 2,041 | 1.82% | 383 |
+| other (`PrimaryCtxGetState`) | 49,051 | 0.52% | 4,232 | 1,425 | 1.27% | 274 |
+| alloc/free | 8,496 | 0.09% | 681 | 220 | 0.20% | 24 |
+| copy | 5,551 | 0.06% | 6 | 1,391 | 1.24% | 274 |
+| module/loader | 1,176 | 0.01% | 72 | 34 | 0.03% | 0 |
+| memset | 141 | 0.00% | 13 | 496 | 0.44% | 86 |
+
+### What the comparison shows
+
+1. **The shape is the same, the scale is not.** Both are ~94 % device queries and under 4 %
+   kernel launches. Everything that differs is a difference of proportion, not of kind: the two
+   targets call the same 22 functions and each adds a handful the other does not.
+2. **A training step is ~119 script iterations.** The script's loop is 6.6 k HIP calls against the
+   trainer's 786 k per step. The trainer's steady state is ~24× the script's *whole* 3.2 s run.
+3. **The script is transfer-shaped; the trainer is GEMM-shaped.**
+   - `hipMemcpyWithStream`: 273 per iteration for the script, against 4 per step for the trainer.
+     Copy is 1.24 % of the script's traffic and 0.06 % of the trainer's. The count is the script's
+     own hop list: 4 reps × 2 payload hops + 128 × 2 small hops + the four in-chain round trips
+     (plateau slice, scan-slice bias, bf16 operand, `w3.grad`) × 2 = 272, measured 273 — **each
+     `.to()` costs exactly one `hipMemcpyWithStream`**, so the script's transfer volume is real at
+     the HIP level.
+   - `hipExtModuleLaunchKernel`: 9,141 per step for the trainer (hipBLASLt firing Tensile GEMMs),
+     9 per iteration for the script. The script's matmuls are five `torch.mm` calls per iteration.
+   - `hipDeviceGetAttribute` is the mirror image: 29,815 in the script but only 4 per iteration —
+     it is a torch *startup* fingerprint (the same 2:1 ratio against `hipRuntimeGetVersion` shows
+     up in a trivial `torch.randn` probe), while the trainer pays 12,765 *per step* because
+     hipBLASLt/origami re-runs kernel selection as buckets change shape.
+4. **Per-op overhead is identical, so per-unit cost tracks op count.** `hipGetDevice`,
+   `hipGetLastError`, `hipStreamIsCapturing`, `hipStreamGetCaptureInfo`,
+   `hipDevicePrimaryCtxGetState` all appear at a few hundred calls per iteration in the script and
+   scale up with the trainer's much larger op count. 5,024 `hipGetDevice` per iteration for a loop
+   of ~50 torch ops + 264 transfers + 96 `.item()` reductions is ~13 per operation; the trainer's
+   558,396 per step is the same discipline applied to a full UNet+TE step.
+5. **The script's alloc/free churn reaches the driver only partly.** `churn()` performs 96
+   allocations and ~88 frees per iteration, and then `empty_cache()`. The driver sees
+   **12 `hipMalloc` and 12 `hipFree` per iteration**. The reason is not the allocator hiding
+   everything: `CHURN_LIVE = 8` means at most 8 blocks are ever live at once, so 8–12 allocations
+   are all the loop can need from a cold pool — the other ~84 requests are satisfied from blocks
+   freed moments earlier. Removing the launcher's `PYTORCH_CUDA_ALLOC_CONF` changes the per-iteration
+   rate by 0 (`12` either way).
+6. **The script's pinned-memory churn does not reach HIP at all.** It builds 128 pinned tensors per
+   iteration, and `hipHostMalloc` is called 4 times in the entire process. torch's pinned-memory
+   cache serves the rest. The *transfers* still reach HIP (point 3); the pinned *allocations* do
+   not.
+7. **`hipStreamSynchronize` per iteration = 98** — the 96 `.item()` calls in `churn()`
+   (`float(block.sum().item())`), one implicit sync each, plus one per `torch.cuda.synchronize()`.
+   The trainer has 1 per step. This is the clearest single illustration of the two workloads'
+   difference: the script's cost is in moving and reading data, the trainer's is in launching.
+8. **Only-in-one functions are all startup or shutdown artefacts.** The trainer's exclusives are
+   `hipSetDevice` (MIOpen re-asserting the device), `hipStreamGetDevice` (AOTriton),
+   `hipModuleLaunchKernel` (AOTriton), `hipPointerGetAttributes`, `hipInit`, `hipMemGetInfo`,
+   `hipModuleLoadData(Ex)`. The script's exclusives are `hipDeviceSynchronize` (its explicit
+   `torch.cuda.synchronize()`) and `hipModuleUnload` (a clean exit; the trainer died before it
+   could unload anything).
+
+### Caveats
+
+- **The exit tail is not in either count.** The agent's RPC stops being served while the target's
+  interpreter tears down; the polls resume only as the process dies. For the script that window is
+  4.1 s (the script's own work ends at 3.2 s, the process exits at 7.4 s) and for the trainer 7.0 s
+  (its step 10 ends at 28.2 s, the process dies at 35.2 s in the fault handler). A control run with
+  **zero hooks** blocks in exactly the same window, so this is the target's shutdown parking the
+  agent, not the instrumentation. Everything the *scripts themselves* do is inside the counts; what
+  is missing is whatever the runtime asks of HIP on the way out.
+- The per-iteration column is a difference of two runs, so it is only as good as the assumption
+  that the non-loop part is scale-independent — the agreement between the `/5` and `/15` estimates
+  (6,607 vs 6,606) is the evidence for that.
+- Caller attribution is the first resolved samples per function, not a distribution.
+
+---
+
+## 13. Sources
 
 - `/opt/rocm/include/hip/hip_runtime_api.h` (HIP 7.15.26333) — every signature and comment above
   that is not in `hip_ext.h` / `driver_types.h`
 - `/opt/rocm/include/hip/hip_ext.h` — `hipExtModuleLaunchKernel`
 - `/opt/rocm/include/hip/driver_types.h` — `hipMemcpyKind`
 - `/opt/rocm/include/hip/hip_version.h`, `/opt/rocm/core/.info/version`
-- Instrument: `/tmp/hipfrida/` (`hip_hook.js`, `driver.py`, `timeline_final.json`); method in
-  the session that produced this file, 2026-09-18
-)
+- Instrument: `/tmp/hipfrida/` (`hip_hook.js`, `driver.py`, `compare.py`, `timeline_final.json`
+  for the trainer, `timeline_torchtest.json` + `timeline_tt_s{0,2,4}.json` for the script); method
+  in the session that produced this file, 2026-09-18
