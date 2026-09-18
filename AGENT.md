@@ -16,6 +16,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 - Stop at the end of the requested step. Do not run ahead into the step after it.
 - Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
 - Terminology: **"the hook"** means `amdfq-vmm-rs/` in its peralloc mode — the Rust `LD_PRELOAD` interposer that serves `hipMalloc` from address ranges it reserves itself (`amdfq-vmm-rs/DESIGN.md`). Say "the C hook" (or `amdfq-vmm/`) when that older implementation is meant.
+- **A hypothesis may come from intuition; a conclusion needs corroboration — no conclusion from a single witness.** Reading source (quote it as `file:line`) earns a hypothesis worth testing, not a verdict: say which of the two you are handing over, and label the inferred part as inference. When the question is "does this actually break", the experiment comes first; reading the code and agreeing with yourself is still one witness. (2026-09-18: the CLR reverse-pointer hazard written up as F3 in `amdfq-vmm-rs/DIFF.md` was read out as a likely cause of the hook's NaN/hang. A purpose-built HIP probe that rebuilds the same shape and churns it — 200 rounds of map/unmap over the shared pad, all three access states, free-and-reclaim — did not reproduce it, and closed the alignment worry read out of the same source. Two hypotheses died to one experiment; both had looked convincing on paper.)
 
 ---
 
