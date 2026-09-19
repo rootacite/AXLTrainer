@@ -1,0 +1,8 @@
+== collect.sh 2026-09-19T18:36:39+08:00
+repo      /home/acite/Deeppin/AxlTrainer @ 695b076
+hook      /home/acite/Deeppin/AxlTrainer/amdfq/amdfq-tail/cmake-build-release/libamdfq.so
+sha256    dc57df118398c4f6d9b0e04e11282d4626d5af3390af26c71bfe87a85511caf6
+python    /home/acite/miniconda3/envs/axl/bin/python (Python 3.14.7)
+runtime   /run/user/1000/axltrainer
+baseline (before):
+  /sys/class/drm/card1/device vis=59965440 gtt=30244864

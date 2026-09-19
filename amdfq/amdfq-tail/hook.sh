@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Loads the hook into a command and prints the log it produced (amdfq/doc/amdfq.md §9).
+# Loads the original C hook into a command and prints the log it produced (amdfq/doc/amdfq.md §9).
+# The living tail guard is amdfq/amdfq-tail-rs/ (`bash amdfq/amdfq-tail-rs/run.sh` / `test.sh`).
 #
 #   bash amdfq/amdfq-tail/hook.sh                       # default: one torch call in the env's interpreter
 #   bash amdfq/amdfq-tail/hook.sh bash start_train.sh   # a real run

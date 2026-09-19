@@ -1,0 +1,61 @@
+Name:	python
+Umask:	0022
+State:	R (running)
+Tgid:	405921
+Ngid:	0
+Pid:	405921
+PPid:	404874
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	5 81 150 938 943 958 984 988 991 993 996 998 1000 
+NStgid:	405921
+NSpid:	405921
+NSpgid:	404871
+NSsid:	404871
+Kthread:	0
+VmPeak:	37928996 kB
+VmSize:	37837840 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	 7068264 kB
+VmRSS:	 4310344 kB
+RssAnon:	 2845612 kB
+RssFile:	  656140 kB
+RssShmem:	  808592 kB
+VmData:	 9736012 kB
+VmStk:	     136 kB
+VmExe:	    2972 kB
+VmLib:	 1047964 kB
+VmPTE:	    9592 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	156
+SigQ:	1/127038
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000001001000
+SigCgt:	0000000100010002
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	conditional enabled
+Cpus_allowed:	fffffff
+Cpus_allowed_list:	0-27
+Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	78210
+nonvoluntary_ctxt_switches:	28179
+x86_Thread_features:	
+x86_Thread_features_locked:	

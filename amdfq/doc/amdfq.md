@@ -22,27 +22,28 @@ counted. It confirms §4's branch by measurement, and it corrects two claims mad
 (§7.5). Raw evidence (scratch): `/tmp/frida-gates/` — `agent6.js`, `tracer6.py`,
 `run6/snapshot_final.json`, `run6/maps_latest.txt`, `report6.txt`, `rebased.txt`.
 
-**How to watch it yourself.** `amdfq/amdfq-tail/` builds an `LD_PRELOAD` object that logs the three allocation gates
-of §7.1 in an ordinary run, with nothing to attach to and no module list to distrust: build, use and
-self-test in §9; §10 is what that object was built for and what the pad costs; §11 measures that cost four
-rounds deep and sorts out which of the three accounts is telling the truth; §12 is the first optimisation
-tried against it and why it is on the shelf; §13 is the tail guard — the route that keeps `hipMalloc`
-allocating and buys the same protection for one granule per process instead of one per block — and what it
-is worth. A Chinese narrative of the whole investigation, from the first `fix1` guess about bucket
+**How to watch it yourself.** `amdfq/amdfq-tail-rs/` is the living `LD_PRELOAD` object that logs the three
+allocation gates of §7.1 in an ordinary run, with nothing to attach to and no module list to distrust:
+build, use and self-test in §9; §10 is what that object was built for and what the pad costs; §11 measures
+that cost four rounds deep and sorts out which of the three accounts is telling the truth; §12 is the first
+optimisation tried against it and why it is on the shelf; §13 is the tail guard — the route that keeps
+`hipMalloc` allocating and buys the same protection for one granule per process instead of one per block —
+and what it is worth. The numbers in §9–§13 were taken with the original C tree (`amdfq/amdfq-tail/`). A Chinese narrative of the whole investigation, from the first `fix1` guess about bucket
 alignment to the tail guard that ships, is [`gfx1201-overread-story.md`](gfx1201-overread-story.md);
 the four rounds of §11 in their original Chinese working notes are
 [`live-data.md`](live-data.md). Both are narrative; §11 below stays the record of the
 numbers.
 
-**What the object does today** (2026-09-17, route 2 in the tree). The three gates still log every call.
+**What the object does today** (route 2 in the tree). The three gates still log every call.
 `hipMalloc` forwards the caller's size unchanged, then the tail guard of §13 maps one shared page behind
 the block when the runtime backs nothing there; `hipFree` unmaps that page and re-guards the predecessor.
 The `+16` byte pad of §10.1 is no longer the default path — it remains as the fallback for the ~0.2 % of
 allocations whose end page cannot be taken. `AMDFQ_TAIL=0` turns the guard off so the original step-10
-fault can be reproduced. `amdfq/amdfq-tail/`'s `CMakeLists.txt` builds `amdfq.c`, `amdfq_live.c`, `amdfq_log.c`,
-`amdfq_tail.c` and `amdfq_hooks_hip.c`. Route 1's allocator, the shadow of §12.3, and the extra HIP
-hooks that diagnosed them stay in the backup at `~/Desktop/amdfq/`; §9–§12 stay as the record of what
-was measured while each earlier strategy was in place.
+fault can be reproduced. The living object is `amdfq/amdfq-tail-rs/` (`bash amdfq/amdfq-tail-rs/run.sh`,
+design constraints in `amdfq/amdfq-tail-rs/DESIGN.md`). The original C tree (`amdfq/amdfq-tail/`) is what
+§9–§13 measured. Route 1's allocator, the shadow of §12.3, and the extra HIP hooks that diagnosed them
+stay in the backup at `~/Desktop/amdfq/`; §9–§12 stay as the record of what was measured while each
+earlier strategy was in place.
 
 ---
 
@@ -473,58 +474,58 @@ ways (maps-derived base and Frida's base agree once the extra mapping is exclude
 
 ## 9. Watching the three gates from a preload object
 
-`amdfq/amdfq-tail/` builds `libamdfq.so`: an `LD_PRELOAD` object that logs the three gates §7.1 says are the whole
-allocation path of this configuration — `hipMalloc`, `hipFree`, `hipHostMalloc` — one line per call,
-with the pointer that came back and the object the loader attributes the call to. It is the allocation
-half of §7 reduced to a run you do not have to instrument: no Frida, no module list to distrust (§7.4),
-no process to attach to before the first HIP call. It is also not read-only: after each `hipMalloc` the
-tail guard of §13 maps one shared page behind the block when the runtime backs nothing there (see
-`amdfq_tail.c`). The `+16` pad that *The pad* below and §10 measure is what the object used to do on
-every request, and is now the fallback for the ~0.2 % of allocations whose end page cannot be taken.
+`amdfq/amdfq-tail-rs/` builds `libamdfq_tail_rs.so`: an `LD_PRELOAD` object that logs the three gates §7.1
+says are the whole allocation path of this configuration — `hipMalloc`, `hipFree`, `hipHostMalloc` — one
+line per call. It is the allocation half of §7 reduced to a run you do not have to instrument: no Frida, no
+module list to distrust (§7.4), no process to attach to before the first HIP call. It is also not
+read-only: after each `hipMalloc` the tail guard of §13 maps one shared page behind the block when the
+runtime backs nothing there. The `+16` pad that *The pad* below and §10 measure is what the object used to
+do on every request, and is now the fallback for the ~0.2 % of allocations whose end page cannot be taken.
+
+The original C tree (`amdfq/amdfq-tail/`) is what this section's sample lines and §10–§13's numbers were
+taken with. The living object follows the same route under the constraints in
+`amdfq/amdfq-tail-rs/DESIGN.md` (no lock across a runtime call, `log` crate to stderr, one registry).
 
 | Path | Role |
 | --- | --- |
-| `amdfq/amdfq-tail/amdfq_gates.h` | The three prototypes, copied from the ROCm 10.0.0 headers so the object builds with no ROCm headers present |
-| `amdfq/amdfq-tail/amdfq_hooks_hip.c` | The interposers: log the call, forward it, then the tail guard on `hipMalloc`/`hipFree` |
-| `amdfq/amdfq-tail/amdfq_tail.c`, `amdfq_tail.h` | The tail guard (§13): one shared page behind every block the runtime does not already back |
-| `amdfq/amdfq-tail/amdfq_live.c`, `amdfq_live.h` | Live-allocation table (`live=`, `live_bytes=`) keyed by the pointer `hipMalloc` returned |
-| `amdfq/amdfq-tail/amdfq_log.c`, `amdfq_log.h` | Log fd and path, line framing, per-function counters, `dladdr` for the `caller=` field |
-| `amdfq/amdfq-tail/amdfq.c` | `init` opens the log, `fini` writes the live, tail and call summaries and closes it |
-| `amdfq/amdfq-tail/hook.sh` | Runs a command under the object and prints the log it produced |
+| `amdfq/amdfq-tail-rs/src/hooks.rs` | The interposers: log the call, forward it, then the tail guard on `hipMalloc`/`hipFree` |
+| `amdfq/amdfq-tail-rs/src/tail.rs` | The tail guard (§13): one shared page behind every block the runtime does not already back |
+| `amdfq/amdfq-tail-rs/src/registry.rs` | Live-allocation map keyed by the pointer `hipMalloc` returned, plus the end-address index |
+| `amdfq/amdfq-tail-rs/src/real.rs` | The only `dlsym` in the crate |
+| `amdfq/amdfq-tail-rs/run.sh` | Builds the object and starts `test` or `train` under it |
+| `amdfq/amdfq-tail-rs/test.sh` | Export-face / style / one-allocation self-check |
+| `amdfq/amdfq-tail/` | Original C sources; `hook.sh` still builds `libamdfq.so` |
 
-`amdfq/amdfq-tail/hook.sh` is the whole interface: it builds the object if it is missing, runs one command under it,
-then prints the log that command produced.
-
-```bash
-bash amdfq/amdfq-tail/hook.sh                       # default: one torch call in the env's interpreter
-bash amdfq/amdfq-tail/hook.sh bash start_train.sh   # a real run
-bash amdfq/amdfq-tail/hook.sh ./any/hip/program     # anything that calls hipMalloc
-```
-
-Underneath that is one environment variable, so any launcher works. The log defaults to
-`/tmp/amdfq-hook-<pid>.log`; `AMDFQ_LOG` overrides the path, and a path that is a FIFO is opened as one
-(`mkfifo /tmp/amdfq.fifo; AMDFQ_LOG=/tmp/amdfq.fifo …`, read it with `cat`):
+`amdfq/amdfq-tail-rs/run.sh` and `test.sh` are the interface: they build the object if it is missing.
 
 ```bash
-LD_PRELOAD=$PWD/amdfq/amdfq-tail/cmake-build-debug/libamdfq.so bash start_train.sh
+bash amdfq/amdfq-tail-rs/test.sh                       # default: one torch call in the env's interpreter
+bash amdfq/amdfq-tail-rs/run.sh train                  # a real run
+bash amdfq/amdfq-tail-rs/test.sh ./any/hip/program     # anything that calls hipMalloc
 ```
 
-A line is `seq elapsed_s T=tid <fn>(args) -> ret=… caller=<object>+offset`:
+Underneath that is `LD_PRELOAD`. The hook logs to stderr (`AMDFQ_LOG_LEVEL` filters; default `info`):
+
+```bash
+LD_PRELOAD=$PWD/amdfq/amdfq-tail-rs/target/release/libamdfq_tail_rs.so bash start_train.sh
+```
+
+A line is `LEVEL T=tid amdfq_tail_rs::hooks <fn>(args) -> ret=…` (the C object's lines were
+`seq elapsed_s T=tid <fn>(args) -> ret=… caller=<object>+offset live=…`, which is what the sample
+below is). The living object writes one `write(2)` per line to stderr, so the SIGABRT of §6 still
+leaves every line up to the fatal kernel on the terminal / `run.sh` log. Nothing is ever written to
+stdout, which in a trainer process is `api.py`'s NDJSON channel. `AMDFQ_TAIL=0` disables the guard
+(the three gates keep logging). There is no destructor summary (DESIGN.md D7).
 
 ```
 000003     0.884444 T=92116  hipMalloc(size=2097152) -> ptr=0x7f9caa400000 ret=0 live=1 live_bytes=2097152 caller=libc10_hip.so+0x41efa
 000007     1.105912 T=92116  hipFree(ptr=0x7f9caa400000) -> ret=0 live=0 live_bytes=0 caller=libc10_hip.so+0x26918
 ```
 
-`caller=` is resolved through the loader's `link_map` base — the one §7.4 says to trust — so
-`libc10_hip.so+0x41efa` is §7.1's `alloc_block` frame, produced here without Frida. The destructor
-appends the live-table summary, the tail-guard counters of §13, a per-function count, and the number of
-dropped lines. The torch path is the one measured end to end so far; for a full run of this configuration
-§7.1's counts put the log at ~8.6 k lines (4801 + 3693 + 84 calls), and it is written one `write(2)` per
-line with no stdio buffering, so the SIGABRT of §6 still leaves every line up to the fatal kernel on disk.
-Nothing is ever written to stdout, which in a trainer process is `api.py`'s NDJSON channel; a log path
-that cannot be opened degrades to one line on stderr. `AMDFQ_TAIL=0` disables the guard (the three gates
-keep logging).
+The C `caller=` field was resolved through the loader's `link_map` base — the one §7.4 says to trust —
+so `libc10_hip.so+0x41efa` is §7.1's `alloc_block` frame. The torch path is the one measured end to
+end so far; for a full run of this configuration §7.1's counts put the log at ~8.6 k lines
+(4801 + 3693 + 84 calls).
 
 **The pad** (historical: this was the object's default from the first mitigation through the four-round
 measurement of §11; it is now the fallback of §13, not the path every `hipMalloc` takes). `hipMalloc`
@@ -1347,15 +1348,15 @@ block would inflate `hipMemGetInfo` by 2 MiB per block while using almost nothin
 
 ### 13.2 The implementation
 
-The code is `amdfq/amdfq-tail/amdfq_tail.c` (on by default; `AMDFQ_TAIL=0` disables it). `amdfq_tail_after_malloc`,
-`amdfq_tail_before_free`, `amdfq_tail_after_free`, `address_backed`, `protect_page` and `unprotect_page`
-are the whole path; `amdfq_hooks_hip.c`'s `hipMalloc` calls the first, its `hipFree` brackets the real
-free with the other two. A heartbeat line every 2,000 allocations reports: examined, ends already
-backed, unaligned (an end that does not start a page of its own), pages protected (and how many of
-those came after a free), released, protected now, re-taken with a pad (and failures), and
-reserve/map/unmap failures plus hint misses. The pad fallback is the compile-time constant 16. Route
-1's allocator, the shadow, and the hint-miss `/proc/self/maps` dump that diagnosed them stay in the
-backup at `~/Desktop/amdfq/`.
+The living code is `amdfq/amdfq-tail-rs/` (on by default; `AMDFQ_TAIL=0` disables it). `tail::after_malloc`,
+`tail::unprotect`, `tail::reprotect`, `address_backed` and `protect_page` are the whole path;
+`hooks.rs`'s `hipMalloc` calls the first, its `hipFree` brackets the real free with the other two. The
+original C sources (`amdfq/amdfq-tail/amdfq_tail.c`) are what the heartbeat counters below were taken
+with: examined, ends already backed, unaligned (an end that does not start a page of its own), pages
+protected (and how many of those came after a free), released, protected now, re-taken with a pad (and
+failures), and reserve/map/unmap failures plus hint misses. The pad fallback is the compile-time
+constant 16. Route 1's allocator, the shadow, and the hint-miss `/proc/self/maps` dump that diagnosed
+them stay in the backup at `~/Desktop/amdfq/`.
 
 ### 13.3 What it costs, measured
 
@@ -1405,10 +1406,12 @@ live, 98 re-taken with the pad (0.18 %), 0 reserve / map / unmap failures.
   passed step 10 and reached step 150 with a guard in place for 99.8 % of allocations. That is also the
   answer to §12's open question — the VMM calls, and a shared object mapped past live operands, are
   harmless at this scale; what broke route 1 was serving the operands *themselves* out of VMM memory.
-- **Where the tree stands.** `amdfq/amdfq-tail/`'s hook today is the tail guard of this section, on by default.
-  `bash amdfq/amdfq-tail/hook.sh` (or `LD_PRELOAD=amdfq/amdfq-tail/cmake-build-debug/libamdfq.so`) is the interface; `start_train.sh`
+- **Where the tree stands.** `amdfq/amdfq-tail-rs/` is the tail guard of this section, on by default.
+  `bash amdfq/amdfq-tail-rs/run.sh test` / `train` (or
+  `LD_PRELOAD=amdfq/amdfq-tail-rs/target/release/libamdfq_tail_rs.so`) is the interface; `start_train.sh`
   does not preload it. The pad of §10.1 remains as the fallback for ~0.2 % of allocations, and
   `AMDFQ_TAIL=0` restores an unpadded transcript so the original step-10 fault can be reproduced.
+  The original C tree remains at `amdfq/amdfq-tail/`.
 
 **Still open for route 2.** One 240 s run, one seed, no repeat and no long run — the same caveat §10.2
 carries. The pad fallback and the "hint missed" path are known only by their counters. And the ~2.1 GiB

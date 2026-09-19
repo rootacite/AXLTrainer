@@ -1,0 +1,121 @@
+/* Resolving the real implementations — in one place. Nothing outside this module names a HIP symbol
+ * or calls dlsym (DESIGN.md D8). Each symbol is cached on its own, so a runtime that lacks only some
+ * of them still gets the rest. */
+
+use crate::hip::{AccessDesc, AllocationProp, HipError};
+use std::ffi::{CStr, c_char, c_void};
+use std::mem::{size_of, transmute_copy};
+use std::sync::LazyLock;
+
+/* The three allocation gates (../doc/amdfq.md §7.1). */
+pub(crate) type HipMallocFn = unsafe extern "C" fn(ptr: *mut *mut c_void, size: usize) -> HipError;
+pub(crate) type HipFreeFn = unsafe extern "C" fn(ptr: *mut c_void) -> HipError;
+pub(crate) type HipHostMallocFn =
+    unsafe extern "C" fn(ptr: *mut *mut c_void, size: usize, flags: u32) -> HipError;
+
+pub(crate) type HipGetDeviceFn = unsafe extern "C" fn(device: *mut i32) -> HipError;
+/* hipSetDevice: unmapping a guard runs on the block's own device (DESIGN.md D11). */
+pub(crate) type HipSetDeviceFn = unsafe extern "C" fn(device: i32) -> HipError;
+/* The peer pair is optional: the route guards without them, it just cannot grant peers (D11). */
+pub(crate) type HipGetDeviceCountFn = unsafe extern "C" fn(count: *mut i32) -> HipError;
+pub(crate) type HipDeviceCanAccessPeerFn =
+    unsafe extern "C" fn(can_access_peer: *mut i32, device: i32, peer_device: i32) -> HipError;
+pub(crate) type HipMemGetAllocationGranularityFn = unsafe extern "C" fn(
+    granularity: *mut usize,
+    prop: *const AllocationProp,
+    option: i32,
+) -> HipError;
+pub(crate) type HipMemAddressReserveFn = unsafe extern "C" fn(
+    ptr: *mut *mut c_void,
+    size: usize,
+    alignment: usize,
+    addr: *mut c_void,
+    flags: u64,
+) -> HipError;
+pub(crate) type HipMemAddressFreeFn =
+    unsafe extern "C" fn(ptr: *mut c_void, size: usize) -> HipError;
+pub(crate) type HipMemCreateFn = unsafe extern "C" fn(
+    handle: *mut *mut c_void,
+    size: usize,
+    prop: *const AllocationProp,
+    flags: u64,
+) -> HipError;
+pub(crate) type HipMemMapFn = unsafe extern "C" fn(
+    ptr: *mut c_void,
+    size: usize,
+    offset: usize,
+    handle: *mut c_void,
+    flags: u64,
+) -> HipError;
+pub(crate) type HipMemUnmapFn = unsafe extern "C" fn(ptr: *mut c_void, size: usize) -> HipError;
+pub(crate) type HipMemSetAccessFn = unsafe extern "C" fn(
+    ptr: *mut c_void,
+    size: usize,
+    desc: *const AccessDesc,
+    count: usize,
+) -> HipError;
+/* hipMemGetAddressRange: whether anything already backs the 16 bytes past a block (../doc/amdfq.md
+ * §13.1). Asking about an address nothing backs is the question, and it sets the per-thread sticky
+ * error, so hipGetLastError consumes that state after a miss. */
+pub(crate) type HipMemGetAddressRangeFn =
+    unsafe extern "C" fn(pbase: *mut *mut c_void, psize: *mut usize, ptr: *mut c_void) -> HipError;
+pub(crate) type HipGetLastErrorFn = unsafe extern "C" fn() -> HipError;
+
+/* RTLD_NEXT, as glibc spells it: the search starts after this object, so it can never hand back the
+ * interposer itself. */
+const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
+
+unsafe extern "C" {
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
+
+/* The only dlsym in this crate. A symbol this runtime does not export resolves to None, and the
+ * caller then either forwards the call or leaves the route switched off. */
+fn resolve<F>(name: &CStr) -> Option<F> {
+    const {
+        assert!(
+            size_of::<F>() == size_of::<*mut c_void>(),
+            "resolved symbols are function pointers"
+        )
+    };
+    let symbol = unsafe { dlsym(RTLD_NEXT, name.as_ptr()) };
+    if symbol.is_null() {
+        None
+    } else {
+        Some(unsafe { transmute_copy(&symbol) })
+    }
+}
+
+pub(crate) static HIP_MALLOC: LazyLock<Option<HipMallocFn>> =
+    LazyLock::new(|| resolve(c"hipMalloc"));
+pub(crate) static HIP_FREE: LazyLock<Option<HipFreeFn>> = LazyLock::new(|| resolve(c"hipFree"));
+pub(crate) static HIP_HOST_MALLOC: LazyLock<Option<HipHostMallocFn>> =
+    LazyLock::new(|| resolve(c"hipHostMalloc"));
+
+pub(crate) static HIP_GET_DEVICE: LazyLock<Option<HipGetDeviceFn>> =
+    LazyLock::new(|| resolve(c"hipGetDevice"));
+pub(crate) static HIP_SET_DEVICE: LazyLock<Option<HipSetDeviceFn>> =
+    LazyLock::new(|| resolve(c"hipSetDevice"));
+pub(crate) static HIP_GET_DEVICE_COUNT: LazyLock<Option<HipGetDeviceCountFn>> =
+    LazyLock::new(|| resolve(c"hipGetDeviceCount"));
+pub(crate) static HIP_DEVICE_CAN_ACCESS_PEER: LazyLock<Option<HipDeviceCanAccessPeerFn>> =
+    LazyLock::new(|| resolve(c"hipDeviceCanAccessPeer"));
+pub(crate) static HIP_MEM_GET_ALLOCATION_GRANULARITY: LazyLock<
+    Option<HipMemGetAllocationGranularityFn>,
+> = LazyLock::new(|| resolve(c"hipMemGetAllocationGranularity"));
+pub(crate) static HIP_MEM_ADDRESS_RESERVE: LazyLock<Option<HipMemAddressReserveFn>> =
+    LazyLock::new(|| resolve(c"hipMemAddressReserve"));
+pub(crate) static HIP_MEM_ADDRESS_FREE: LazyLock<Option<HipMemAddressFreeFn>> =
+    LazyLock::new(|| resolve(c"hipMemAddressFree"));
+pub(crate) static HIP_MEM_CREATE: LazyLock<Option<HipMemCreateFn>> =
+    LazyLock::new(|| resolve(c"hipMemCreate"));
+pub(crate) static HIP_MEM_MAP: LazyLock<Option<HipMemMapFn>> =
+    LazyLock::new(|| resolve(c"hipMemMap"));
+pub(crate) static HIP_MEM_UNMAP: LazyLock<Option<HipMemUnmapFn>> =
+    LazyLock::new(|| resolve(c"hipMemUnmap"));
+pub(crate) static HIP_MEM_SET_ACCESS: LazyLock<Option<HipMemSetAccessFn>> =
+    LazyLock::new(|| resolve(c"hipMemSetAccess"));
+pub(crate) static HIP_MEM_GET_ADDRESS_RANGE: LazyLock<Option<HipMemGetAddressRangeFn>> =
+    LazyLock::new(|| resolve(c"hipMemGetAddressRange"));
+pub(crate) static HIP_GET_LAST_ERROR: LazyLock<Option<HipGetLastErrorFn>> =
+    LazyLock::new(|| resolve(c"hipGetLastError"));

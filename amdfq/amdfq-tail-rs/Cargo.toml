@@ -1,0 +1,15 @@
+[package]
+name = "amdfq-tail-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4"
+
+[lib]
+crate-type = ["cdylib"]
+
+# The artifact is preloaded into other processes: a panic must not unwind out of an extern "C"
+# function, and no unwinding tables belong in an interposer.
+[profile.release]
+panic = "abort"

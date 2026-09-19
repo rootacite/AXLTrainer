@@ -803,7 +803,7 @@ pad-16 的代价，绝对不是驱动计数器上轻描淡写涨出来的那区�
 
 ### 10.3 结案：它现在是默认行为
 
-amdfq/amdfq-tail/amdfq_tail.c 里现在死死钉着上述的那四步铁律，并且它被设成了默认开启。第七幕那昂贵的 pad 彻底退居二线，只负责承接那可怜的 0.2% 映射失败的兜底活儿。
+amdfq/amdfq-tail-rs/ 里现在死死钉着上述的那四步铁律，并且它被设成了默认开启（原 C 实现还在 amdfq/amdfq-tail/）。第七幕那昂贵的 pad 彻底退居二线，只负责承接那可怜的 0.2% 映射失败的兜底活儿。
 
 如果你哪天起了疑心，跑去加个环境变量 AMDFQ_TAIL=0 关掉守卫，让它退化回纯转发模式，那你就能在一分钟之内，原汁原味地重温最初那个把人折磨疯的 step-10 fault。换句话说，我现在甚至把这个该死的 bug 的复现开关，做成了我自己补丁里的一个小小环境变量。
 
@@ -831,18 +831,18 @@ amdfq/amdfq-tail/amdfq_tail.c 里现在死死钉着上述的那四步铁律，�
 
 ```
 # 冒烟测试：随便跑一次 torch.zeros，看看这 hook 到底上没上膛
-bash amdfq/amdfq-tail/hook.sh
+bash amdfq/amdfq-tail-rs/test.sh
 
 # 真刀真枪训练（start_train.sh 本身可是不会自动 preload 的，要用就显式带上）
-bash amdfq/amdfq-tail/hook.sh bash start_train.sh
+bash amdfq/amdfq-tail-rs/run.sh train
 # 这个跟下面是等价的：
-LD_PRELOAD=$PWD/amdfq/amdfq-tail/cmake-build-debug/libamdfq.so bash start_train.sh
+LD_PRELOAD=$PWD/amdfq/amdfq-tail-rs/target/release/libamdfq_tail_rs.so bash start_train.sh
 
 # 想复现最初那个折磨人的 step-10 fault？关掉尾部守卫，让补丁退化回纯转发模式
-AMDFQ_TAIL=0 LD_PRELOAD=$PWD/amdfq/amdfq-tail/cmake-build-debug/libamdfq.so bash start_train.sh
+AMDFQ_TAIL=0 LD_PRELOAD=$PWD/amdfq/amdfq-tail-rs/target/release/libamdfq_tail_rs.so bash start_train.sh
 ```
 
-日志默认疯狂往 /tmp/amdfq-hook-<pid>.log 里写（你要是用 AMDFQ_LOG 就可以覆盖它；哪怕写成 FIFO 也能读）。摘要行非常直白，直接告诉你：老子检查了多少次分配、多少页被成功上了锁、多少页在别人释放之后赶紧补了刀、有多少次被逼无奈走了 pad 兜底方案、还有 reserve/map/unmap 这老三样各失败了几次。
+日志走 stderr（`AMDFQ_LOG_LEVEL`，默认 info）。每条 malloc/free 会写结局：`guarded` / `backed` / `padded` / `released`。
 
 hip1 的两条纯复现路线（需要当时的 ROCm 栈 axl_rocm_7_14；参考值：正好填满 tile 的那个控制形状 crc 0xe4a70c8f，训练器形状 crc 0x4ec0d5e7）：
 
