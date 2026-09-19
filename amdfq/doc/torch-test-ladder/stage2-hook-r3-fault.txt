@@ -1,0 +1,5 @@
+Memory access fault by GPU node-1 (Agent handle: 0x56378cb8b360) on address 0x51bb3000. Reason: Page not present or supervisor privilege.
+GPU coredump: handler exited with error (status: 1)
+GPU core dump failed
+amdfq-vmm-rs/run.sh: line 90: 378516 Aborted                    (core dumped) LD_PRELOAD=$so "$@" 2> >(tee "$log" 1>&2)
+run.sh: hook lines 5276 (hipMalloc 2666, hipFree 2598, untracked 0, duplicate 12, threads 2)

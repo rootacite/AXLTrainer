@@ -4,7 +4,7 @@
 > 除这段说明外正文一字未改。它引用的原始证据（hook 日志、进程快照、4 Hz 采样、报告、BO dump）仍在 `/tmp` 下，
 > 逐节列在各轮的"产物"表里。
 > 这条线的来龙去脉与结论见 [`gfx1201-overread-story.md`](gfx1201-overread-story.md)；
-> 同一批四轮测量的英文记录与完整表格见 [`../../amdfq.md`](../../amdfq.md) §11。
+> 同一批四轮测量的英文记录与完整表格见 [`amdfq.md`](amdfq.md) §11。
 
 本文件按时间分四轮（后三轮是沿着同一个问题往下走的，编号不变、只追加）：
 
@@ -18,7 +18,7 @@
 2026-09-17，`AMD RX 9070 XT`（gfx1201，`card1`，设备总量 `17,095,983,104 B = 16,304.0 MiB`），
 桌面关闭的干净基线（`mem_info_vis_vram_used = 75,640,832 B = 72.1 MiB`，GTT `30,281,728 B = 28.9 MiB`）。
 
-四次跑用的是**项目自己的 hook**（`amdfq/cmake-build-debug/libamdfq.so`），唯一变量是
+四次跑用的是**项目自己的 hook**（`amdfq/amdfq-tail/cmake-build-debug/libamdfq.so`），唯一变量是
 `AMDFQ_PAD_BYTES`（0 / 16 / 64 / 1,048,576）。桩在 `trainer/loop.py` 的 step 5 末尾 `SIGSTOP` 自己，所以四次都停在
 同一个位置（`state.json` 停在 `training.step = 4`，step 4 的 `loss = 0.1005521` 四次相同），并且进程**冻着不退出**，
 两个字节口径都能在静止态上读。实验结束后桩已撤掉，`trainer/loop.py` 与 HEAD 一致。
@@ -32,7 +32,7 @@
 | 外部 ledger | 另一个进程 `extledger.py` 调 `hipMemGetInfo` | 同上；进程冻住后进程内线程不再采样，只能从外面读 |
 | hook 活表 | 项目 hook 的 uthash 表，每次 `hipMalloc`/`hipFree` 的日志行带 `live=` 与 `live_bytes=` | 该进程 interpose 到的（`hipMalloc` 系）分配；`live_bytes` 是**请求字节**之和 |
 
-运行方式：`LD_PRELOAD='/tmp/amdfq-obs/libledger.so <项目>amdfq/cmake-build-debug/libamdfq.so'`
+运行方式：`LD_PRELOAD='/tmp/amdfq-obs/libledger.so <项目>amdfq/amdfq-tail/cmake-build-debug/libamdfq.so'`
 （ledger 观测器在前、项目 hook 在后），`AMDFQ_LOG=/tmp/amdfq-<tag>.log`。
 
 ## 1. 主表：四次冻结的账（MiB）
@@ -127,7 +127,7 @@ seq 1/2，分析时要按 `T=`（线程 id）区分。
 0 pad 是 **4 MiB**，16 / 64 / 1 MiB 全都是 **6 MiB**——同样是「有 pad 就变、不随 pad 长大」的形状，
 变的是分配布局而不是每个请求的尺寸。
 
-**机制本身仍未验证。** 1 MiB 那次的请求确实带 pad 出去了：`amdfq/amdfq_hooks_hip.c` 里
+**机制本身仍未验证。** 1 MiB 那次的请求确实带 pad 出去了：`amdfq/amdfq-tail/amdfq_hooks_hip.c` 里
 `real(ptr, padded)`，全部 2,994 行日志的 `padded − size` 都恰好是 1,048,576。也就是说 hook 向 HIP 要了
 每个块多 1 MiB，而驱动计数器、HIP ledger、KFD/进程 VA 三处都没有跟着涨——多出来的那 1,219 MiB 请求
 去了哪里，这本账没结。
@@ -177,8 +177,8 @@ seq 1/2，分析时要按 `T=`（线程 id）区分。
 | 预期值（取整颗粒扫描） | `python3 /tmp/pad-predict.py frozen5t0 16 64 262144 1048576` |
 | VA 分析 | `python3 /tmp/maps-hist.py <快照>/maps.txt` |
 
-复现要点：`amdfq/cmake-build-debug/libamdfq.so` 需要含 `AMDFQ_PAD_BYTES` 的版本（该旋钮加在
-`amdfq/amdfq_hooks_hip.c`，默认 16，未设置时行为与原来一致）；桩曾经插在 `trainer/loop.py` 的
+复现要点：`amdfq/amdfq-tail/cmake-build-debug/libamdfq.so` 需要含 `AMDFQ_PAD_BYTES` 的版本（该旋钮加在
+`amdfq/amdfq-tail/amdfq_hooks_hip.c`，默认 16，未设置时行为与原来一致）；桩曾经插在 `trainer/loop.py` 的
 step 5 末尾，实验结束后已撤销。
 
 ## 8. 还没解释的观测

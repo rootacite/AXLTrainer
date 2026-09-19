@@ -8,18 +8,18 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [`../conclusions/bf16-kernel-overrun.md`](../../conclusions/bf16-kernel-overrun.md) | 越界读本身：证据链、距离、影响面 |
-| [`../conclusions/bf16-overrun-mitigations.md`](../../conclusions/bf16-overrun-mitigations.md) | 临时缓解措施与各自代价 |
-| [`../conclusions/gfx1201-fault-response-wedge.md`](../../conclusions/gfx1201-fault-response-wedge.md) | fault 响应本身会卡住的那次观测 |
-| [`../fixes/fix1.txt`](../../fixes/fix1.txt)、[`../fixes/fix2/`](../../fixes/fix2/)、[`../fixes/fix3/`](../../fixes/fix3/)、[`../fixes/hip1/`](../../fixes/hip1/) | 三个时代的原始实验包 |
-| [`../amdfq.md`](../../amdfq.md) | 补丁本身的完整技术记录（§9–§13 是它的四轮测量与两条优化路线） |
+| [`conclusions/bf16-kernel-overrun.md`](../../conclusions/bf16-kernel-overrun.md) | 越界读本身：证据链、距离、影响面 |
+| [`conclusions/bf16-overrun-mitigations.md`](../../conclusions/bf16-overrun-mitigations.md) | 临时缓解措施与各自代价 |
+| [`conclusions/gfx1201-fault-response-wedge.md`](../../conclusions/gfx1201-fault-response-wedge.md) | fault 响应本身会卡住的那次观测 |
+| [`fixes/fix1.txt`](../../fixes/fix1.txt)、[`fixes/fix2/`](../../fixes/fix2/)、[`fixes/fix3/`](../../fixes/fix3/)、[`fixes/hip1/`](../../fixes/hip1/) | 三个时代的原始实验包 |
+| [`amdfq.md`](amdfq.md) | 补丁本身的完整技术记录（§9–§13 是它的四轮测量与两条优化路线） |
 | [`live-data.md`](live-data.md) | 四轮测量过程的中文原始记录 |
 
 一句话结论。gfx1201 上，hipBLASLt 派发的 bf16 Tensile kernel 会读出 A/B 操作数的末尾；幅度不超过 4 KiB，读到的值不进入结果，操作数末尾之后如果是已映射内存，这件事完全无声——但只要那里是一页没映射的显存，GPU 就报页错误，进程当场被杀（-6）。这个读从 kernel 一侧修不掉，所以我换了个方向：不去堵那次读，而是让它读到的地方有内存可读。
 
 ## 第一幕 · 我以为是对齐问题（后来证明不是）
 
-> 时间：几个月前。证据：[`../fixes/fix1.txt`](../../fixes/fix1.txt)
+> 时间：几个月前。证据：[`fixes/fix1.txt`](../../fixes/fix1.txt)
 
 最初的症状很朴素：训练跑着跑着，进程会毫无预兆地硬崩一次。
 
@@ -48,7 +48,7 @@ RW: 0x0
 
 ## 第二幕 · 越崩越像有规律，直到那个规律也被推翻
 
-> 时间：2026-09-14（fix2）、2026-09-15 → 09-16（fix3）。证据：[`../fixes/fix2.txt`](../../fixes/fix2.txt)、[`../fixes/fix2/README.md`](../../fixes/fix2/README.md)、[`../fixes/fix2-ex.md`](../../fixes/fix2-ex.md)、[`../fixes/fix3/README.md`](../../fixes/fix3/README.md)
+> 时间：2026-09-14（fix2）、2026-09-15 → 09-16（fix3）。证据：[`fixes/fix2.txt`](../../fixes/fix2.txt)、[`fixes/fix2/README.md`](../../fixes/fix2/README.md)、[`fixes/fix2-ex.md`](../../fixes/fix2-ex.md)、[`fixes/fix3/README.md`](../../fixes/fix3/README.md)
 
 ### 2.1 第一个像样的假说：partial tile
 
@@ -166,7 +166,7 @@ seed 这件事的机制我先摸清了一层：`shuffle_caption` 的随机数取
 
 ### 2.6 然后它把第一步也吃了：fix3
 
-> 时间：2026-09-15 23:16 → 2026-09-16 00:30。证据：[`../fixes/fix3/README.md`](../../fixes/fix3/README.md)
+> 时间：2026-09-15 23:16 → 2026-09-16 00:30。证据：[`fixes/fix3/README.md`](../../fixes/fix3/README.md)
 
 `fix2` 那套实验是在 `2.13.0+rocm10.0.0` 上做的。为了对照，我把栈改回 `2.12.0+rocm7.14.1`——然后发现**打包好的 fix2 复现包在这套栈上不崩了**，我自己线上那份配置也顺利跑了 700+ 步。
 
@@ -203,7 +203,7 @@ fix3 还做了一件很有说服力的事：它把桶和这一步的 GEMM 分开
 
 ## 第三幕 · 把 PyTorch 整个扔掉，自己写一个复现
 
-> 时间：2026-09-15 夜 → 09-16 凌晨。证据：[`../fixes/hip1/hip1.md`](../../fixes/hip1/hip1.md)、[`../fixes/hip1/source-trace.md`](../../fixes/hip1/source-trace.md)
+> 时间：2026-09-15 夜 → 09-16 凌晨。证据：[`fixes/hip1/hip1.md`](../../fixes/hip1/hip1.md)、[`fixes/hip1/source-trace.md`](../../fixes/hip1/source-trace.md)
 
 到这一步，"是我自己代码的问题"这个可能性还很大：也许是 torch 的缓存分配器，也许是我的数据集/掩码/循环，也许是 MIOpen 选了个坏算法。
 
@@ -256,7 +256,7 @@ hipExtModuleLaunchKernel … grid=2560,1,1 -> 488 dispatches
 
 ## 第四幕 · 为什么这次越界读是躲不掉的
 
-> 证据：[`../fixes/hip1/source-trace.md`](../../fixes/hip1/source-trace.md)、[`../conclusions/bf16-kernel-overrun.md`](../../conclusions/bf16-kernel-overrun.md)
+> 证据：[`fixes/hip1/source-trace.md`](../../fixes/hip1/source-trace.md)、[`conclusions/bf16-kernel-overrun.md`](../../conclusions/bf16-kernel-overrun.md)
 
 这一幕的结论其实一句话就能说完：**只要矩阵的行是紧密排列的，读到原本不需要的东西就躲不掉；真正的问题只是多读的地方合不合法——而实验说明，它完全可能不合法。**
 
@@ -339,7 +339,7 @@ gfx1201 在这个列表里，所以生成器认为"超出边界的那部分访�
 
 ## 第五幕 · 改源码这条路，走不通
 
-> 证据：[`../fixes/hip1/gltr-asem-rule.patch`](../../fixes/hip1/gltr-asem-rule.patch)、[`../fixes/hip1/hip1.md`](../../fixes/hip1/hip1.md) §13
+> 证据：[`fixes/hip1/gltr-asem-rule.patch`](../../fixes/hip1/gltr-asem-rule.patch)、[`fixes/hip1/hip1.md`](../../fixes/hip1/hip1.md) §13
 
 生成器那侧的钳位补不上，我就顺着"要么这个解法不该被选中"这句话往下走：**用厂商自己的机制，把会越界的解法排除掉。**
 
@@ -401,7 +401,7 @@ state["AssertSummationElementMultiple"] = max(state["AssertSummationElementMulti
 
 ## 第七幕 · 一个 16 字节的补丁，和证明它真的有用的控制组
 
-> 时间：2026-09-17。证据：[`../amdfq.md`](../../amdfq.md) §9–§10
+> 时间：2026-09-17。证据：[`amdfq.md`](amdfq.md) §9–§10
 
 第一版补丁小得可以贴在名片上：`hipMalloc` 向 runtime 多要 **16 字节**，然后把原来的指针还给调用方。
 
@@ -455,7 +455,7 @@ hipError_t hipMalloc(void **ptr, size_t size) {
 
 ## 第八幕 · 内存到底去哪了
 
-> 时间：2026-09-17。证据：[`../amdfq.md`](../../amdfq.md) §11、[`live-data.md`](live-data.md)（四轮的中文原始记录，663 行）
+> 时间：2026-09-17。证据：[`amdfq.md`](amdfq.md) §11、[`live-data.md`](live-data.md)（四轮的中文原始记录，663 行）
 
 这一幕是我被自己骗得最惨的一段。
 
@@ -715,7 +715,7 @@ hipMemGetInfo 这玩意儿，千万别拿它去判"这卡还剩多少余粮"。�
 
 ## 第九幕 · 路线一：自己写一个分配器
 
-> 证据：[`../amdfq.md`](../../amdfq.md) §12
+> 证据：[`amdfq.md`](amdfq.md) §12
 
 第七幕算完账，得出的结论很直接："这套多要内存的机制是成立的，但这粗暴的设计价格实在太坑"。当时我脑子里蹦出来的第一个念头，就是干脆把 pad 的核心逻辑直接夺权，自己接管。
 
@@ -741,7 +741,7 @@ hipMemGetInfo 这玩意儿，千万别拿它去判"这卡还剩多少余粮"。�
 
 ## 第十幕 · 路线二：只给尾部站一个岗
 
-> 证据：../amdfq.md §13，以及最终的控制组实测，代码在 ../amdfq/amdfq_tail.c
+> 证据：amdfq.md §13，以及最终的控制组实测，代码在 ../amdfq-tail/amdfq_tail.c
 
 既然路线一死在"全盘接管分配器"上，那路线二我就只能苟一点：我不去动核心逻辑，就让 hipMalloc 继续干它的分发活儿，我只负责在它分配完之后，悄悄在尾部补一刀站个岗。
 
@@ -803,7 +803,7 @@ pad-16 的代价，绝对不是驱动计数器上轻描淡写涨出来的那区�
 
 ### 10.3 结案：它现在是默认行为
 
-amdfq/amdfq_tail.c 里现在死死钉着上述的那四步铁律，并且它被设成了默认开启。第七幕那昂贵的 pad 彻底退居二线，只负责承接那可怜的 0.2% 映射失败的兜底活儿。
+amdfq/amdfq-tail/amdfq_tail.c 里现在死死钉着上述的那四步铁律，并且它被设成了默认开启。第七幕那昂贵的 pad 彻底退居二线，只负责承接那可怜的 0.2% 映射失败的兜底活儿。
 
 如果你哪天起了疑心，跑去加个环境变量 AMDFQ_TAIL=0 关掉守卫，让它退化回纯转发模式，那你就能在一分钟之内，原汁原味地重温最初那个把人折磨疯的 step-10 fault。换句话说，我现在甚至把这个该死的 bug 的复现开关，做成了我自己补丁里的一个小小环境变量。
 
@@ -831,15 +831,15 @@ amdfq/amdfq_tail.c 里现在死死钉着上述的那四步铁律，并且它被�
 
 ```
 # 冒烟测试：随便跑一次 torch.zeros，看看这 hook 到底上没上膛
-bash amdfq/hook.sh
+bash amdfq/amdfq-tail/hook.sh
 
 # 真刀真枪训练（start_train.sh 本身可是不会自动 preload 的，要用就显式带上）
-bash amdfq/hook.sh bash start_train.sh
+bash amdfq/amdfq-tail/hook.sh bash start_train.sh
 # 这个跟下面是等价的：
-LD_PRELOAD=$PWD/amdfq/cmake-build-debug/libamdfq.so bash start_train.sh
+LD_PRELOAD=$PWD/amdfq/amdfq-tail/cmake-build-debug/libamdfq.so bash start_train.sh
 
 # 想复现最初那个折磨人的 step-10 fault？关掉尾部守卫，让补丁退化回纯转发模式
-AMDFQ_TAIL=0 LD_PRELOAD=$PWD/amdfq/cmake-build-debug/libamdfq.so bash start_train.sh
+AMDFQ_TAIL=0 LD_PRELOAD=$PWD/amdfq/amdfq-tail/cmake-build-debug/libamdfq.so bash start_train.sh
 ```
 
 日志默认疯狂往 /tmp/amdfq-hook-<pid>.log 里写（你要是用 AMDFQ_LOG 就可以覆盖它；哪怕写成 FIFO 也能读）。摘要行非常直白，直接告诉你：老子检查了多少次分配、多少页被成功上了锁、多少页在别人释放之后赶紧补了刀、有多少次被逼无奈走了 pad 兜底方案、还有 reserve/map/unmap 这老三样各失败了几次。
@@ -879,7 +879,7 @@ K=$(/usr/bin/python3 -c "import sys;sys.path.insert(0,'fixes/hip1');import kerne
 | "要么操作数自带余量，要么这个解法不该被选中" | `fixes/hip1/source-trace.md` §5.1 |
 | pad-16 的 A/B 五跑、代价表、14,032/14,038 | `amdfq.md` §9–§10.3 |
 | 孤立探针（1024×2 MiB / torch 池化与 1:1）的精确代价、训练场景对不上账、加载阶段吻合但训练阶段消失、无 pad 时 2.2–2.4 GiB 的幽灵占用、已排除的十二条猜想 | `amdfq-help.md` §4.1–§4.11、§5（外部协助记录） |
-| 四轮测量的全部数字（含三本账、预言命中、判定表） | `amdfq.md` §11、`amdfq/doc/live-data.md` §1–§11 |
+| 四轮测量的全部数字（含三本账、预言命中、判定表） | `amdfq.md` §11、`live-data.md` §1–§11 |
 | 路线一五种失败、shadow、peralloc、step 66 对照 | `amdfq.md` §12 |
 | 路线二的探针表、856 活块表、心跳、结论 | `amdfq.md` §13 |
 | wedge 的时间线、四个程序、判定表 | `conclusions/gfx1201-fault-response-wedge.md` |

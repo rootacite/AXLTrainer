@@ -10,17 +10,28 @@ never collects it. Run it directly:
     python test/torch-test.py --time-scale 4      # four times the loop time
     python test/torch-test.py --mem-scale 0.5     # half the plateau
     python test/torch-test.py --time-scale 0      # correctness only, no loop
+    python test/torch-test.py --driver-frees      # stage 2: every free is a hipFree
+    python test/torch-test.py --driver-frees --linear  # stage 3: F.linear on the chain
+    python test/torch-test.py --driver-frees --no-stress   # drop plateau + loop
+    python test/torch-test.py --driver-frees --no-stress --max-checks 4
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import statistics
 import sys
 import time
 
+# The HIP caching allocator reads this once at import. Stage 2
+# (amdfq/doc/torch-test-toward-trainer.md): every torch free becomes a hipFree.
+if "--driver-frees" in sys.argv:
+    os.environ["PYTORCH_NO_HIP_MEMORY_CACHING"] = "1"
+
 import torch
+import torch.nn.functional as F
 
 # Baselines, tuned on the author's machine (RX 9070 XT, torch 2.13.0+rocm10.0.0, HIP
 # 7.15.26333): at scale 1.0 they put the measured script time at ~2 s, of which the
@@ -82,70 +93,161 @@ def err_ratio(got: torch.Tensor, want: torch.Tensor) -> float:
     return float((got - want).abs().max()) / max(float(want.abs().max()), 1e-12)
 
 
-def checks(device: torch.device) -> bool:
-    """Cheap correctness samples; loose tolerances on purpose."""
-    ok = True
-
+def _check_cpu_elem(_device: torch.device) -> bool:
     a = torch.randn(1 << 20)
     b = torch.randn(1 << 20)
     got = ((a + b) * 2).sum()
     want = ((a.double() + b.double()) * 2).sum()
-    ok &= check(
+    return check(
         "elementwise + reduce vs cpu fp64",
         torch.allclose(got.double(), want, rtol=1e-6),
         f"gpu {got.item():.4f} cpu {want.item():.4f}",
     )
 
+
+def _check_scan_ones(device: torch.device) -> bool:
     ones = torch.ones(4096, device=device)
-    ok &= check(
+    return check(
         "scan: cumsum(ones) == 1..n",
         torch.equal(torch.cumsum(ones, 0), torch.arange(1, 4097, dtype=torch.float32, device=device)),
     )
 
+
+def _check_scan_rows(device: torch.device) -> bool:
     rows = torch.randn(257, 999, device=device)
-    ok &= check(
+    return check(
         "scan: cumsum(dim=1) matches torch's own reference path",
         torch.allclose(torch.cumsum(rows, 1), rows.cumsum(dim=1)),
     )
 
-    k = 512
-    m1 = torch.randn(k, k, device=device, dtype=DTYPE)
-    m2 = torch.randn(k, k, device=device, dtype=DTYPE)
-    bf16 = (m1 @ m2).double().cpu()
+
+# Overridden from main() so the mm check can be shrunk without rewriting it.
+# MM_PACK: False | True (tight pack) | int MiB (one allocation of that many MiB).
+MM_K = 512
+MM_DTYPE = DTYPE
+MM_PACK = False
+MM_PACK_MIB = 0
+MM_SYNC = False
+
+
+def _check_bf16_mm(device: torch.device) -> bool:
+    k = MM_K
+    dtype = MM_DTYPE
+    itemsize = torch.tensor([], dtype=dtype).element_size()
+    if MM_PACK:
+        # One hipMalloc, three views, 256-byte gaps like the caching allocator.
+        nbytes = k * k * itemsize
+        # Caching allocator placed the k=91 tensors 16896 B apart (512-aligned).
+        stride = (nbytes + 511) // 512 * 512
+        n_elem = stride // itemsize
+        if MM_PACK_MIB:
+            storage = torch.empty((MM_PACK_MIB * 1024 * 1024) // itemsize, device=device, dtype=dtype)
+            layout = f"pack-{MM_PACK_MIB}mib"
+        elif MM_PACK == "block":
+            storage = torch.empty((2 * 1024 * 1024) // itemsize, device=device, dtype=dtype)
+            layout = "pack-block"
+        else:
+            storage = torch.empty(n_elem * 3, device=device, dtype=dtype)
+            layout = "pack"
+        m1 = storage[0 : k * k].view(k, k)
+        m2 = storage[n_elem : n_elem + k * k].view(k, k)
+        out = storage[2 * n_elem : 2 * n_elem + k * k].view(k, k)
+        m1.normal_()
+        m2.normal_()
+        torch.mm(m1, m2, out=out)
+    else:
+        m1 = torch.randn(k, k, device=device, dtype=dtype)
+        m2 = torch.randn(k, k, device=device, dtype=dtype)
+        out = m1 @ m2
+        layout = "split"
+    if MM_SYNC:
+        torch.cuda.synchronize()
+        layout = f"{layout}+sync"
+    log(
+        f"  mm va m1={m1.data_ptr():#x} m2={m2.data_ptr():#x} out={out.data_ptr():#x} "
+        f"nbytes={m1.nbytes} shape={k}x{k} {dtype} layout={layout}"
+    )
+    got = out.double().cpu()
     ref = m1.double().cpu() @ m2.double().cpu()
-    ok &= check(
-        "matmul: bf16 vs cpu fp64",
-        torch.allclose(bf16, ref, rtol=0.05, atol=1e-2),
-        f"max abs err {(bf16 - ref).abs().max().item():.3f}",
+    finite = bool(torch.isfinite(got).all().item())
+    err = float((got - ref).abs().max().item())
+    ok = finite and torch.allclose(got, ref, rtol=0.05, atol=1e-2)
+    if not ok:
+        diff = (got - ref).abs()
+        idx = int(diff.view(-1).argmax().item())
+        i, j = divmod(idx, k)
+        tiles = (k + 15) // 16
+        parts = []
+        for ti in range(tiles):
+            for tj in range(tiles):
+                tile = diff[ti * 16 : (ti + 1) * 16, tj * 16 : (tj + 1) * 16]
+                parts.append(f"({ti},{tj})={float(tile.max()):.3f}")
+        log(
+            f"  mm err peak at [{i},{j}] tile=({i // 16},{j // 16}) "
+            f"got={float(got[i, j]):.6g} ref={float(ref[i, j]):.6g}; tiles {' '.join(parts)}"
+        )
+    return check(
+        f"matmul: {dtype} {k}x{k} vs cpu fp64",
+        ok,
+        f"finite={finite} max abs err {err:.3f}",
     )
 
+
+def _check_autograd_cube(device: torch.device) -> bool:
     x = torch.randn(64, device=device, dtype=torch.float64, requires_grad=True)
     (x**3).sum().backward()
-    ok &= check("autograd: d/dx x^3 == 3x^2", torch.allclose(x.grad, 3 * x.detach() ** 2))
+    return check("autograd: d/dx x^3 == 3x^2", torch.allclose(x.grad, 3 * x.detach() ** 2))
 
+
+def _check_autograd_mm(device: torch.device) -> bool:
     m, n = 2048, 2048
     xm = torch.randn(m, n, device=device)
     wm = torch.randn(n, n, device=device, requires_grad=True)
     (xm @ wm).pow(2).mean().backward()
-    # d/dW mean((XW)^2) == 2 X^T (XW) / (m n), built here without autograd.
     want = 2 * (xm.T @ (xm @ wm).detach()) / (m * n)
-    ok &= check(
+    return check(
         "autograd: matmul weight grad vs analytic",
         torch.allclose(wm.grad, want, rtol=1e-4, atol=1e-4),
         f"max rel err {((wm.grad - want).abs() / want.abs().clamp_min(1e-6)).max().item():.2e}",
     )
 
-    # Note for anyone adding checks here: the first transposed-weight GEMM on this
-    # ROCm stack (`F.linear`, or `x @ w.T`) costs ~1.6 s of one-time kernel loading,
-    # which alone would swamp a two-second script. These checks stay on `mm`.
-    wm.grad = None
+
+def _check_autograd_autocast(device: torch.device) -> bool:
+    # First transposed-weight GEMM on this ROCm stack (`F.linear`, `x @ w.T`) costs
+    # ~1.6 s of kernel loading; this check stays on `mm`.
+    m, n = 2048, 2048
+    xm = torch.randn(m, n, device=device)
+    wm = torch.randn(n, n, device=device, requires_grad=True)
     with torch.autocast("cuda", dtype=DTYPE):
         mixed = (xm @ wm).pow(2).mean()
     mixed.backward()
-    ok &= check(
+    return check(
         "autograd: bf16 autocast backward is finite",
         torch.isfinite(wm.grad).all().item(),
     )
+
+
+# Order is the subtraction axis: drop a suffix with --max-checks, a prefix with --skip-checks.
+CHECKS = (
+    _check_cpu_elem,
+    _check_scan_ones,
+    _check_scan_rows,
+    _check_bf16_mm,
+    _check_autograd_cube,
+    _check_autograd_mm,
+    _check_autograd_autocast,
+)
+
+
+def checks(device: torch.device, *, skip: int = 0, limit: int | None = None) -> bool:
+    """Cheap correctness samples; loose tolerances on purpose."""
+    selected = CHECKS[skip:]
+    if limit is not None:
+        selected = selected[:limit]
+    log(f"  checks [{skip}:{skip + len(selected)}] of {len(CHECKS)}")
+    ok = True
+    for fn in selected:
+        ok &= fn(device)
     return ok
 
 
@@ -176,6 +278,13 @@ def swept_value(iters: int) -> float:
     for _ in range(iters):
         value = float(torch.tensor(value + SWEEP_STEP, dtype=DTYPE))
     return value
+
+
+def chain_layer(x: torch.Tensor, w: torch.Tensor, linear: bool) -> torch.Tensor:
+    """One layer of the stress chain: `torch.mm` or `F.linear` (x @ w.T)."""
+    if linear:
+        return F.linear(x, w)
+    return torch.mm(x, w)
 
 
 def churn_plan() -> list[int]:
@@ -239,6 +348,7 @@ def stress(
     plan: list[int],
     payload_elems: int,
     small_elems: int,
+    linear: bool = False,
 ):
     """One iteration: alloc/free churn, plateau sweep, scan, a three-layer fp32 chain
     with a bf16 term, the backward through all three layers, and host<->device transfers
@@ -271,9 +381,9 @@ def stress(
         bias = s[:MATMUL_N].to("cpu").mul(RT_BIAS_SCALE).to(device)
         # And a bf16 operand makes the round trip before its own matmul touches it.
         a_moved = a.to("cpu").to(device)
-        h1 = torch.mm(x, w1)  # fp32 chain, layer 1
-        h2 = torch.mm(h1, w2)  # layer 2
-        h3 = torch.mm(h2, w3)  # layer 3
+        h1 = chain_layer(x, w1, linear)  # fp32 chain, layer 1
+        h2 = chain_layer(h1, w2, linear)  # layer 2
+        h3 = chain_layer(h2, w3, linear)  # layer 3
         bfmm = torch.matmul(a_moved, b).float()  # bf16 matmul
         out = h3 + bfmm + bias
         loss_t = out.pow(2).mean()
@@ -308,6 +418,7 @@ def stress(
     last["churn_total"] = churn_total
     last["hop_total"] = hop_total
     last["plan"] = plan
+    last["linear"] = linear
     return times, losses, last
 
 
@@ -350,8 +461,13 @@ def verify(plateau, iters: int, losses: list[float], last: dict) -> bool:
 
     h1, h2, h3 = last["h1"], last["h2"], last["h3"]
     bfmm, out = last["bfmm"], last["out"]
+    linear = bool(last.get("linear"))
     half = MATMUL_N // 2
-    r = err_ratio(h1, x[:, :half] @ w1[:half] + x[:, half:] @ w1[half:])
+    if linear:
+        split = F.linear(x[:, :half], w1[:, :half]) + F.linear(x[:, half:], w1[:, half:])
+    else:
+        split = x[:, :half] @ w1[:half] + x[:, half:] @ w1[half:]
+    r = err_ratio(h1, split)
     ok &= check("chain: layer 1 vs split-K recompute", r <= 1e-4, f"rel-to-scale {r:.2e}")
 
     # Each layer's 32x32 corner against an fp64 cpu reference built from the previous
@@ -361,7 +477,10 @@ def verify(plateau, iters: int, losses: list[float], last: dict) -> bool:
         ("layer 2", h2, h1, w2),
         ("layer 3", h3, h2, w3),
     ):
-        r = err_ratio(got[:n, :c].double().cpu(), lhs[:n].cpu().double() @ rhs[:, :c].cpu().double())
+        lhs64 = lhs[:n].cpu().double()
+        rhs64 = rhs.cpu().double()
+        want = lhs64 @ rhs64[:c].T if linear else lhs64 @ rhs64[:, :c]
+        r = err_ratio(got[:n, :c].double().cpu(), want)
         ok &= check(f"chain: {name} corner vs fp64 cpu", r <= 1e-4, f"rel-to-scale {r:.2e}")
     # The bf16 GEMM reduces its split-K partials in bf16 by default
     # (allow_bf16_reduced_precision_reduction), which costs ~2e-3 of the scale here.
@@ -409,14 +528,26 @@ def verify(plateau, iters: int, losses: list[float], last: dict) -> bool:
 
     # Every layer's gradient from the chain rule, written out here without autograd.
     # w3.grad is the one that made the host round trip.
+    # mm: y = x @ W → dW = x.T @ dy, dx = dy @ W.T
+    # F.linear: y = x @ W.T → dW = dy.T @ x, dx = dy @ W
     grad_out = (2 * out / numel).detach()
-    grad_h2 = grad_out @ w3.detach().T
-    grad_h1 = grad_h2 @ w2.detach().T
-    for name, got, want in (
-        ("w3.grad (after its round trip)", w3.grad, h2.detach().T @ grad_out),
-        ("w2.grad", w2.grad, h1.detach().T @ grad_h2),
-        ("w1.grad (three layers back)", w1.grad, x.T @ grad_h1),
-    ):
+    if linear:
+        grad_h2 = grad_out @ w3.detach()
+        grad_h1 = grad_h2 @ w2.detach()
+        grad_wants = (
+            ("w3.grad (after its round trip)", w3.grad, grad_out.T @ h2.detach()),
+            ("w2.grad", w2.grad, grad_h2.T @ h1.detach()),
+            ("w1.grad (three layers back)", w1.grad, grad_h1.T @ x),
+        )
+    else:
+        grad_h2 = grad_out @ w3.detach().T
+        grad_h1 = grad_h2 @ w2.detach().T
+        grad_wants = (
+            ("w3.grad (after its round trip)", w3.grad, h2.detach().T @ grad_out),
+            ("w2.grad", w2.grad, h1.detach().T @ grad_h2),
+            ("w1.grad (three layers back)", w1.grad, x.T @ grad_h1),
+        )
+    for name, got, want in grad_wants:
         r = err_ratio(got, want)
         ok &= check(f"backward: {name} vs chain rule", r <= 1e-3, f"rel-to-scale {r:.2e}")
 
@@ -473,9 +604,85 @@ def main(argv=None) -> int:
         help=f"multiplies the baseline plateau (1.0 = {PLATEAU_GIB} GiB)",
     )
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--driver-frees",
+        action="store_true",
+        help="stage 2: disable the HIP caching allocator so every torch free is a hipFree",
+    )
+    ap.add_argument(
+        "--linear",
+        action="store_true",
+        help="stage 3: F.linear (transposed-weight GEMM) on the three-layer chain",
+    )
+    ap.add_argument(
+        "--no-stress",
+        action="store_true",
+        help="drop the plateau, stress loop, verify(), and the size/peak checks",
+    )
+    ap.add_argument(
+        "--skip-checks",
+        type=int,
+        default=0,
+        metavar="N",
+        help="drop the first N correctness samples (subtraction prefix)",
+    )
+    ap.add_argument(
+        "--max-checks",
+        type=int,
+        default=None,
+        metavar="N",
+        help="run at most N correctness samples after --skip-checks (default: all)",
+    )
+    ap.add_argument(
+        "--mm-k",
+        type=int,
+        default=512,
+        metavar="N",
+        help="square size of the bf16/fp32 matmul check (default 512)",
+    )
+    ap.add_argument(
+        "--mm-dtype",
+        choices=("bf16", "fp32", "fp16"),
+        default="bf16",
+        help="dtype of the matmul check (default bf16)",
+    )
+    ap.add_argument(
+        "--mm-pack",
+        action="store_true",
+        help="put A, B and C of the mm check in one allocation (one VMM mapping)",
+    )
+    ap.add_argument(
+        "--mm-pack-block",
+        action="store_true",
+        help="like --mm-pack but the allocation is a full 2 MiB granule (no slack)",
+    )
+    ap.add_argument(
+        "--mm-pack-mib",
+        type=int,
+        default=0,
+        metavar="N",
+        help="like --mm-pack but the allocation is N MiB (0 = off)",
+    )
+    ap.add_argument(
+        "--mm-sync",
+        action="store_true",
+        help="torch.cuda.synchronize() after the mm, before the CPU compare",
+    )
     args = ap.parse_args(argv)
     if args.time_scale < 0 or args.mem_scale <= 0:
         ap.error("--time-scale must be >= 0 and --mem-scale must be > 0")
+    if args.skip_checks < 0 or args.skip_checks > len(CHECKS):
+        ap.error(f"--skip-checks must be in 0..{len(CHECKS)}")
+    if args.max_checks is not None and args.max_checks < 0:
+        ap.error("--max-checks must be >= 0")
+    if args.mm_k < 1:
+        ap.error("--mm-k must be >= 1")
+    global MM_K, MM_DTYPE, MM_PACK, MM_PACK_MIB, MM_SYNC
+    MM_K = args.mm_k
+    MM_DTYPE = {"bf16": torch.bfloat16, "fp32": torch.float32, "fp16": torch.float16}[args.mm_dtype]
+    MM_PACK = "block" if args.mm_pack_block else (True if args.mm_pack or args.mm_pack_mib else False)
+    MM_PACK_MIB = args.mm_pack_mib if args.mm_pack_mib > 0 else 0
+    MM_SYNC = args.mm_sync
 
     if not torch.cuda.is_available():
         log("no CUDA/ROCm device available — nothing to run")
@@ -511,10 +718,33 @@ def main(argv=None) -> int:
         f"+ {RT_SMALL} small transfers, and inside the chain a bf16 operand, a sweep slice, "
         f"a 2 x {PLATEAU_HOP_ELEMS / 2**20:.0f} Mi plateau slice and w3.grad each make a host round trip"
     )
+    if args.driver_frees:
+        log(
+            "driver-frees: PYTORCH_NO_HIP_MEMORY_CACHING=1 "
+            f"(env={os.environ.get('PYTORCH_NO_HIP_MEMORY_CACHING', '')!r})"
+        )
+    if args.linear:
+        log("linear: stress chain uses F.linear (x @ W.T)")
+    if args.no_stress:
+        log("no-stress: plateau, loop, verify and size checks are skipped")
+    if args.mm_k != 512 or args.mm_dtype != "bf16" or args.mm_pack:
+        log(
+            f"matmul check: {args.mm_dtype} {args.mm_k}x{args.mm_k}"
+            + (" pack=1" if args.mm_pack else "")
+        )
+    caching_on = torch._C._cuda_cudaCachingAllocator_is_enabled()
+    log(
+        f"caching_allocator enabled={caching_on} "
+        f"PYTORCH_NO_HIP_MEMORY_CACHING={os.environ.get('PYTORCH_NO_HIP_MEMORY_CACHING')!r}"
+    )
 
     ok = True
     log("\ncorrectness samples")
-    ok &= checks(device)
+    ok &= checks(device, skip=args.skip_checks, limit=args.max_checks)
+
+    if args.no_stress:
+        log(f"\n{'PASS' if ok else 'FAIL'}  script wall time {time.perf_counter() - t_start:.2f} s")
+        return 0 if ok else 1
 
     log("\nmemory plateau + stress")
     sizes = plateau_sizes(int(plateau_gib * 2**30))
@@ -538,7 +768,20 @@ def main(argv=None) -> int:
     losses: list[float] = []
     if iters:
         times, losses, last = stress(
-            device, plateau, scan, a, b, x, w1, w2, w3, iters, plan, payload_elems, small_elems
+            device,
+            plateau,
+            scan,
+            a,
+            b,
+            x,
+            w1,
+            w2,
+            w3,
+            iters,
+            plan,
+            payload_elems,
+            small_elems,
+            linear=args.linear,
         )
         log(
             f"  {iters} iterations: total {sum(times):.2f} s, per-iteration "
@@ -552,20 +795,41 @@ def main(argv=None) -> int:
         log("  0 iterations: the loop and its verification are skipped")
 
     peak = torch.cuda.max_memory_allocated()
+    def _nbytes(t: torch.Tensor) -> int:
+        return t.numel() * t.element_size()
+
+    live_bytes = (
+        sum(_nbytes(c) for c in plateau)
+        + _nbytes(scan)
+        + _nbytes(a)
+        + _nbytes(b)
+        + _nbytes(x)
+        + _nbytes(w1)
+        + _nbytes(w2)
+        + _nbytes(w3)
+    )
     log(
         f"\n  peak allocated {peak / 2**30:.2f} GiB "
-        f"(reserved {torch.cuda.max_memory_reserved() / 2**30:.2f} GiB)"
+        f"(reserved {torch.cuda.max_memory_reserved() / 2**30:.2f} GiB); "
+        f"live tensors {live_bytes / 2**30:.2f} GiB"
     )
+    # PYTORCH_NO_HIP_MEMORY_CACHING makes the caching-allocator counters stay at 0
+    # (the tensors are live; verify() already read them). Size the hold from the
+    # tensors themselves, and skip the peak-leak check that has nothing to read.
+    held_for_size = live_bytes if args.driver_frees else held
     ok &= check(
         "memory plateau holds the requested size",
-        plateau_gib * 2**30 <= held <= (plateau_gib + 1.5) * 2**30,
-        f"{held / 2**30:.2f} GiB held for a {plateau_gib:.2f} GiB plateau",
+        plateau_gib * 2**30 <= held_for_size <= (plateau_gib + 1.5) * 2**30,
+        f"{held_for_size / 2**30:.2f} GiB held for a {plateau_gib:.2f} GiB plateau",
     )
-    ok &= check(
-        "peak stays within 3 GiB of the plateau (no per-iteration leak)",
-        peak <= held + 3.0 * 2**30,
-        f"peak {peak / 2**30:.2f} GiB vs held {held / 2**30:.2f} GiB",
-    )
+    if args.driver_frees:
+        log("  peak-leak check skipped (caching-allocator stats are zero with --driver-frees)")
+    else:
+        ok &= check(
+            "peak stays within 3 GiB of the plateau (no per-iteration leak)",
+            peak <= held + 3.0 * 2**30,
+            f"peak {peak / 2**30:.2f} GiB vs held {held / 2**30:.2f} GiB",
+        )
 
     del plateau, scan, a, b, x, w1, w2, w3
     torch.cuda.empty_cache()

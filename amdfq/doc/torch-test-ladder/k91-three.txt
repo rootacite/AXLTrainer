@@ -1,0 +1,4 @@
+k=91 exit=1   [FAIL] matmul: torch.bfloat16 91x91 vs cpu fp64   finite=True max abs err 339.957
+k=91 exit=1   [FAIL] matmul: torch.bfloat16 91x91 vs cpu fp64   finite=True max abs err nan
+k=91 exit=1   [FAIL] matmul: torch.bfloat16 91x91 vs cpu fp64   finite=True max abs err 37.250
+unhooked k=92 exit=0   [ok  ] matmul: torch.bfloat16 92x92 vs cpu fp64   finite=True max abs err 0.095

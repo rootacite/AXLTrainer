@@ -1,0 +1,14 @@
+torch 2.13.0+rocm10.0.0  hip 7.15.26333  AMD Radeon RX 9070 XT  15.92 GiB
+time-scale 1 -> 5 iterations  mem-scale 1 -> 3.50 GiB plateau  matmul=4096x4096  scan=64 Mi elements  dtype=torch.bfloat16
+per iteration: 96 allocations of 765 MiB total (at most 8 live) + 8 hops of 8 MiB + 128 small transfers, and inside the chain a bf16 operand, a sweep slice, a 2 x 2 Mi plateau slice and w3.grad each make a host round trip
+driver-frees: PYTORCH_NO_HIP_MEMORY_CACHING=1 (env='1')
+no-stress: plateau, loop, verify and size checks are skipped
+matmul check: bf16 91x91
+caching_allocator enabled=False PYTORCH_NO_HIP_MEMORY_CACHING='1'
+
+correctness samples
+  checks [3:4] of 7
+  mm va m1=0x7fc86d800000 m2=0x7fc86c200000 out=0x7fc860a00000 nbytes=16562 shape=91x91 torch.bfloat16 layout=split
+  [ok  ] matmul: torch.bfloat16 91x91 vs cpu fp64   finite=True max abs err 0.117
+
+PASS  script wall time 0.25 s
