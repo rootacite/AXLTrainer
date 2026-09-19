@@ -9,7 +9,7 @@
 
 ## D1 分配状态只有一个家
 
-全局只有 `REGISTRY`（`registry.rs`）：`HashMap<Address, HookData>`，**以块首地址为 key**。
+活着的分配只有 `REGISTRY`（`registry.rs`）：`HashMap<Address, HookData>`，**以块首地址为 key**。
 每笔分配对应一条记录，记录自己带齐「free 时把这笔分配撤销回去所需的一切」：
 
 | 字段 | 含义 |
@@ -18,10 +18,10 @@
 | `HookData::size` | 调用方要的字节数，原样保存 |
 | `HookData::origin` | 这笔块归谁：`Runtime`（runtime 自己分的，free 原样转回去）或 `Extent(…)`（本 crate reserve 出来的） |
 | `Extent::block` | 从 `handle` 映射出来的字节数：请求向上取整到分配粒度 |
-| `Extent::total` | 该地址上 reserve 的总字节数：`block` + 一颗 pad granule，`hipMemAddressFree` 用的就是它 |
+| `Extent::total` | 该地址上 reserve 的总字节数：`block` + 一颗 pad granule；一旦 Map 过就不再 `hipMemAddressFree`（D10） |
 | `Extent::handle` | 块自己的 `hipMemGenericAllocationHandle_t`，free 时 `hipMemRelease` |
 | `Extent::pad` | 块后面那颗共享 pad granule 的字节数；映射失败就是 `None` |
-| `Extent::device` | 这块属于哪张卡：teardown 的三次调用都作用于「当前设备」，free 先 `hipSetDevice` 切回去（D11） |
+| `Extent::device` | 这块属于哪张卡：unmap / release 都作用于「当前设备」，free 先 `hipSetDevice` 切回去（D11） |
 
 布局本身（`\|---- block ----\|---- pad（共享 handle）----\|`）和它的来由写在 `peralloc.rs` 头部。
 没有并行的计数器、标志位、名字表——所以也就不会出现 C 版那种「计数和实际块对不上」。
@@ -63,6 +63,7 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 | `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + 路线的 8 个 VMM 入口（`hipMemSetAccess`、`hipMemCreate`/`Map`/`Unmap`/`Release`、`hipMemAddressReserve`/`Free`、`hipMemGetAllocationGranularity`）+ `hipGetDevice`/`hipSetDevice`/`hipGetLastError`/`hipDeviceSynchronize` + 2 个可选的 peer 查询（`hipGetDeviceCount`、`hipDeviceCanAccessPeer`） |
 | `ENTRIES: LazyLock<Option<Entries>>` | `peralloc.rs` | 路线是否就绪：这一组入口全都解析到了才开 |
 | `DEVICES: [OnceLock<Option<Device>>; 32]` | `peralloc.rs` | 每张卡一份状态（D11）：分配粒度、该卡共享的 pad granule、能访问它的 peer 表；建失败也记住，序号超出上界直接转发 |
+| `EVER_MAPPED: LazyLock<RwLock<BTreeMap<usize, usize>>>` | `peralloc.rs` | 曾经 Map 过的 VA 跨度（首地址 → reserve 长度）。free 之后仍在表里；新的 reserve 若与其中任何一段相交，这一笔不 Map，转发给 runtime（D10） |
 | `INSTALL: LazyLock<()>` | `logging.rs` | 装 logger 并设级别 |
 | `LOGGER` | `logging.rs` | 无状态 sink |
 
@@ -95,9 +96,15 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 ## D10 路线只动自己 reserve 出来的地址
 
 `peralloc::release` 只对 `origin` 是 `Extent` 的记录生效；`Runtime` 的记录和 registry 里查不到的指针
-一律原样交给 `hipFree`，我们不做 unmap / release / address_free。反过来，只要记录是 `Extent`，撤销
-就由我们做完，绝不让 runtime 看见那个指针——撤销前先把当前设备切回记录里的那一张（`Extent::device`），
-因为 unmap / release / address_free 都作用于当前设备（D11）。
+一律原样交给 `hipFree`，我们不做 unmap / release。反过来，只要记录是 `Extent`，撤销就由我们做完，
+绝不让 runtime 看见那个指针——撤销前先把当前设备切回记录里的那一张（`Extent::device`），因为 unmap /
+release 都作用于当前设备（D11）。
+
+曾经 Map 过的 VA 在进程生命周期内不复用：free 只 `hipMemUnmap` 和 `hipMemRelease`，不
+`hipMemAddressFree`，那段地址一直占着。`EVER_MAPPED` 记下每一段已经 Map 过的 `[va, va+total)`；
+之后 `hipMemAddressReserve` 若交回与其中任何一段相交的范围，这一笔不 Map（相交的那次 reserve
+也不释放，以免打穿已经占住的跨度）。从未 Map 成功的 reserve（create / map 失败）仍
+`hipMemAddressFree`。
 
 这里曾有一条例外：「fork 继承来的块什么都不做」（旧的 `Outcome::Inherited`），已删。理由不是它多余，
 而是它照顾的场景在 HIP 的界外——`hipInit` 的 note（`hip/hip_runtime_api.h:2223`，本机副本在

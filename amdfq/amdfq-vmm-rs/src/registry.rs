@@ -22,6 +22,10 @@ impl Address {
         self.0 as *mut c_void
     }
 
+    pub(crate) fn as_usize(self) -> usize {
+        self.0
+    }
+
     /* `bytes` further on, to reach the pad granule behind a block. */
     pub(crate) fn offset(self, bytes: usize) -> Self {
         Address(self.0 + bytes)
@@ -47,8 +51,8 @@ pub(crate) struct HookData {
 pub(crate) enum Origin {
     /* The runtime's own memory: hipFree gets the caller's pointer back unchanged. */
     Runtime,
-    /* An extent this crate reserved (peralloc.rs): unmapped, released and given back here, without
-     * the runtime ever seeing the pointer. */
+    /* An extent this crate reserved (peralloc.rs): unmapped and the handle released here, without
+     * the runtime ever seeing the pointer. The VA stays reserved for the process lifetime. */
     Extent(Extent),
 }
 
@@ -57,8 +61,8 @@ pub(crate) enum Origin {
 pub(crate) struct Extent {
     /* Bytes mapped from `handle`: the request rounded up to the allocation granularity. */
     pub(crate) block: usize,
-    /* Bytes reserved at the record's address: `block` plus one pad granule, the value
-     * hipMemAddressFree is given. */
+    /* Bytes reserved at the record's address: `block` plus one pad granule. After the range has
+     * been mapped once, this span is never given back (DESIGN.md D10). */
     pub(crate) total: usize,
     /* The block's allocation handle. */
     pub(crate) handle: Handle,

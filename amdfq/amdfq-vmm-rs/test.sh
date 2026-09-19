@@ -60,9 +60,12 @@ resolvers=$(grep -rl dlsym "$here/src" | sort | tr '\n' ' ')
 [[ $resolvers == "$here/src/real.rs " ]] && report "dlsym only in src/real.rs" ok || report "dlsym only in src/real.rs" FAIL "$resolvers"
 
 if [[ $# -eq 0 ]]; then
-    # One allocation that is released again, so both gates show up in the log.
+    # Two allocations with a free between them, so a reused VA would show up as two served lines
+    # with the same address.
     set -- "${AXL_PYTHON:-python3}" -c \
-        'import torch; x = torch.zeros(8, device="cuda"); torch.cuda.synchronize(); del x; torch.cuda.empty_cache()'
+        'import torch
+x = torch.zeros(8, device="cuda"); torch.cuda.synchronize(); del x; torch.cuda.empty_cache()
+y = torch.zeros(8, device="cuda"); torch.cuda.synchronize(); del y; torch.cuda.empty_cache()'
 fi
 
 echo "== run AMDFQ_LOG_LEVEL=$level LD_PRELOAD=$so" >&2
@@ -105,6 +108,10 @@ if [[ ${lines:-0} -gt 0 ]]; then
     [[ $untracked -eq 0 && $duplicates -eq 0 ]] &&
         report "no duplicate and no untracked" ok ||
         report "no duplicate and no untracked" FAIL "duplicate $duplicates, untracked $untracked"
+    reused=$(grep -oP 'served va=\K0x[0-9a-f]+' "$log" | sort | uniq -d | tr '\n' ' ')
+    [[ -z $reused ]] &&
+        report "served VA never reused" ok ||
+        report "served VA never reused" FAIL "$reused"
 fi
 
 [[ $failed -eq 0 ]] && exit $rc || exit 1

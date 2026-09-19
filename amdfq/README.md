@@ -8,6 +8,7 @@ LD_PRELOAD interposers for HIP allocation, and the lab notes that produced them.
 | [`amdfq-vmm-rs/`](amdfq-vmm-rs/) | **The hook** (Rust peralloc VMM). `bash amdfq/amdfq-vmm-rs/run.sh test` / `train`; self-check `bash amdfq/amdfq-vmm-rs/test.sh`. Design constraints: [`amdfq-vmm-rs/DESIGN.md`](amdfq-vmm-rs/DESIGN.md). |
 | [`amdfq-tail-rs/`](amdfq-tail-rs/) | **The tail hook** (Rust route 2). `hipMalloc` still allocates; one shared page is mapped behind a block the runtime does not already back. `bash amdfq/amdfq-tail-rs/run.sh test` / `train`; self-check `bash amdfq/amdfq-tail-rs/test.sh`. Design constraints: [`amdfq-tail-rs/DESIGN.md`](amdfq-tail-rs/DESIGN.md). |
 | [`amdfq-tail/`](amdfq-tail/) | Original C tail guard (`libamdfq.so`). The measurements in `doc/` were taken with this tree. `bash amdfq/amdfq-tail/hook.sh`. |
+| [`vmm-cc/`](vmm-cc/) | HIP probe: 256 live VMM regions, GPU byte-tag integrity, high-frequency Reserve/Map/Unmap/Release. `bash amdfq/vmm-cc/run.sh`. No hook. |
 | [`doc/`](doc/) | Patch writeups, route comparisons, VMM experiments. |
 
 The C VMM tree (`amdfq-vmm/`) was deleted; peralloc lives in `amdfq-vmm-rs/`.
@@ -25,6 +26,7 @@ Kernel-overread notes that are not about the patch stay under [`conclusions/`](.
 | [`eva-2.md`](eva-2.md) | No hook vs C tail (Release) vs Rust tail-rs (release): ledger VRAM, step time, per-step loss. |
 | [`amdfq-vmm-rs.md`](doc/amdfq-vmm-rs.md) | `hipPointerGetAttributes` / `hipMemGetInfo` under the Rust hook. |
 | [`hook-free-path-nan-vs-oom.md`](doc/hook-free-path-nan-vs-oom.md) | Skipping VMM teardown: NaN vs OOM. |
+| [`vmm-va-never-reuse.md`](doc/vmm-va-never-reuse.md) | Why the VMM hook exists, what it serves, the NaN/HSA/hang it caused, never-reusing VA, and the HIP VMM byte-tag probe (`amdfq/vmm-cc`). |
 | [`pool-budget-vs-steps.md`](doc/pool-budget-vs-steps.md) | `AMDFQ_POOL` budget vs training steps. |
 | [`torch-test-toward-trainer.md`](doc/torch-test-toward-trainer.md) | Ratchet from `test/torch-test.py` toward the trainer crash. |
 | [`k91-three-mappings.md`](doc/k91-three-mappings.md) | Lab record: k=91 GEMM, three mappings, pool cut. |

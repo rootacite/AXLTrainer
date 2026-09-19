@@ -124,3 +124,16 @@ over means taking over the wait that comes with it. Keeping it also keeps later 
 Not recorded: the run and its command line, whether this was `test/torch-test.py` or a training run,
 the step the NaN appears at, which of NaN and hang comes first, whether the hang sits inside HIP or in
 Python waiting on it, and whether a run with no preload at all fails the same way.
+
+## 7. Since this file: skipping only `hipMemAddressFree`
+
+Item 3 of §3 asked which of the four teardown calls, skipped alone, moves the failure. One of
+those four has since been measured on the trainer, on 2026-09-20: `hipMemUnmap` and
+`hipMemRelease` still run, `hipMemAddressFree` does not, and a mapped VA is never mapped again.
+Under that rule the trainer crossed the window where the reuse teardown died in steps 0–4 with
+HSA aperture / memory-fault / illegal-instruction. The other three skips were not isolated.
+
+That is a different observation from §1 (all four skipped → OOM). The record, the logs, and
+what remains inference — including “driver / GPU page tables” — are in
+[`vmm-va-never-reuse.md`](vmm-va-never-reuse.md). The product path is that rule
+(`amdfq-vmm-rs/DESIGN.md` D10).

@@ -14,8 +14,10 @@
  * (the retired C VMM tree (amdfq-vmm/vmm_probe.c)): one handle maps at many addresses at once, 1000 mappings of one pad
  * handle cost the physical 2 MiB once, and a read across the boundary returns rather than faulting.
  *
- * One hipMemAddressReserve per allocation, given back by hipMemAddressFree when the pointer is freed:
- * no arena base, no bump pointer and no free list.
+ * One hipMemAddressReserve per allocation. After that range has been mapped, it is never given
+ * back: a free unmaps and releases the handle, and leaves the VA reserved so the process cannot
+ * map any address in the span again. hipMemAddressFree is only for a reserve that never became a
+ * mapping (create/map failed). No arena base, no bump pointer and no free list.
  *
  * State is per device, not per process: whichever device a gate runs on has its own granularity, its
  * own shared pad granule and its own peer set, built on that device's first use (D11). The device is
@@ -29,9 +31,9 @@
  * reachable.
  *
  * A request is served only when every step of it succeeded, and the steps that can end a request
- * with a warning instead of a failure say so: a block whose device+host grant did not land is given
- * back and forwarded rather than handed out — device-only and ungranted ranges fault the reader — and
- * a pad that could not be mapped costs this allocation its protection.
+ * with a warning instead of a failure say so: a block whose device+host grant did not land is
+ * unmapped (VA kept) and forwarded rather than handed out — device-only and ungranted ranges fault
+ * the reader — and a pad that could not be mapped costs this allocation its protection.
  *
  * A free of a served extent is a teardown: the runtime never sees the pointer (DESIGN.md D10).
  *
@@ -45,10 +47,11 @@ use crate::hip::{
 };
 use crate::real;
 use crate::registry::{Address, Extent, HookData, Origin};
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 
 /* The runtime entry points the route needs, resolved as a set: the route stays off unless all of
  * them are there, rather than failing halfway through a request. */
@@ -116,6 +119,39 @@ static ENTRIES: LazyLock<Option<Entries>> = LazyLock::new(Entries::resolve);
 const MAX_DEVICES: usize = 32;
 
 static DEVICES: [OnceLock<Option<Device>>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
+
+/* Spans that have been mapped at least once: start -> reserved length. A later reserve that
+ * overlaps one of these is not mapped (DESIGN.md D10). Held only across the map operation. */
+static EVER_MAPPED: LazyLock<RwLock<BTreeMap<usize, usize>>> =
+    LazyLock::new(|| RwLock::new(BTreeMap::new()));
+
+/* True if `[address, address + total)` overlaps a span that has already been mapped. */
+fn range_taken(address: Address, total: usize) -> bool {
+    let start = address.as_usize();
+    let end = start.saturating_add(total);
+    let mapped = EVER_MAPPED
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some((&prev, &len)) = mapped.range(..=start).next_back() {
+        if start < prev.saturating_add(len) && prev < end {
+            return true;
+        }
+    }
+    if let Some((&next, _)) = mapped.range(start.saturating_add(1)..).next() {
+        if next < end {
+            return true;
+        }
+    }
+    false
+}
+
+/* Records that this reserved span has been mapped, so it is never mapped again. */
+fn remember_mapped(address: Address, total: usize) {
+    EVER_MAPPED
+        .write()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert(address.as_usize(), total);
+}
 
 /* The state of one device, built on its first use and remembered even when the build failed. */
 fn device_state(entries: &Entries, id: i32) -> Option<&'static Device> {
@@ -255,6 +291,15 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
             return None;
         }
     };
+    /* A span that has already been mapped stays reserved; mapping it again is the reuse this
+     * route refuses. The overlapping reserve is also left in place — freeing it could punch a
+     * hole in the older span. */
+    if range_taken(address, total) {
+        log::warn!(
+            "hipMalloc(size={size}) hipMemAddressReserve(total={total}) -> va={address} overlaps a mapped span, forwarding"
+        );
+        return None;
+    }
 
     let handle = match create(entries, block, dev.id) {
         Ok(handle) => handle,
@@ -283,9 +328,11 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
         );
         return None;
     }
+    /* The range has been mapped: it is abandoned as a VA even if this request is not served. */
+    remember_mapped(address, total);
     /* A block whose grant did not land is not served: with device-only the host read faults, with no
      * grant the device read does, and the runtime never sees this pointer either way (DESIGN.md D10),
-     * so the three steps that built it are undone here. */
+     * so the mapping and handle are undone here and the VA stays reserved. */
     if set_access(entries, dev, address, block, "block") != Access::Granted {
         log::warn!(
             "hipMalloc(size={size}) not served: va={address} block={block} has no device+host grant"
@@ -296,11 +343,6 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
         warn_if_failed("hipMemRelease", address, unsafe {
             (entries.release)(handle.as_raw())
         });
-        warn_if_failed(
-            "hipMemAddressFree",
-            address,
-            free_address(entries, address, total),
-        );
         return None;
     }
 
@@ -399,9 +441,9 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
         clear_error(entries);
     }
 
-    /* Every one of these four can fail, and none of them is allowed to fail quietly: a block that was
-     * not unmapped is a live mapping, an address that was not given back is leaked VA, and the only
-     * thing that says so afterwards is this warning. */
+    /* Unmap and release the handle; the reserved VA is left in place so this span cannot be
+     * mapped again (DESIGN.md D10). A step that fails is a warning — the record is already out
+     * of the registry (D6). */
     let mut incomplete = false;
     let unmapped = unsafe { (entries.unmap)(address.as_ptr(), extent.block) };
     incomplete |= unmapped != HIP_SUCCESS;
@@ -416,10 +458,6 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
     let released = unsafe { (entries.release)(extent.handle.as_raw()) };
     incomplete |= released != HIP_SUCCESS;
     warn_if_failed("hipMemRelease", address, released);
-
-    let freed = free_address(entries, address, extent.total);
-    incomplete |= freed != HIP_SUCCESS;
-    warn_if_failed("hipMemAddressFree", address, freed);
 
     incomplete
 }
