@@ -133,7 +133,6 @@ those four has since been measured on the trainer, on 2026-09-20: `hipMemUnmap` 
 Under that rule the trainer crossed the window where the reuse teardown died in steps 0–4 with
 HSA aperture / memory-fault / illegal-instruction. The other three skips were not isolated.
 
-That is a different observation from §1 (all four skipped → OOM). The record, the logs, and
-what remains inference — including “driver / GPU page tables” — are in
-[`vmm-va-never-reuse.md`](vmm-va-never-reuse.md). The product path is that rule
-(`amdfq-vmm-rs/DESIGN.md` D10).
+That is a different observation from §1 (all four skipped → OOM). The product path is that
+rule (`amdfq-vmm-rs/DESIGN.md` D10). The longer write-up is kept out of this tree pending a
+vendor report.

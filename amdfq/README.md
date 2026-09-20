@@ -26,7 +26,6 @@ Kernel-overread notes that are not about the patch stay under [`conclusions/`](.
 | [`eva-2.md`](eva-2.md) | No hook vs C tail (Release) vs Rust tail-rs (release): ledger VRAM, step time, per-step loss. |
 | [`amdfq-vmm-rs.md`](doc/amdfq-vmm-rs.md) | `hipPointerGetAttributes` / `hipMemGetInfo` under the Rust hook. |
 | [`hook-free-path-nan-vs-oom.md`](doc/hook-free-path-nan-vs-oom.md) | Skipping VMM teardown: NaN vs OOM. |
-| [`vmm-va-never-reuse.md`](doc/vmm-va-never-reuse.md) | Why the VMM hook exists, what it serves, the NaN/HSA/hang it caused, never-reusing VA, and the HIP VMM byte-tag probe (`amdfq/vmm-cc`). |
 | [`pool-budget-vs-steps.md`](doc/pool-budget-vs-steps.md) | `AMDFQ_POOL` budget vs training steps. |
 | [`torch-test-toward-trainer.md`](doc/torch-test-toward-trainer.md) | Ratchet from `test/torch-test.py` toward the trainer crash. |
 | [`k91-three-mappings.md`](doc/k91-three-mappings.md) | Lab record: k=91 GEMM, three mappings, pool cut. |
