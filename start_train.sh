@@ -18,6 +18,26 @@ export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,garbage_collection_threshold:0.8"
 
+# [environment].amdfq: none | tail | vmm. Ranko Utils writes it; this is what actually preloads.
+# Fail here if the chosen .so is missing rather than starting a run without the patch.
+amdfq_line=$(python -u -c "from trainer.amdfq_patch import launch_env_line; print(launch_env_line())")
+IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status <<< "$amdfq_line"
+if [[ $amdfq_choice == tail || $amdfq_choice == vmm ]]; then
+    if [[ -z $amdfq_so || ! -f $amdfq_so ]]; then
+        echo "start_train.sh: $amdfq_choice patch library missing${amdfq_so:+: $amdfq_so}" >&2
+        exit 1
+    fi
+    if [[ -n ${LD_PRELOAD:-} ]]; then
+        export LD_PRELOAD="$amdfq_so:$LD_PRELOAD"
+    else
+        export LD_PRELOAD="$amdfq_so"
+    fi
+    echo "start_train.sh: amdfq=$amdfq_choice LD_PRELOAD=$amdfq_so" >&2
+    if [[ $amdfq_choice == vmm && -n $amdfq_va_status ]]; then
+        export AMDFQ_VA_STATUS="$amdfq_va_status"
+    fi
+fi
+
 # The `exec` below makes this shell's PID and session the trainer's. A GPU fault aborts the trainer
 # from inside HIP (conclusions/bf16-kernel-overrun.md) without running Python's atexit, and its
 # DataLoader forkserver then keeps the workers it forked alive, each holding /dev/kfd and ~0.5 GB.

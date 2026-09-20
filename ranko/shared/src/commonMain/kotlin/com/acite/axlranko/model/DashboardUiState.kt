@@ -187,12 +187,23 @@ data class HardwareCpu(
 )
 
 @Serializable
+data class HardwareVmmVa(
+    val patch: String = "vmm",
+    @SerialName("used_bytes") val usedBytes: Long = 0,
+    @SerialName("total_bytes") val totalBytes: Long = 0,
+    @SerialName("total_source") val totalSource: String = "default",
+    val pid: Int? = null,
+    val spans: Int = 0,
+)
+
+@Serializable
 data class HardwareStatus(
     val available: Boolean = false,
     val error: String? = null,
     val ts: Double = 0.0,
     val gpus: List<HardwareGpu> = emptyList(),
     val cpu: HardwareCpu = HardwareCpu(),
+    @SerialName("vmm_va") val vmmVa: HardwareVmmVa? = null,
 )
 
 data class HardwareHistory(

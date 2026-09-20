@@ -33,6 +33,7 @@ data class TrainingConfigForm(
     val loggingDir: String = "",
     val trainDataDir: String = "",
     val outputName: String = "",
+    val amdfq: String = "none",
 
     val baseModelVersion: String = "",
     val modelspecArchitecture: String = "",
@@ -148,6 +149,10 @@ data class TrainingConfigForm(
             if (max != null && parsed > max) errors[key] = "Max $max"
         }
 
+        if (amdfq.trim().lowercase() !in amdfqOptions) {
+            errors["amdfq"] = "Choose none, tail, or vmm"
+        }
+
         requireText("pretrained_model_name_or_path", pretrainedModelNameOrPath)
         requireText("output_dir", outputDir)
         requireText("logging_dir", loggingDir)
@@ -252,7 +257,8 @@ data class TrainingConfigForm(
                 "output_dir" to q(outputDir.trim()),
                 "logging_dir" to q(loggingDir.trim()),
                 "train_data_dir" to q(trainDataDir.trim()),
-                "output_name" to q(outputName.trim())
+                "output_name" to q(outputName.trim()),
+                "amdfq" to q(amdfq.trim().lowercase().ifBlank { "none" }),
             ),
             "model_spec" to mapOf(
                 "base_model_version" to q(baseModelVersion.trim()),
@@ -369,6 +375,7 @@ data class TrainingConfigForm(
     companion object {
         val baseModelVersionOptions = ModelSpecCatalog.versions
         val mixedPrecisionOptions = listOf("bf16", "fp16", "no")
+        val amdfqOptions = listOf("none", "tail", "vmm")
         val lrSchedulerOptions = listOf(
             "cosine",
             "cosine_with_restarts",
@@ -397,6 +404,7 @@ data class TrainingConfigForm(
                 loggingDir = env.loggingDir,
                 trainDataDir = env.trainDataDir,
                 outputName = env.outputName,
+                amdfq = env.amdfq.trim().lowercase().ifBlank { "none" },
                 baseModelVersion = spec.baseModelVersion,
                 modelspecArchitecture = spec.modelspecArchitecture,
                 modelspecImplementation = spec.modelspecImplementation,

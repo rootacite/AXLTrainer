@@ -13,8 +13,13 @@ enum class ConfigSection(
             "output_dir",
             "logging_dir",
             "train_data_dir",
-            "output_name"
+            "output_name",
         )
+    ),
+    Rocm(
+        title = "ROCm",
+        description = "RDNA 4 allocation patch: none, tail guard, or VMM",
+        fieldKeys = setOf("amdfq"),
     ),
     ModelSpec(
         title = "Model Spec",

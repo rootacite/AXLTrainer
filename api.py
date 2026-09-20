@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
+from trainer.amdfq_patch import resolve_preload
 from trainer.checkpoints import discover_checkpoints, resolve_resume_path
 from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets
 from trainer.family import require_trainable, resolve_family
@@ -251,6 +252,11 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
             resolve_resume_path(resume_raw)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
+
+    try:
+        resolve_preload(root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
 
     cfg = _train_config_dict()
     output_name = str(cfg.get("output_name") or "default")

@@ -34,6 +34,20 @@ class ResumeConfigTest {
         val form = TrainingConfigForm.from(config)
         assertEquals(true, form.gradientCheckpointingUnet)
         assertEquals(true, form.gradientCheckpointingTe)
+        assertEquals("none", config.environment.amdfq)
+        assertEquals("none", form.amdfq)
+    }
+
+    @Test
+    fun patcherInsertsAmdfqIntoLegacyFile() {
+        val source = LEGACY_CONFIG.replace("RESUME_PLACEHOLDER", "")
+        val patched = TomlDocumentPatcher.apply(
+            source,
+            mapOf("environment" to mapOf("amdfq" to TomlDocumentPatcher.quote("vmm"))),
+        )
+        assertTrue(patched.contains("amdfq = \"vmm\""))
+        assertTrue(patched.contains("output_name = \"haruko\""))
+        assertTrue(patched.contains("[bookkeeping]"))
     }
 
     @Test

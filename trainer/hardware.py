@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 NVTOP_TIMEOUT_S = 2.0
+_JOURNAL_TIMEOUT_S = 2.0
 _NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+_VM_SIZE_RE = re.compile(r"vm size is\s+(\d+)\s+GB", re.IGNORECASE)
+# amdgpu's "262144 GB" is 256 TiB (GiB units). Used when journal/dmesg/sysfs do not say.
+DEFAULT_VM_BYTES = 262144 * 1024 * 1024 * 1024
+_vm_total_cache: tuple[int, str] | None = None
 _SKIP_THERMAL_TYPES = frozenset(
     {
         "acpitz",
@@ -38,8 +43,9 @@ _cpu_prev: tuple[int, int] | None = None
 
 
 def reset_cpu_tracker() -> None:
-    global _cpu_prev
+    global _cpu_prev, _vm_total_cache
     _cpu_prev = None
+    _vm_total_cache = None
 
 
 def parse_metric_number(raw: Any) -> float | None:
@@ -77,6 +83,13 @@ def collect_hardware_status(
     proc_meminfo: str | Path = "/proc/meminfo",
     thermal_root: str | Path = "/sys/class/thermal",
     now: Optional[float] = None,
+    amdfq_choice: Optional[str] = None,
+    vmm_total: Optional[tuple[int, str]] = None,
+    trainer_pid: Optional[int] = None,
+    va_status_stem: Optional[str | Path] = None,
+    journal_text: Optional[str] = None,
+    dmesg_text: Optional[str] = None,
+    vm_size_param: Optional[str] = None,
 ) -> dict[str, Any]:
     ts = time.time() if now is None else float(now)
     error: str | None = None
@@ -115,7 +128,192 @@ def collect_hardware_status(
         "ts": ts,
         "gpus": gpus,
         "cpu": cpu,
+        "vmm_va": collect_vmm_va(
+            amdfq_choice=amdfq_choice,
+            vmm_total=vmm_total,
+            trainer_pid=trainer_pid,
+            va_status_stem=va_status_stem,
+            journal_text=journal_text,
+            dmesg_text=dmesg_text,
+            vm_size_param=vm_size_param,
+        ),
     }
+
+
+def parse_vm_size_text(text: str) -> int | None:
+    """Last `vm size is <N> GB` in kernel log text, as bytes (N GiB)."""
+    last: int | None = None
+    for match in _VM_SIZE_RE.finditer(text or ""):
+        last = int(match.group(1))
+    if last is None or last <= 0:
+        return None
+    return last * 1024 * 1024 * 1024
+
+
+def parse_vm_size_param(raw: str) -> int | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        gigabytes = int(text, 10)
+    except ValueError:
+        return None
+    if gigabytes <= 0:
+        return None
+    return gigabytes * 1024 * 1024 * 1024
+
+
+def read_total_va_bytes(
+    *,
+    journal_text: Optional[str] = None,
+    dmesg_text: Optional[str] = None,
+    vm_size_param: Optional[str] = None,
+) -> tuple[int, str]:
+    """Journal first (no sudo), then dmesg, then amdgpu `vm_size` > 0, else 256 TiB."""
+    global _vm_total_cache
+    if journal_text is None and dmesg_text is None and vm_size_param is None and _vm_total_cache is not None:
+        return _vm_total_cache
+
+    if journal_text is None:
+        journal_text = _run_capture(["journalctl", "-k", "-b", "--no-pager"], _JOURNAL_TIMEOUT_S)
+    parsed = parse_vm_size_text(journal_text or "")
+    if parsed is not None:
+        result = (parsed, "journal")
+        if vm_size_param is None and dmesg_text is None:
+            _vm_total_cache = result
+        return result
+
+    if dmesg_text is None:
+        dmesg_text = _run_capture(["dmesg"], _JOURNAL_TIMEOUT_S)
+    parsed = parse_vm_size_text(dmesg_text or "")
+    if parsed is not None:
+        result = (parsed, "dmesg")
+        if vm_size_param is None:
+            _vm_total_cache = result
+        return result
+
+    if vm_size_param is None:
+        try:
+            vm_size_param = Path("/sys/module/amdgpu/parameters/vm_size").read_text(encoding="utf-8")
+        except OSError:
+            vm_size_param = ""
+    parsed = parse_vm_size_param(vm_size_param or "")
+    if parsed is not None:
+        result = (parsed, "sysfs")
+        _vm_total_cache = result
+        return result
+
+    result = (DEFAULT_VM_BYTES, "default")
+    if journal_text is None and dmesg_text is None and vm_size_param is None:
+        _vm_total_cache = result
+    return result
+
+
+def collect_vmm_va(
+    *,
+    amdfq_choice: Optional[str] = None,
+    vmm_total: Optional[tuple[int, str]] = None,
+    trainer_pid: Optional[int] = None,
+    va_status_stem: Optional[str | Path] = None,
+    journal_text: Optional[str] = None,
+    dmesg_text: Optional[str] = None,
+    vm_size_param: Optional[str] = None,
+) -> dict[str, Any] | None:
+    if amdfq_choice is None:
+        try:
+            from trainer.amdfq_patch import read_amdfq
+        except ImportError:
+            from amdfq_patch import read_amdfq
+        try:
+            amdfq_choice = read_amdfq()
+        except ValueError:
+            amdfq_choice = "none"
+    if amdfq_choice != "vmm":
+        return None
+
+    if vmm_total is None:
+        total_bytes, total_source = read_total_va_bytes(
+            journal_text=journal_text,
+            dmesg_text=dmesg_text,
+            vm_size_param=vm_size_param,
+        )
+    else:
+        total_bytes, total_source = vmm_total
+
+    if trainer_pid is None:
+        trainer_pid = _live_trainer_pid()
+
+    used_bytes = 0
+    spans = 0
+    status_pid: int | None = None
+    if trainer_pid is not None:
+        stem = va_status_stem
+        if stem is None:
+            try:
+                from trainer.control import runtime_dir
+            except ImportError:
+                from control import runtime_dir
+            stem = runtime_dir() / "amdfq_vmm_va"
+        path = Path(f"{stem}.{int(trainer_pid)}.json")
+        payload = _read_va_status(path)
+        if payload is not None:
+            used_bytes = int(payload.get("used_bytes") or 0)
+            spans = int(payload.get("spans") or 0)
+            raw_pid = payload.get("pid")
+            status_pid = int(raw_pid) if raw_pid is not None else int(trainer_pid)
+
+    return {
+        "patch": "vmm",
+        "used_bytes": max(0, used_bytes),
+        "total_bytes": int(total_bytes),
+        "total_source": total_source,
+        "pid": status_pid if status_pid is not None else trainer_pid,
+        "spans": spans,
+    }
+
+
+def _run_capture(argv: list[str], timeout_s: float) -> str:
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+    return proc.stdout or ""
+
+
+def _read_va_status(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _live_trainer_pid() -> int | None:
+    try:
+        from trainer.control import is_pid_alive, status_payload
+    except ImportError:
+        from control import is_pid_alive, status_payload
+    payload = status_payload()
+    pid = payload.get("pid")
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid_int > 0 and is_pid_alive(pid_int):
+        return pid_int
+    return None
 
 
 def _run_nvtop_snapshot(nvtop_bin: Optional[str] = None) -> list[Any]:

@@ -23,7 +23,8 @@ data class EnvironmentConfig(
     @SerialName("train_data_dir") val trainDataDir: String,
     @SerialName("output_name") val outputName: String,
     @SerialName("output_dir") val outputDir: String,
-    @SerialName("logging_dir") val loggingDir: String
+    @SerialName("logging_dir") val loggingDir: String,
+    val amdfq: String = "none",
 )
 
 @Serializable

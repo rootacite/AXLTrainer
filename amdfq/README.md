@@ -1,7 +1,7 @@
 # amdfq
 
 LD_PRELOAD interposers for HIP allocation, and the lab notes that produced them.
-`start_train.sh` does not preload any of this; you have to ask.
+`start_train.sh` preloads the release `.so` chosen by `[environment].amdfq` (`none` / `tail` / `vmm`; Ranko Utils → **ROCm**). `amdfq-*-rs/run.sh` still works as a manual override.
 
 | Path | What |
 | --- | --- |

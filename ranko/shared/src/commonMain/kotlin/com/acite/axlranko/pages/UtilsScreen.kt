@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Refresh
@@ -365,6 +366,7 @@ private fun SectionNav(
 
 private fun ConfigSection.icon(): ImageVector = when (this) {
     ConfigSection.Environment -> Icons.Default.Folder
+    ConfigSection.Rocm -> Icons.Default.Memory
     ConfigSection.ModelSpec -> Icons.Default.Info
     ConfigSection.Training -> Icons.Default.Tune
     ConfigSection.Network -> Icons.Default.Hub
@@ -387,6 +389,7 @@ private fun SectionFields(
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         when (uiState.selectedSection) {
             ConfigSection.Environment -> EnvironmentFields(uiState, viewModel)
+            ConfigSection.Rocm -> RocmFields(uiState, viewModel)
             ConfigSection.ModelSpec -> ModelSpecFields(form, errors, viewModel)
             ConfigSection.Training -> TrainingFields(form, errors, viewModel)
             ConfigSection.Network -> NetworkFields(form, errors, viewModel)
@@ -450,6 +453,51 @@ private fun EnvironmentFields(
         onValueChange = { viewModel.updateForm { copy(loggingDir = it) } },
         onBrowse = { viewModel.browseDirectory(form.loggingDir) { copy(loggingDir = it) } }
     )
+}
+
+@Composable
+private fun RocmFields(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel,
+) {
+    val form = uiState.form
+    val colors = rankoColors
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                text = "Allocation patch",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "If you are using an RDNA 4 AMD GPU, strongly prefer the Tail or VMM patch. VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool. VMM does not return GPU virtual address space (workaround for an AMD bug); the Dashboard shows used / total VA while it is selected. Takes effect on the next Train start.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TrainingConfigForm.amdfqOptions.forEach { option ->
+                    val label = when (option) {
+                        "none" -> "None"
+                        "tail" -> "Tail"
+                        "vmm" -> "VMM"
+                        else -> option
+                    }
+                    CapsuleChoice(
+                        text = label,
+                        selected = form.amdfq == option,
+                        onClick = { viewModel.updateForm { copy(amdfq = option) } },
+                    )
+                }
+            }
+            uiState.fieldErrors["amdfq"]?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.qualityRed,
+                )
+            }
+        }
+    }
 }
 
 @Composable

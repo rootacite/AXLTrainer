@@ -5,20 +5,25 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.HardwareCpu
 import com.acite.axlranko.model.HardwareGpu
 import com.acite.axlranko.model.HardwareHistory
+import com.acite.axlranko.model.HardwareVmmVa
 import com.acite.axlranko.ui.components.PorcelainCard
 import com.acite.axlranko.ui.theme.rankoColors
 import kotlin.math.roundToInt
 
 private const val BytesPerGiB = 1024.0 * 1024.0 * 1024.0
+private const val BytesPerTiB = BytesPerGiB * 1024.0
 
 @Composable
 fun HardwareSection(uiState: DashboardUiState) {
@@ -27,19 +32,29 @@ fun HardwareSection(uiState: DashboardUiState) {
     val history = uiState.hardwareHistory
     val stroke = uiState.chartStroke
 
+    val vmmVa = hardware.vmmVa
+
     if (!hardware.available && gpu == null) {
-        PorcelainCard {
-            Text(
-                text = hardware.error?.let { "Hardware monitor unavailable: $it" }
-                    ?: "Waiting for nvtop snapshot…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = rankoColors.text,
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            PorcelainCard {
+                Text(
+                    text = hardware.error?.let { "Hardware monitor unavailable: $it" }
+                        ?: "Waiting for nvtop snapshot…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = rankoColors.text,
+                )
+            }
+            if (vmmVa != null) {
+                VmmVaBar(vmmVa)
+            }
         }
         return
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        if (vmmVa != null) {
+            VmmVaBar(vmmVa)
+        }
         hardware.error?.let { message ->
             Text(
                 text = message,
@@ -50,6 +65,48 @@ fun HardwareSection(uiState: DashboardUiState) {
         HardwareInfoRow(gpu, hardware.cpu)
         HardwareMetricCards(gpu, hardware.cpu)
         HardwareCharts(history, stroke, gpu, hardware.cpu)
+    }
+}
+
+@Composable
+private fun VmmVaBar(vmmVa: HardwareVmmVa) {
+    val colors = rankoColors
+    val used = vmmVa.usedBytes.coerceAtLeast(0L)
+    val total = vmmVa.totalBytes.coerceAtLeast(0L)
+    val fraction = if (total > 0L) {
+        (used.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    PorcelainCard {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = "GPU VA (not returned)",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.text,
+            )
+            Text(
+                text = "${formatVaBytes(used)} / ${formatVaBytes(total)}",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = colors.text,
+            )
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth().height(8.dp),
+                color = colors.accentBlue,
+                trackColor = colors.bgCard.copy(alpha = 0.6f),
+            )
+            Text(
+                text = "VMM keeps reserved VA for the process lifetime.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+        }
     }
 }
 
@@ -190,6 +247,13 @@ private fun HardwareCharts(
             )
         }
     }
+}
+
+private fun formatVaBytes(bytes: Long): String {
+    if (bytes >= BytesPerTiB) {
+        return "${formatGiB(bytes / BytesPerTiB)} TiB"
+    }
+    return "${formatGiB(bytes / BytesPerGiB)} GiB"
 }
 
 private fun formatPct(value: Double?): String {

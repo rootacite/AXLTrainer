@@ -691,6 +691,7 @@ class HardwareStatusTest(unittest.TestCase):
             proc_meminfo="/tmp/axl-missing-meminfo",
             thermal_root="/tmp/axl-missing-thermal",
             now=1710000000.12,
+            amdfq_choice="none",
         )
         self.assertTrue(result["available"])
         self.assertIsNone(result["error"])
@@ -717,6 +718,7 @@ class HardwareStatusTest(unittest.TestCase):
             proc_cpuinfo="/tmp/axl-missing-cpuinfo",
             proc_meminfo="/tmp/axl-missing-meminfo",
             thermal_root="/tmp/axl-missing-thermal",
+            amdfq_choice="none",
         )
         self.assertFalse(forced["available"])
         self.assertIn("nvtop", forced["error"])
@@ -752,6 +754,7 @@ class HardwareStatusTest(unittest.TestCase):
                 proc_cpuinfo="/tmp/axl-missing-cpuinfo",
                 proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root="/tmp/axl-missing-thermal",
+                amdfq_choice="none",
             )
             gpu = result["gpus"][0]
             self.assertEqual(gpu["temp_edge_c"], 72.0)
@@ -784,6 +787,7 @@ class HardwareStatusTest(unittest.TestCase):
                 proc_cpuinfo=cpuinfo,
                 proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root=thermal,
+                amdfq_choice="none",
             )
             self.assertIsNone(first["cpu"]["util_pct"])
             self.assertEqual(first["cpu"]["name"], "Test CPU")
@@ -798,6 +802,7 @@ class HardwareStatusTest(unittest.TestCase):
                 proc_cpuinfo=cpuinfo,
                 proc_meminfo="/tmp/axl-missing-meminfo",
                 thermal_root=thermal,
+                amdfq_choice="none",
             )
             self.assertAlmostEqual(second["cpu"]["util_pct"], 50.0)
 
@@ -814,9 +819,62 @@ class HardwareStatusTest(unittest.TestCase):
                 proc_cpuinfo="/tmp/axl-missing-cpuinfo",
                 proc_meminfo=meminfo,
                 thermal_root=root / "missing-thermal",
+                amdfq_choice="none",
             )
             self.assertEqual(result["cpu"]["mem_total_bytes"], 16384000 * 1024)
             self.assertEqual(result["cpu"]["mem_used_bytes"], 8192000 * 1024)
+
+    def test_vmm_va_absent_when_patch_is_not_vmm(self):
+        result = self.hw.collect_hardware_status(
+            nvtop_runner=lambda: [{"device_name": "GPU", "gpu_util": "1%"}],
+            drm_root="/tmp/axl-missing-drm",
+            proc_stat="/tmp/axl-missing-stat",
+            proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+            proc_meminfo="/tmp/axl-missing-meminfo",
+            thermal_root="/tmp/axl-missing-thermal",
+            amdfq_choice="tail",
+        )
+        self.assertIsNone(result["vmm_va"])
+
+    def test_vmm_va_reads_status_file_for_live_pid(self):
+        with tempfile.TemporaryDirectory() as raw:
+            stem = Path(raw) / "amdfq_vmm_va"
+            pid = os.getpid()
+            (Path(raw) / f"amdfq_vmm_va.{pid}.json").write_text(
+                json.dumps({"pid": pid, "used_bytes": 8388608, "spans": 4, "ts": 1.0}),
+                encoding="utf-8",
+            )
+            journal = "amdgpu 0000:03:00.0: vm size is 262144 GB, 4 levels\n"
+            result = self.hw.collect_hardware_status(
+                nvtop_runner=lambda: [{"device_name": "GPU", "gpu_util": "1%"}],
+                drm_root="/tmp/axl-missing-drm",
+                proc_stat="/tmp/axl-missing-stat",
+                proc_cpuinfo="/tmp/axl-missing-cpuinfo",
+                proc_meminfo="/tmp/axl-missing-meminfo",
+                thermal_root="/tmp/axl-missing-thermal",
+                amdfq_choice="vmm",
+                journal_text=journal,
+                dmesg_text="",
+                vm_size_param="-1",
+                trainer_pid=pid,
+                va_status_stem=stem,
+            )
+            va = result["vmm_va"]
+            self.assertEqual(va["patch"], "vmm")
+            self.assertEqual(va["used_bytes"], 8388608)
+            self.assertEqual(va["spans"], 4)
+            self.assertEqual(va["pid"], pid)
+            self.assertEqual(va["total_source"], "journal")
+            self.assertEqual(va["total_bytes"], 262144 * 1024 * 1024 * 1024)
+
+    def test_parse_vm_size_text_takes_last_match(self):
+        text = (
+            "amdgpu 0000:03:00.0: vm size is 128 GB\n"
+            "amdgpu 0000:03:00.0: vm size is 262144 GB, 4 levels\n"
+        )
+        self.assertEqual(self.hw.parse_vm_size_text(text), 262144 * 1024 * 1024 * 1024)
+        self.assertIsNone(self.hw.parse_vm_size_param("-1"))
+        self.assertEqual(self.hw.parse_vm_size_param("256"), 256 * 1024 * 1024 * 1024)
 
     def test_dispatch_hardware_status_never_raises(self):
         result = api.dispatch("hardware_status", {})

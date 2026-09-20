@@ -23,6 +23,7 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
 | `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. |
 | `output_name` | `"rein"` | Run name; prefix of every artifact path, of the run directory, and of the TensorBoard project. Sanitized to `[A-Za-z0-9._-]` in the run id and checkpoint filename. |
+| `amdfq` | `"none"` | Allocation patch for the next Train start: `"none"`, `"tail"` (`amdfq-tail-rs`), or `"vmm"` (`amdfq-vmm-rs`). Ranko Utils → **ROCm**. `start_train.sh` `LD_PRELOAD`s the matching release `.so`; a missing library fails the start instead of running unpatched. On RDNA 4, Tail or VMM is strongly preferred; VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool, and it does not return GPU VA (Dashboard shows used / total while VMM is selected). |
 
 ### `[model_spec]` — base-model family + checkpoint metadata
 

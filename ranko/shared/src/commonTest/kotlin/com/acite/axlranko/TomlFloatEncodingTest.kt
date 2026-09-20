@@ -104,6 +104,9 @@ class TomlFloatEncodingTest {
         assertEquals("false", opt["gradient_checkpointing_te"])
         assertTrue("gradient_checkpointing_unet" in ConfigSection.Optimization.fieldKeys)
         assertTrue("gradient_checkpointing_te" in ConfigSection.Optimization.fieldKeys)
+        assertEquals("none", base.amdfq)
+        assertEquals("\"vmm\"", base.copy(amdfq = "vmm").toTomlSections()["environment"]!!["amdfq"])
+        assertTrue("amdfq" in ConfigSection.Rocm.fieldKeys)
     }
 }
 

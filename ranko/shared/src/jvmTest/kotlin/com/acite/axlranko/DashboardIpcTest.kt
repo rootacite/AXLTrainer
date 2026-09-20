@@ -238,6 +238,36 @@ class DashboardIpcTest {
         assertEquals(28, parsed.cpu.nLogical)
         assertEquals(41.2, parsed.cpu.utilPct)
         assertEquals(22020096000L, parsed.cpu.memUsedBytes)
+        assertEquals(null, parsed.vmmVa)
+    }
+
+    @Test
+    fun hardwareStatusVmmVaParses() {
+        val raw = """
+            {
+              "available": true,
+              "error": null,
+              "ts": 1.0,
+              "gpus": [],
+              "cpu": { "name": "", "n_logical": 8, "util_pct": null, "temp_c": null },
+              "vmm_va": {
+                "patch": "vmm",
+                "used_bytes": 8388608,
+                "total_bytes": 281474976710656,
+                "total_source": "journal",
+                "pid": 1234,
+                "spans": 4
+              }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(HardwareStatus.serializer(), raw)
+        val va = parsed.vmmVa
+        assertEquals("vmm", va?.patch)
+        assertEquals(8388608L, va?.usedBytes)
+        assertEquals(281474976710656L, va?.totalBytes)
+        assertEquals("journal", va?.totalSource)
+        assertEquals(1234, va?.pid)
+        assertEquals(4, va?.spans)
     }
 
     @Test

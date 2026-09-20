@@ -104,7 +104,8 @@ release 都作用于当前设备（D11）。
 `hipMemAddressFree`，那段地址一直占着。`EVER_MAPPED` 记下每一段已经 Map 过的 `[va, va+total)`；
 之后 `hipMemAddressReserve` 若交回与其中任何一段相交的范围，这一笔不 Map（相交的那次 reserve
 也不释放，以免打穿已经占住的跨度）。从未 Map 成功的 reserve（create / map 失败）仍
-`hipMemAddressFree`。
+`hipMemAddressFree`。hook 把已占用 VA 字节数写到 `<stem>.<pid>.json`（`AMDFQ_VA_STATUS`，缺省则与
+`trainer/control.py` 同一 runtime 目录下的 `amdfq_vmm_va`），Ranko Dashboard 用来画「已用 / 总 VA」。
 
 这里曾有一条例外：「fork 继承来的块什么都不做」（旧的 `Outcome::Inherited`），已删。理由不是它多余，
 而是它照顾的场景在 HIP 的界外——`hipInit` 的 note（`hip/hip_runtime_api.h:2223`，本机副本在

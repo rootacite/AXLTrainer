@@ -48,10 +48,15 @@ use crate::hip::{
 use crate::real;
 use crate::registry::{Address, Extent, HookData, Origin};
 use std::collections::BTreeMap;
-use std::ffi::c_void;
+use std::ffi::{c_void, OsString};
 use std::fmt;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /* The runtime entry points the route needs, resolved as a set: the route stays off unless all of
  * them are there, rather than failing halfway through a request. */
@@ -147,10 +152,105 @@ fn range_taken(address: Address, total: usize) -> bool {
 
 /* Records that this reserved span has been mapped, so it is never mapped again. */
 fn remember_mapped(address: Address, total: usize) {
-    EVER_MAPPED
+    let mut mapped = EVER_MAPPED
         .write()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .insert(address.as_usize(), total);
+        .unwrap_or_else(|poison| poison.into_inner());
+    mapped.insert(address.as_usize(), total);
+    let used = mapped.values().fold(0u64, |acc, &len| acc.saturating_add(len as u64));
+    let spans = mapped.len();
+    drop(mapped);
+    publish_va_status(used, spans);
+}
+
+/* Ranko reads `<stem>.<pid>.json`. Stem is `AMDFQ_VA_STATUS` if set, otherwise the same
+ * runtime dir as trainer/control.py (`AXL_RUNTIME_DIR` / `$XDG_RUNTIME_DIR/axltrainer` /
+ * `/tmp/axltrainer-$UID`) plus `amdfq_vmm_va`. Throttled. */
+const VA_STATUS_INTERVAL_MS: u64 = 1000;
+static VA_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
+static VA_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn process_uid() -> Option<u32> {
+    let text = fs::read_to_string("/proc/self/status").ok()?;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("Uid:") else {
+            continue;
+        };
+        return rest.split_whitespace().next()?.parse().ok();
+    }
+    None
+}
+
+fn va_status_stem() -> Option<OsString> {
+    let explicit = std::env::var_os("AMDFQ_VA_STATUS");
+    if let Some(stem) = explicit {
+        if !stem.is_empty() {
+            return Some(stem);
+        }
+    }
+    let mut dir = if let Some(axl) = std::env::var_os("AXL_RUNTIME_DIR") {
+        if axl.is_empty() {
+            return None;
+        }
+        PathBuf::from(axl)
+    } else if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+        if xdg.is_empty() {
+            return None;
+        }
+        let mut path = PathBuf::from(xdg);
+        path.push("axltrainer");
+        path
+    } else {
+        PathBuf::from(format!("/tmp/axltrainer-{}", process_uid()?))
+    };
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    dir.push("amdfq_vmm_va");
+    Some(dir.into_os_string())
+}
+
+fn publish_va_status(used_bytes: u64, spans: usize) {
+    let Some(stem) = va_status_stem() else {
+        return;
+    };
+    let now = now_ms();
+    let last = VA_LAST_WRITE_MS.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < VA_STATUS_INTERVAL_MS {
+        return;
+    }
+    VA_LAST_WRITE_MS.store(now, Ordering::Relaxed);
+
+    let pid = std::process::id();
+    let mut dest = stem;
+    dest.push(format!(".{pid}.json"));
+    let mut tmp = dest.clone();
+    tmp.push(".tmp");
+    let ts = (now as f64) / 1000.0;
+    let body = format!(
+        "{{\"pid\":{pid},\"used_bytes\":{used_bytes},\"spans\":{spans},\"ts\":{ts:.3}}}\n"
+    );
+    let write_ok = (|| {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, &dest)
+    })();
+    if let Err(err) = write_ok {
+        let _ = fs::remove_file(&tmp);
+        if !VA_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "amdfq va status write {} failed: {err}",
+                PathBuf::from(&dest).display()
+            );
+        }
+    }
 }
 
 /* The state of one device, built on its first use and remembered even when the build failed. */

@@ -7,6 +7,8 @@ logging_dir = "/home/acite/LLM/axltrainer/logs"
 # Alternatives:
 train_data_dir = "/home/acite/LLM/Character/LLLJ/"
 output_name = "lllj"
+# none | tail | vmm — Ranko Utils → ROCm. Takes effect on the next Train start.
+amdfq = "none"
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"

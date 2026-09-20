@@ -293,7 +293,7 @@ Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does n
 
 Params: `{}`
 
-Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet. Also fails synchronously — before any GPU work — when `[training].resume_lora_path` is set but does not resolve to a `.safetensors` file.
+Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet. Also fails synchronously — before any GPU work — when `[training].resume_lora_path` is set but does not resolve to a `.safetensors` file, and when `[environment].amdfq` is `tail` or `vmm` but the corresponding `target/release/libamdfq_*_rs.so` is missing.
 
 ### `train_pause` / `train_resume` / `train_stop`
 
@@ -389,11 +389,21 @@ Result:
     "temp_c": 41.0,
     "mem_total_bytes": 67108864000,
     "mem_used_bytes": 22020096000
+  },
+  "vmm_va": {
+    "patch": "vmm",
+    "used_bytes": 8388608,
+    "total_bytes": 281474976710656,
+    "total_source": "journal",
+    "pid": 12345,
+    "spans": 4
   }
 }
 ```
 
 `available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Ranko keeps the training UI up if hardware collection fails.
+
+`vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook has reserved and will not return (`EVER_MAPPED`), read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
 
 ## Example
 

@@ -203,6 +203,8 @@ class TrainConfig:
     output_name: str = get_val("output_name", "kanae")
     output_dir: str = get_val("output_dir", "/home/acite/LLM/axltrainer/outputs")
     logging_dir: str = get_val("logging_dir", "/home/acite/LLM/axltrainer/logs")
+    # none | tail | vmm: LD_PRELOAD for start_train.sh (Ranko Utils → ROCm).
+    amdfq: str = get_val("amdfq", "none")
 
     # Model / dataset spec
     base_model_version: str = get_val("base_model_version", "sdxl_base_v1-0")
