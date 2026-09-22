@@ -2,7 +2,7 @@
 
 `start_train.sh` `exec`s the trainer, so the launcher's PID and *session* are the trainer's. When the
 trainer dies from a signal — the gfx1201 Tensile over-read aborts it inside the HIP runtime
-(`conclusions/bf16-kernel-overrun.md`) — Python's `atexit` never runs: the DataLoader forkserver
+(see doc/troubleshooting.md) — Python's `atexit` never runs: the DataLoader forkserver
 outlives the trainer, keeps the workers it forked, and each of them holds `/dev/kfd` and ~0.5 GB of
 RSS. Nothing inside the trainer can clean that up, so the launcher starts this module in its own
 session first and `exec`s the trainer second.

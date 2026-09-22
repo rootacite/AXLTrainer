@@ -82,7 +82,7 @@ pub(crate) enum Origin {
 
 struct Registry {
     by_start: HashMap<Address, HookData>,
-    /* end address -> start: the predecessor a free has to re-guard (../doc/amdfq.md §13.1 step 4). */
+    /* end address -> start: the predecessor a free has to re-guard. */
     by_end: HashMap<Address, Address>,
 }
 

@@ -10,37 +10,20 @@
 
 > **Golden rule on AMD ROCm: always use `bucket_reso_steps = 128`.**
 
-Details are documented in [`fixes/fix1.txt`](../fixes/fix1.txt).
+The field report this was diagnosed from is sealed in `archive/` — 涉及负责任披露流程，暂不公开.
 
 ## Known issue: gfx1201 Tensile page fault (not the bucket-step bug)
 
-**Symptom:** `bucket_reso_steps` is already 128, encoding finishes, then at some training step (sometimes the first backward, sometimes step 4, sometimes step 101) the process dies with `-6` / `HSA_STATUS_ERROR_MEMORY_FAULT` and no Python traceback. dmesg: `amdgpu ... [gfxhub] page fault`, `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` or `0x0090113B` (TCP client, `RW: 0x0`). Kernel names look like `Cijk_Ailk_Bjlk_…_MT32x32x128_…_ISA1201` or `…_MT64x128x16_…_ISA1201`.
+**Symptom:** `bucket_reso_steps` is already 128, encoding finishes, then at some training step (sometimes the first backward, sometimes tens of steps in) the process dies with `-6` / `HSA_STATUS_ERROR_MEMORY_FAULT` and no Python traceback. dmesg: `amdgpu ... [gfxhub] page fault`, `GCVM_L2_PROTECTION_FAULT_STATUS:0x0080113B` or `0x0090113B` (TCP client, `RW: 0x0`), and the kernel name ends in `_ISA1201`.
 
-**Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads one page past a torch allocation during LoRA backward (TE LoRA → UNet cross-attn `d(encoder_hidden_states)` is enough). Fatality depends on whether the next page is unmapped (`HSA_SVM_GUARD_PAGES` defaults to 1). The same overrun against a mapped neighbour is silent. Isolated UNet backward with detached embeds, and a self-contained SDXL loop with the same GEMM shapes (`fixes/fix2/crash.py`), do **not** abort — they never sit the operand next to a hole. The read itself is bounded (at most 4 KiB past the operand) and its values are discarded inside the kernel — the tail loop zeroes the registers it loaded — so it moves no numbers; the unmapped page is what turns it into a process kill. Conclusion and evidence chain: [`conclusions/bf16-kernel-overrun.md`](../conclusions/bf16-kernel-overrun.md).
+**Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads one page past a torch allocation during LoRA backward (TE LoRA → UNet cross-attn `d(encoder_hidden_states)` is enough). Fatality depends on whether the next page is unmapped (`HSA_SVM_GUARD_PAGES` defaults to 1); the same over-read against a mapped neighbour is silent. The read is bounded (at most 4 KiB past the operand) and its values are discarded inside the kernel — the tail loop zeroes the registers it loaded — so it moves no numbers; the unmapped page is what turns it into a process kill. Which shapes and configurations lose that particular lottery is a scatter rather than a rule, and the experiment records behind it are sealed in `archive/` — 涉及负责任披露流程，暂不公开.
 
-On this box, unmodified `trainer/main.py` with the packaged kanae set:
-
-| config | result |
-| --- | --- |
-| `network_dim` 12 / 24 / 32, batch 3, seed 1145141920 | **FAULT at step 4**, ~25 s, no sampling |
-| `network_dim` 36, batch 3, seed 1145141920, sample every 30 | **FAULT at step 101** (6/6 after reboot) |
-| same, `save_every_n_steps = 0` | 120/120 ok |
-| same, seed 1145141919 | 120/120 ok |
-| `train_batch_size = 2` + `network_dim = 36` (the original `fixes/fix2.txt` recipe) | **does not** abort here |
-
-The seed does not change tensor *values* (`lora_B` starts at 0). It changes caption-shuffle CLIP chunk count, hence `M = batch × chunks × 77` ∈ {231, 462}, hence *where* a 462↔231 switch lands versus the allocator.
-
-`accelerator.prepare()` of UNet + both TEs after the trainer's VAE-cache/`empty_cache` history is the moment the fatal layout is created. Replacing that call with `.to(device)` lets a 12-step dim-32 run finish; that was measured with copies under `/tmp` and is **not** applied in `trainer/`. Dropping `prepare` also drops Accelerate's autocast wrap, so it is not a numeric no-op.
-
-**Workarounds:** nothing trainer-side fixes this — these kernels read past their operands whatever the configuration, and no stack is immune: the pin (`2.13.0+rocm10.0.0`, HIP `7.15.26333`) is where `fixes/fix2`'s repros die on demand — `network_dim` 12 / 24 / 32 at step 4, `network_dim` 36 at step 101 — and the previous pin, PyTorch `2.12.0+rocm7.14.1` / HIP `7.14.60850`, aborts under `fixes/fix3`'s configuration with the `config.toml` committed there (`network_dim = 48`, `train_batch_size = 2`), every run, in ~15 s. (An earlier rollback to `2.12.0+rocm7.2`, HIP `7.2.53211`, did not help either.) The measures below change the *outcome*, not the over-read, and are ranked by cost:
+**Workarounds:** nothing trainer-side fixes this — these kernels read past their operands whatever the configuration, and no stack has been immune: the current pin and the one before it both die, on different shapes. The measures below change the *outcome*, not the over-read, and are ranked by cost:
 
 - **Treat it as a restart event** — what this repo does by default. The process exits `-6` and leaves `state.json` at `training` with a dead PID; a Reset clears it. Keep the checkpoint cadence tight enough that losing one interval is acceptable, and restart with `[training].resume_lora_path` (weights only — step/epoch counters restart at 0).
-- **`HSA_SVM_GUARD_PAGES=0`** in the training process's environment (the shell that runs `start_train.sh`, or the script itself) removes the page the over-read lands on: measured fault → a full 120/120-step run whose losses and LoRA tensors are byte-identical to a surviving run's, at no recorded cost. The catch is that it hides *every* SVM over-read in that process, so do not leave it on while chasing another memory problem.
-- **`PYTORCH_NO_HIP_MEMORY_CACHING=1`** before importing torch gives every tensor its own `hipMalloc`, so no operand ends at the edge of a cached segment: the same 120/120 result, ~2.2× slower steps.
-
-Each measure's measurements, cost and remaining catch: [`conclusions/bf16-overrun-mitigations.md`](../conclusions/bf16-overrun-mitigations.md). Avoiding the ranks and shapes that have been seen to die is not a rule — the fatal set is a scatter, and `network_dim = 32` (no partial K tile at all) faults anyway.
-
-Repro, tables, integrity diffs: [`fixes/fix2/README.md`](../fixes/fix2/README.md). First write-up: [`fixes/fix2.txt`](../fixes/fix2.txt). Second sighting: [`fixes/fix2-ex.md`](../fixes/fix2-ex.md). Where the read comes from and why no code-level patch exists: [`fixes/hip1/source-trace.md`](../fixes/hip1/source-trace.md), [`fixes/hip1/hip1.md`](../fixes/hip1/hip1.md) §13.
+- **The allocation patch** (`[environment].amdfq = "tail"` or `"vmm"`, see [Configuration](configuration.md)) — the supported answer on RDNA 4. The over-read still happens; the page behind the block is mapped, so it lands in memory that exists instead of the hole that kills the process. This is what the repo runs with by default.
+- **`HSA_SVM_GUARD_PAGES=0`** in the training process's environment (the shell that runs `start_train.sh`, or the script itself) removes the page the over-read lands on: measured fault → run completes. The catch is that it hides *every* SVM over-read in that process, so do not leave it on while chasing another memory problem.
+- **`PYTORCH_NO_HIP_MEMORY_CACHING=1`** before importing torch gives every tensor its own `hipMalloc`, so no operand ends at the edge of a cached segment: also measured to complete, at a large step-time cost.
 
 ## Common failure modes
 

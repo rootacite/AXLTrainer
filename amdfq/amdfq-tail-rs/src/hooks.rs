@@ -2,7 +2,7 @@
  * the tail guard map a page behind the block when the runtime backs nothing there (tail.rs).
  *
  * hipMalloc, hipFree and hipHostMalloc are the allocation path of a training run in this
- * configuration (../doc/amdfq.md §7.1): the HSA calls behind them, and everything the other gates
+ * configuration: the HSA calls behind them, and everything the other gates
  * do, allocate nothing themselves. A second gate joins them by writing one function here plus one
  * resolver in `real.rs`.
  *

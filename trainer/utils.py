@@ -283,7 +283,7 @@ def pick_bucket_size(
 
 def resize_and_center_crop(image: Image.Image, target_w: int, target_h: int) -> Image.Image:
     """Cover-scale + centre crop. Not used by the training path (that is `fit_to_bucket`); kept
-    for the mask-verification harness's independent implementation and `fixes/` probes."""
+    for the mask-verification harness's independent implementation."""
     src_w, src_h = image.size
     scale = max(target_w / src_w, target_h / src_h)
     new_w = max(1, int(round(src_w * scale)))

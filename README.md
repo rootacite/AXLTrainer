@@ -109,7 +109,7 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 | `start_train.sh` | Training launcher; AMD/ROCm env and driver-log filters. |
 | `start_api.sh` | Debug launcher for `api.py` on stdin/stdout. |
 | `API.md` | IPC protocol (framing, methods, request/response shapes). |
-| `fixes/` | Field reports of resolved issues (e.g. ROCm bucket-step alignment). |
+| `archive/` | Sealed research and field-report bundles (gpg-encrypted). 涉及负责任披露流程，暂不公开 |
 | `environment.yml` | Conda manifest — the only Python dependency file in the repo. |
 
 ---

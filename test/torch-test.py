@@ -26,7 +26,7 @@ import sys
 import time
 
 # The HIP caching allocator reads this once at import. Stage 2
-# (amdfq/doc/torch-test-toward-trainer.md): every torch free becomes a hipFree.
+#: every torch free becomes a hipFree.
 if "--driver-frees" in sys.argv:
     os.environ["PYTORCH_NO_HIP_MEMORY_CACHING"] = "1"
 

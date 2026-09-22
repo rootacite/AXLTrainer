@@ -1,6 +1,6 @@
-/* The tail guard (../doc/amdfq.md §13): hipMalloc still allocates, and this route only adds what the
- * pad was buying — a mapped page immediately past the end of an allocation, so a kernel that
- * over-reads its operand (../../conclusions/bf16-kernel-overrun.md) lands in memory that exists.
+/* The tail guard: hipMalloc still allocates, and this route only adds what the pad was buying — a
+ * mapped page immediately past the end of an allocation, so a kernel that over-reads its operand
+ * lands in memory that exists.
  *
  * After hipMalloc returns:
  *

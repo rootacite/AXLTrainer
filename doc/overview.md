@@ -79,7 +79,7 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 │   └── tools/agent.py         # machine-friendly dataset CLI (for scripts/agents)
 ├── tools/                     # dataset utility scripts (see doc/dataset-tools.md)
 ├── tagger/                    # ONNX caption generator (WD-tagger style)
-└── fixes/                     # resolved issue reports (e.g. ROCm bucket step)
+└── archive/                   # sealed research bundles (encrypted); 涉及负责任披露流程，暂不公开
 ```
 
 ## Training data flow

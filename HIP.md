@@ -3,7 +3,11 @@
 How to compile and run HIP code against the ROCm stack in the `axl`
 conda environment (the environment `environment.yml` names). The trainer and
 Ranko never build HIP code — this exists for probes, kernel experiments, and
-anything that needs to touch the driver directly (see `fixes/fix3/`).
+anything that needs to touch the driver directly.
+
+The probe sources and the fault-reproduction routes this document was written against are sealed in
+`archive/` — 涉及负责任披露流程，暂不公开. What stays here is the knowledge: the stack layout, the
+environment fixes, the VMM API notes and the pitfalls.
 
 ## 1. What the stack actually is
 
@@ -46,12 +50,8 @@ not care: torch dlopens the environment's libraries by absolute path at import
 
 ## 2. One-time setup
 
-```bash
-bash tools/hip/setup_rocm_dev.sh --verify     # $CONDA_PREFIX, or pass an env prefix
-bash tools/hip/setup_rocm_dev.sh --check      # report only, write nothing
-```
-
-The script is idempotent and applies four things:
+The setup helper that applied this is sealed with the rest of the probes (see the note at the top);
+the four changes it made, spelled out so they can be redone by hand:
 
 | # | Change | Why |
 | --- | --- | --- |
@@ -66,8 +66,8 @@ Nothing outside the conda environment is touched; `/opt/rocm` is left as it is.
 
 ```bash
 conda activate axl
-hipcc -O3 tools/hip/hip_smoke.hip -o /tmp/hip_smoke
-/tmp/hip_smoke
+hipcc -O3 my.hip -o /tmp/my
+/tmp/my
 ```
 
 `hip_smoke.hip` prints the device, the HIP version the headers were compiled
@@ -99,7 +99,7 @@ Useful variants:
 hipcc --offload-arch=gfx1201 -O3 ... -o /tmp/hip_smoke
 
 # what the toolchain actually resolved: clang, include dir, device bitcode
-hipcc -v -x hip -c tools/hip/hip_smoke.hip -o /dev/null 2>&1 |
+hipcc -v -x hip -c my.hip -o /dev/null 2>&1 |
     grep -E 'idirafter|builtin-bitcode|resource-dir'
 
 # which HIP runtime a binary will load, without running it
@@ -153,10 +153,10 @@ a second process map the same physical memory. (`hipMemMapArrayAsync` is documen
 not implemented.)
 
 ```bash
-hipcc -O3 tools/hip/hip_vmm_probe.hip -o /tmp/hip_vmm_probe && /tmp/hip_vmm_probe
+hipcc -O3 my_vmm_probe.hip -o /tmp/my_vmm_probe && /tmp/my_vmm_probe
 ```
 
-`hip_vmm_probe.hip` runs the full device cycle (granularity → create → reserve → map →
+That probe ran the full device cycle (granularity → create → reserve → map →
 set access → kernel writes the mapping → unmap/free/release), a POSIX-fd export/import
 round trip, and a host-location cycle. On gfx1201 under the 7.14.1 stack it printed
 `PASS` (the probe has not been re-run on 10.0.0):
@@ -228,9 +228,9 @@ switches it on; the shipped `start_train.sh` sets none of them to
   clang directly. Its `HIP_PATH`/`ROCM_PATH` lines report its own resolution, not
   necessarily what a compile used; `hipcc -v` is the authority.
 - **The `-x hip` warnings about ignored `hipError_t` are `[[nodiscard]]` noise**;
-  wrap calls in a check macro (`hip_smoke.hip` does).
+  wrap calls in a check macro.
 
-## 7. Why this cannot fix the `fixes/fix3` abort
+## 7. Why a local toolchain change cannot fix that abort
 
 The kernel that faults is a **precompiled Tensile solution**, not something the
 local toolchain generates: `_rocm_sdk_libraries` ships no plaintext kernel names
@@ -256,9 +256,5 @@ selection* can. Handles worth knowing:
 
 | Path | Role |
 | --- | --- |
-| `tools/hip/setup_rocm_dev.sh` | Applies the four environment fixes; `--check`, `--verify` |
-| `tools/hip/hip_smoke.hip` | Smoke test: device, versions, one kernel (`PASS`/`FAIL`) |
-| `tools/hip/hip_vmm_probe.hip` | VMM probe: device cycle, POSIX-fd export/import, host location (§5) |
-| `fixes/hip1/repro_standalone.sh` | Route 1 to the `fixes/fix3` fault: extract, compile, run; any activated stack works and the script prints which one it resolved (`fixes/hip1/hip1.md` §12.9) |
-| `fixes/hip1/repro_rocblas.sh` | Route 2: the same call through the stack's own rocBLAS → hipBLASLt instead of a hand-loaded object (`fixes/hip1/hip1.md` §12.10) |
+| sealed in `archive/` | The setup helper, the smoke test, the VMM probe and the two fault-reproduction routes (§7) — 涉及负责任披露流程，暂不公开 |
 | `HIP.md` | This document |

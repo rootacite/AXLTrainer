@@ -1275,7 +1275,7 @@ def reap_run_processes(marker: str) -> list[int]:
 
 
 def gpu_memory_fault(log_path: Path) -> bool:
-    """True when the child died from the ROCm gfx1201 Tensile OOB abort (fixes/fix2.txt)."""
+    """True when the child died from the ROCm gfx1201 Tensile OOB abort."""
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -1316,7 +1316,7 @@ def child_env(runtime_dir: Path, *, no_hip_memory_caching: bool = False) -> dict
         "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128,garbage_collection_threshold:0.8",
     })
     if no_hip_memory_caching:
-        # fixes/fix2.txt: every allocation via hipMalloc avoids the unpacked-page overrun that the
+        # Every allocation via hipMalloc avoids the unpacked-page overrun that the
         # gfx1201 Tensile kernels trigger, at a large speed cost.
         env["PYTORCH_NO_HIP_MEMORY_CACHING"] = "1"
     return env
@@ -1360,7 +1360,7 @@ def launch_run(*, name: str, data_dir: Path, seed: int, steps: int, work: Path, 
     attempt = 1
     while result.gpu_fault and attempt <= retries:
         print(f"      [{tier}] {name}: (attempt {attempt}) died from the known gfx1201 Tensile GPU "
-              f"memory fault (fixes/fix2.txt); retrying", flush=True)
+              f"memory fault (gfx1201 Tensile overrun); retrying", flush=True)
         attempt += 1
         # The fault is shape/allocation driven and reproduces, so do not burn a second identical
         # attempt: switch to the documented (much slower) dodge right away.
@@ -2157,7 +2157,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prune-step-checkpoints", action="store_true",
                         help="delete step checkpoints after each tier (keeps finals); saves ~0.5 GB per run")
     parser.add_argument("--no-hip-memory-caching", action="store_true",
-                        help="run children with PYTORCH_NO_HIP_MEMORY_CACHING=1 (fixes/fix2.txt dodge, slow)")
+                        help="run children with PYTORCH_NO_HIP_MEMORY_CACHING=1 (Tensile-overrun dodge, slow)")
     return parser.parse_args(argv)
 
 

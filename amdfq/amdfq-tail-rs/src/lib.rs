@@ -1,6 +1,6 @@
 //! `amdfq-tail-rs` — the LD_PRELOAD interposer for the HIP allocation gates, tail-guard route.
 //!
-//! `hipMalloc` is forwarded unchanged, then the tail guard (`tail.rs`, ../doc/amdfq.md §13) maps one
+//! `hipMalloc` is forwarded unchanged, then the tail guard (`tail.rs`) maps one
 //! shared page at the first granule-aligned address at or after the block's end when the runtime
 //! backs nothing there, so a bf16 kernel that over-reads its operand lands in memory that exists.
 //! The page is one mapping of a handle created once per device; `hipFree` unmaps it and re-guards

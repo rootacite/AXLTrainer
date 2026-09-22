@@ -7,7 +7,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::mem::{size_of, transmute_copy};
 use std::sync::LazyLock;
 
-/* The three allocation gates (../doc/amdfq.md §7.1). */
+/* The three allocation gates. */
 pub(crate) type HipMallocFn = unsafe extern "C" fn(ptr: *mut *mut c_void, size: usize) -> HipError;
 pub(crate) type HipFreeFn = unsafe extern "C" fn(ptr: *mut c_void) -> HipError;
 pub(crate) type HipHostMallocFn =
@@ -54,8 +54,8 @@ pub(crate) type HipMemSetAccessFn = unsafe extern "C" fn(
     desc: *const AccessDesc,
     count: usize,
 ) -> HipError;
-/* hipMemGetAddressRange: whether anything already backs the 16 bytes past a block (../doc/amdfq.md
- * §13.1). Asking about an address nothing backs is the question, and it sets the per-thread sticky
+/* hipMemGetAddressRange: whether anything already backs the 16 bytes past a block. Asking about an
+ * address nothing backs is the question, and it sets the per-thread sticky
  * error, so hipGetLastError consumes that state after a miss. */
 pub(crate) type HipMemGetAddressRangeFn =
     unsafe extern "C" fn(pbase: *mut *mut c_void, psize: *mut usize, ptr: *mut c_void) -> HipError;

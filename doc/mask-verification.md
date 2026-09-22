@@ -9,6 +9,10 @@ to start while a training run looks live, which is correct, because the child ru
 card. The geometry under test is fit+pad (no cropping): every sample is fitted whole into its
 area-budgeted bucket and the letterbox pad carries loss weight 0.
 
+Some of the earlier measurements this document compares against were taken inside the sealed
+gfx1201 record (`archive/`, and the `fixes/fix2` grid it came from) — 涉及负责任披露流程，暂不公开.
+Where a claim rests on them it says so.
+
 ## 1. What each tier asserts
 
 | Tier | Cost | What it proves |
@@ -72,7 +76,7 @@ Two results are deliberately **not** resolved, and should not be read as support
   (`~0.071`–`0.080` relative L2) is *smaller* than the duplicate run's own difference
   (`0.083`–`0.111`). The floor run is not bitwise identical here (`duplicate_is_identical=false`,
   1464 of 2208 tensors changed at bf16 scale), which is the same "first run of a session is not
-  comparable to later ones" effect documented in `fixes/fix2/` — MIOpen picks its algorithms per
+  comparable to later ones" effect the sealed fix2 record documents — MIOpen picks its algorithms per
   process, and the first masked run of the session ran with a cold cache. Resolving the weight
   question needs a warm-up run before the measured ones; it does not need a different mask
   implementation.
@@ -198,7 +202,7 @@ Two caveats when using it as a reference:
 - **Its numbers are one stack away from everything measured since.** The reference run used the stack
   then pinned (`axl_rocm_7_14`, torch `2.12.0+rocm7.14.1`, HIP `7.14.60850`); the harness children now
   follow `environment.yml` (`axl`, torch `2.13.0+rocm10.0.0`), which is also the stack the
-  `fixes/fix2/` tables were measured on — different kernels, different allocator behaviour. The
+  sealed measures behind this document were taken on — different kernels, different allocator behaviour. The
   *plumbing* claims above do not depend on the stack; the loss levels do.
 
 ## 6. Interpretation rules for the results
@@ -209,7 +213,7 @@ Two caveats when using it as a reference:
   `[bucketing]` settings and the same dataset; a pre-fit+pad run's loss curve is a different quantity.
 - **A retried child is still comparable.** If a run was relaunched under
   `PYTORCH_NO_HIP_MEMORY_CACHING=1`, its allocator layout differs from its untried sibling's, but the
-  numbers do not: `fixes/fix2/`'s integrity pass showed the caching allocator and `no-hip` produce
+  numbers do not: the sealed integrity pass showed the caching allocator and `no-hip` produce
   byte-identical losses (120/120 steps) and byte-identical LoRA tensors (all 2208 at every
   checkpoint) once the latent cache is shared. That is also why `train` reports its retry count.
 - **Pin the latents if you want to diff runs by hand.** The VAE encode is not bitwise reproducible
@@ -221,7 +225,7 @@ Two caveats when using it as a reference:
 - **The first run of a session is not comparable to later ones** (cold MIOpen cache selects different
   conv algorithms). This is what made the first version of the fix2 integrity grid meaningless.
 - **`sample_seed` is inherited, and the live config has it at `0`.** That means the sample pass draws
-  from the global RNG, and per the integrity pass in `fixes/fix2/` a sampling run and a non-sampling
+  from the global RNG, and per that same sealed integrity pass a sampling run and a non-sampling
   run diverge from step 31 at ~4e-6 relative. Every child run samples on the same cadence, so the
   masked/control/scale comparison is still like-for-like, but nothing in this verification should be
   read as "sampling is a no-op". Set `sample_seed` to a fixed non-zero value in `config.toml`

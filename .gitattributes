@@ -1,2 +1,5 @@
 *.pt filter=lfs diff=lfs merge=lfs -text
 *.pth filter=lfs diff=lfs merge=lfs -text
+
+# Sealed research bundles: opaque ciphertext, never text, never diffed (archive/README.md).
+archive/*.tar.zst.gpg -text -diff binary

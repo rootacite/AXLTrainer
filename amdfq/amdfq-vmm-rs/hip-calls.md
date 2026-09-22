@@ -3,7 +3,7 @@
 **这份文件只记录 2026-09-19 这一轮的两个问题**：torch 会不会对 `hipMalloc`（被 peralloc 路线偷换）
 分配的指针调用 `hipPointerGetAttributes`、路线的替换是否让这个 API 的答案异常；以及
 `hipMemGetInfo` 能不能统计到路线分配的内存。路线的设计、布局与不变量在
-[`amdfq/amdfq-vmm-rs/DESIGN.md`](../amdfq-vmm-rs/DESIGN.md)；更早的路线差异记录（DIFF.md）已移除，这里不重述。
+路线与不变量在 [`DESIGN.md`](DESIGN.md)；更早的路线差异记录（DIFF.md）已移除，这里不重述。
 
 结论先写：**两个 API 对路线服务的块都给出与真 `hipMalloc` 相同的答案**（两处超出请求范围的差异
 torch 一处都不读），**路线内存被 `hipMemGetInfo` 如实计入**，系统性代价只有每进程 2 MiB 的共享 pad。
@@ -46,7 +46,7 @@ torch 一处都不读），**路线内存被 `hipMemGetInfo` 如实计入**，�
 
 | 运行 | 属性查询 | 全来自 | 返回值 | 落在路线服务的 extent 内 |
 | --- | --- | --- | --- | --- |
-| 基线训练（10 步，20 worker；exit 134，step 10 `HSA_STATUS_ERROR_MEMORY_FAULT`，已知的 Tensile 越读缺陷） | 102 次 | `CUDAHooks::isPinnedPtr`（链条 `at::native::pin_memory` → `at::_ops::pin_memory::call` → `at::_ops::is_pinned::call`） | 102 次全是 `type=0 Unregistered, dev=-2`，两个交替的**主机**地址（DataLoader 共享内存） | 不适用（没有 hook） |
+| 基线训练（10 步，20 worker；exit 134，step 10 `HSA_STATUS_ERROR_MEMORY_FAULT`，已知的 Tensile 越读缺陷，其记录已封存到 `../../archive/`） | 102 次 | `CUDAHooks::isPinnedPtr`（链条 `at::native::pin_memory` → `at::_ops::pin_memory::call` → `at::_ops::is_pinned::call`） | 102 次全是 `type=0 Unregistered, dev=-2`，两个交替的**主机**地址（DataLoader 共享内存） | 不适用（没有 hook） |
 | 带 hook 训练（step 0 结束前死于 Tensile `Cijk_Alik_Bljk_BBS_…_MT64x64x64` 的 `ILLEGAL_INSTRUCTION`；742 served / 0 forwarded / 0 WARN） | 82 次 | 同上 | 82 次全是 `type=0 Unregistered, dev=-2` | **0 / 82**（对着当次 742 个 extent 做包含判断） |
 
 带 hook 那次观察到的两个交替地址都不是路线服务的：一个落在 served VA 跨度之外，另一个落在跨度内但

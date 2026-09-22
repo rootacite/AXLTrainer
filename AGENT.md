@@ -16,6 +16,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 - Stop at the end of the requested step. Do not run ahead into the step after it.
 - Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
 - Terminology: **"the hook"** means `amdfq/amdfq-vmm-rs/` in its peralloc mode — the Rust `LD_PRELOAD` interposer that serves `hipMalloc` from address ranges it reserves itself (`amdfq/amdfq-vmm-rs/DESIGN.md`). Say **"the tail hook"** (or `amdfq/amdfq-tail-rs/`) when the tail-guard implementation is meant (`amdfq/amdfq-tail-rs/DESIGN.md`). The original C tail tree is `amdfq/amdfq-tail/`. The older C VMM tree (`amdfq-vmm/`) was deleted.
+- Two of the hook's behaviours are **optional workarounds for driver bugs the 2026-09 kernel fixed**, and both default to off: `amdfq_va_never_reuse` (a freed range keeps its VA forever) and `amdfq_vram_reserve_gib` (the hook leaves that many GiB of the amdgpu free counter untouched). They travel config.toml → `trainer/amdfq_patch.py` → `AMDFQ_VA_NEVER_REUSE` / `AMDFQ_VRAM_RESERVE` → the hook, and the Dashboard's VA bar changes meaning with the first one. Changing either default is a behaviour change: say why, and touch the config row, the Python default, the hook default and the Dashboard text together.
 - **A hypothesis may come from intuition; a conclusion needs corroboration — no conclusion from a single witness.** Reading source (quote it as `file:line`) earns a hypothesis worth testing, not a verdict: say which of the two you are handing over, and label the inferred part as inference. When the question is "does this actually break", the experiment comes first; reading the code and agreeing with yourself is still one witness. (2026-09-18: the CLR reverse-pointer hazard written up as F3 in `amdfq/amdfq-vmm-rs/` (DIFF.md, since removed) was read out as a likely cause of the hook's NaN/hang. A purpose-built HIP probe that rebuilds the same shape and churns it — 200 rounds of map/unmap over the shared pad, all three access states, free-and-reclaim — did not reproduce it, and closed the alignment worry read out of the same source. Two hypotheses died to one experiment; both had looked convincing on paper.)
 
 ---
@@ -31,7 +32,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 | Wire protocol (methods, shapes) | `API.md` |
 | Dataset CLIs | `doc/dataset-tools.md` |
 | Mask verification status + restart runbook | `doc/mask-verification.md` |
-| ROCm pitfalls | `doc/troubleshooting.md`, `fixes/fix1.txt`, `fixes/fix2/` |
+| ROCm pitfalls | `doc/troubleshooting.md` (the field reports behind it are sealed in `archive/`: 涉及负责任披露流程，暂不公开) |
 
 Verify after a change (pick the layer you touched):
 
@@ -71,7 +72,7 @@ Hard rules:
 
 - Training is **detached**. `api.py` `train_start` uses `start_new_session=True` (`setsid`). Closing Ranko must not kill the run.
 - Ranko **never** talks to the GPU. It only spawns `api.py` and renders responses.
-- The trainer is `exec`'d by `start_train.sh`, so that shell's PID and **session** become the trainer's. A GPU fault aborts the trainer from inside HIP (`conclusions/bf16-kernel-overrun.md`) without running Python's `atexit`; its DataLoader forkserver then keeps the workers it forked alive, reparented to init, each holding `/dev/kfd` and ~0.5 GB. `start_train.sh` therefore starts `trainer/orphans.py` first, detached, to reap that session once the trainer is gone — keep it, and keep it unable to touch a session that is not the trainer's.
+- The trainer is `exec`'d by `start_train.sh`, so that shell's PID and **session** become the trainer's. A GPU fault aborts the trainer from inside HIP (see `doc/troubleshooting.md`) without running Python's `atexit`; its DataLoader forkserver then keeps the workers it forked alive, reparented to init, each holding `/dev/kfd` and ~0.5 GB. `start_train.sh` therefore starts `trainer/orphans.py` first, detached, to reap that session once the trainer is gone — keep it, and keep it unable to touch a session that is not the trainer's.
 - `api.py` stdout is **NDJSON only**. Logs / tracebacks go to stderr (`run_ipc_loop` redirects `sys.stdout` to stderr after keeping the real stdout for replies).
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (directory that contains `api.py` and `trainer/`).
 - Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited.
@@ -129,7 +130,7 @@ Early-stop semantics (keep these):
 **Single source of truth:** `config.toml` at the **repo root**. `trainer/main.py` takes **no CLI args**.
 
 `_load_toml_config()` resolves that path **relative to the working directory**, which is what lets
-`verify_mask_pipeline.py` / `fixes/fix2/repro_real.py` run an unmodified `trainer/main.py` against a
+`verify_mask_pipeline.py` runs an unmodified `trainer/main.py` against a
 throwaway mirror of the repo. Every entry point therefore runs with cwd = repo root.
 
 Load path:
@@ -158,7 +159,7 @@ must stay under `[validation]` (a top-level `[[samples]]` would be dropped, beca
 - `resolve_sample_sets(cfg)` (`trainer/config.py`, torch-free, accepts a `TrainConfig` *or* the
   flattened mapping) resolves each entry; a key an entry omits falls back to the flat `sample_*`
   scalar of the same shape, and **no entries at all yield one set built from those scalars** — the
-  single-prompt behaviour, which is why `validation.sample_*` overrides in `fixes/` and
+  single-prompt behaviour, which is why the `validation.sample_*` overrides in
   `test/verify_mask_pipeline.py` still work. Ranges and the per-entry error message live there.
 - Seed rule: inside a set the nth image uses `seed + n` (`0` = random per image). Two sets sharing a
   seed start from the same noise; that is the point (only the prompt differs).
@@ -182,7 +183,7 @@ edge that way. Shipped defaults are therefore `min_bucket_reso = 384`, `max_buck
 
 `fit_geometry(src_w, src_h, bucket_w, bucket_h)` then places the whole image inside the bucket
 (contain, centred) and `fit_to_bucket` renders it with a `FIT_PAD_VALUE` (127) fill. There is **no
-crop variant in the training path** — `resize_and_center_crop` survives only for `fixes/` and the
+crop variant in the training path** — `resize_and_center_crop` survives only for the
 verification harness's independent implementation. The pad is loss weight exactly 0, produced by
 `load_loss_mask`, which now always returns a full-bucket mask (content resized, then pasted onto a
 zero canvas — never pre-pad-then-resample, LANCZOS ringing leaks weight into the pad rows).
@@ -279,7 +280,7 @@ Cleanup treats every child dir of the run dir whose name **starts with** `output
 
 ### ROCm (non-negotiable)
 
-`bucket_reso_steps` must keep VAE latents (spatial / 8) **divisible by 16**. Default **128**. `64` causes random GPU page faults on AMD (see `fixes/fix1.txt`). Do not “optimize” this down. `start_train.sh` also sets `PYTORCH_CUDA_ALLOC_CONF` and MIOpen log/cache env; keep those if you touch the launcher.
+`bucket_reso_steps` must keep VAE latents (spatial / 8) **divisible by 16**. Default **128**. `64` causes random GPU page faults on AMD (the field report is sealed: 涉及负责任披露流程，暂不公开). Do not “optimize” this down. `start_train.sh` also sets `PYTORCH_CUDA_ALLOC_CONF` and MIOpen log/cache env; keep those if you touch the launcher.
 
 ---
 
@@ -461,7 +462,7 @@ Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped whe
 | `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
 | `MIOPEN_*` / `AMD_LOG_LEVEL` | `start_train.sh` | Quiet ROCm, pin cache |
 
-Python: 3.14, PyTorch `2.13.0+rocm10.0.0` (HIP `7.15.26333`) per `environment.yml` (CUDA torch also works if you swap the wheel). That is also the stack on which the gfx1201 Tensile page fault reproduces most readily — the `fixes/fix2` repros die on demand on it; the pin that preceded it, `2.12.0+rocm7.14.1`, faults as well under other configurations (`fixes/fix3`) — the pin changes which shapes and allocator layouts lose the guard-page lottery, not whether the kernels over-read (`conclusions/bf16-overrun-mitigations.md`). Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
+Python: 3.14, PyTorch `2.13.0+rocm10.0.0` (HIP `7.15.26333`) per `environment.yml` (CUDA torch also works if you swap the wheel). That is also the stack on which the gfx1201 Tensile page fault reproduces most readily, and the pin that preceded it, `2.12.0+rocm7.14.1`, faults as well under other configurations: the pin changes which shapes and allocator layouts lose the guard-page lottery, not whether the kernels over-read (`doc/troubleshooting.md`). The measurements behind that sentence are sealed in `archive/` — 涉及负责任披露流程，暂不公开. Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
 
 Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD ROCm**, not NVIDIA.
 

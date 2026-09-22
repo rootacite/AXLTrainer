@@ -1,9 +1,0 @@
-  [FAIL] matmul: bf16 vs cpu fp64   max abs err 2377.967
-  [FAIL] autograd: d/dx x^3 == 3x^2
-  [FAIL] autograd: bf16 autocast backward is finite
-  [FAIL] transfers: the round-tripped bias == 2 x the scan slice
-  [FAIL] transfers: the round-tripped plateau slice holds the swept value
-  [FAIL] transfers: the sums computed on that slice match the sweep   3.11751e+06 vs 5.36576e+06
-  [FAIL] backward: w2.grad vs chain rule   rel-to-scale 3.82e+04
-  [FAIL] backward: w1.grad (three layers back) vs chain rule   rel-to-scale 1.99e+04
-  [FAIL] churn: 480 blocks summed to their fill value   nan vs 2.50675e+08

@@ -3,9 +3,9 @@
 这份文件是 `amdfq/amdfq-tail-rs/` 的设计约束。怎么编、怎么 preload、日志怎么读见 `src/lib.rs` 的 crate
 文档和 `test.sh`；这里只讲「结构必须长什么样」。
 
-它存在的理由：C 版尾守卫（`amdfq/amdfq-tail/`）机制成立、设计不合格——两张开地址表、十几个计数器、一把
+它存在的理由：C 版尾守卫（已封存到 `../archive/`）机制成立、设计不合格——两张开地址表、十几个计数器、一把
 跨着真 runtime 调用的全局锁、constructor/destructor 退出摘要、自己的日志文件。路线本身
-（`../doc/amdfq.md` §13）按下面这套形状搬进 Rust，后面再加东西也不会再长出同样的形状。
+按下面这套形状搬进 Rust，后面再加东西也不会再长出同样的形状。
 
 约束编号与 `amdfq/amdfq-vmm-rs/DESIGN.md` 对齐：同一条在两个 crate 里意思相同。D12 是 peralloc 的延时
 释放池，本路线不拥有调用方的块，不搬。
