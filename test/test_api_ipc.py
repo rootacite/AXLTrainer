@@ -841,7 +841,9 @@ class HardwareStatusTest(unittest.TestCase):
             stem = Path(raw) / "amdfq_vmm_va"
             pid = os.getpid()
             (Path(raw) / f"amdfq_vmm_va.{pid}.json").write_text(
-                json.dumps({"pid": pid, "used_bytes": 8388608, "spans": 4, "ts": 1.0}),
+                json.dumps(
+                    {"pid": pid, "used_bytes": 8388608, "spans": 4, "never_reuse": True, "ts": 1.0}
+                ),
                 encoding="utf-8",
             )
             journal = "amdgpu 0000:03:00.0: vm size is 262144 GB, 4 levels\n"
@@ -866,6 +868,37 @@ class HardwareStatusTest(unittest.TestCase):
             self.assertEqual(va["pid"], pid)
             self.assertEqual(va["total_source"], "journal")
             self.assertEqual(va["total_bytes"], 262144 * 1024 * 1024 * 1024)
+            self.assertTrue(va["never_reuse"])
+
+    def test_vmm_va_status_file_mode_wins_over_config(self):
+        """The hook's own mode is what the panel describes, not what the next run is configured for."""
+        with tempfile.TemporaryDirectory() as raw:
+            stem = Path(raw) / "amdfq_vmm_va"
+            pid = os.getpid()
+            (Path(raw) / f"amdfq_vmm_va.{pid}.json").write_text(
+                json.dumps({"pid": pid, "used_bytes": 0, "spans": 0, "never_reuse": False}),
+                encoding="utf-8",
+            )
+            va = self.hw.collect_vmm_va(
+                amdfq_choice="vmm",
+                vmm_total=(1 << 40, "default"),
+                trainer_pid=pid,
+                va_status_stem=stem,
+            )
+            self.assertFalse(va["never_reuse"])
+
+    def test_vmm_va_without_status_file_reports_the_configured_mode(self):
+        with tempfile.TemporaryDirectory() as raw:
+            stem = Path(raw) / "amdfq_vmm_va"
+            va = self.hw.collect_vmm_va(
+                amdfq_choice="vmm",
+                vmm_total=(1 << 40, "default"),
+                trainer_pid=os.getpid(),
+                va_status_stem=stem,
+            )
+            self.assertEqual(va["used_bytes"], 0)
+            self.assertEqual(va["spans"], 0)
+            self.assertIsInstance(va["never_reuse"], bool)
 
     def test_parse_vm_size_text_takes_last_match(self):
         text = (

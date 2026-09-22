@@ -396,14 +396,15 @@ Result:
     "total_bytes": 281474976710656,
     "total_source": "journal",
     "pid": 12345,
-    "spans": 4
+    "spans": 4,
+    "never_reuse": false
   }
 }
 ```
 
 `available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Ranko keeps the training UI up if hardware collection fails.
 
-`vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook has reserved and will not return (`EVER_MAPPED`), read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
+`vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook holds — what it has mapped right now, or, with `never_reuse`, everything it has ever mapped — read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `never_reuse` is that file's mode when it is there (the running hook's own mode) and `[environment].amdfq_va_never_reuse` otherwise; Ranko titles the bar `GPU VA (live)` / `GPU VA (not returned)` from it. `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
 
 ## Example
 

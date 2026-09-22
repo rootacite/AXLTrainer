@@ -246,6 +246,9 @@ def collect_vmm_va(
     used_bytes = 0
     spans = 0
     status_pid: int | None = None
+    # The running hook's own mode is the honest source; the config only says what the next run will
+    # get, and the status file's `never_reuse` overrides it when it is there.
+    never_reuse = _configured_va_never_reuse()
     if trainer_pid is not None:
         stem = va_status_stem
         if stem is None:
@@ -261,6 +264,8 @@ def collect_vmm_va(
             spans = int(payload.get("spans") or 0)
             raw_pid = payload.get("pid")
             status_pid = int(raw_pid) if raw_pid is not None else int(trainer_pid)
+            if payload.get("never_reuse") is not None:
+                never_reuse = bool(payload.get("never_reuse"))
 
     return {
         "patch": "vmm",
@@ -269,7 +274,19 @@ def collect_vmm_va(
         "total_source": total_source,
         "pid": status_pid if status_pid is not None else trainer_pid,
         "spans": spans,
+        "never_reuse": never_reuse,
     }
+
+
+def _configured_va_never_reuse() -> bool:
+    try:
+        from trainer.amdfq_patch import read_va_never_reuse
+    except ImportError:
+        from amdfq_patch import read_va_never_reuse
+    try:
+        return read_va_never_reuse()
+    except ValueError:
+        return False
 
 
 def _run_capture(argv: list[str], timeout_s: float) -> str:

@@ -12,6 +12,8 @@ use std::ffi::c_void;
 pub(crate) type HipError = i32;
 
 pub(crate) const HIP_SUCCESS: HipError = 0;
+/* hipErrorOutOfMemory, per ROCm 10.0.0's hip/hip_runtime_api.h. */
+pub(crate) const HIP_ERROR_OUT_OF_MEMORY: HipError = 2;
 /* hipErrorNotFound, per ROCm 10.0.0's hip/hip_runtime_api.h. */
 pub(crate) const HIP_ERROR_NOT_FOUND: HipError = 500;
 

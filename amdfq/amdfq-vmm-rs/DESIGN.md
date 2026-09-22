@@ -5,7 +5,7 @@
 
 它存在的理由：已删除的 C 版 VMM 树（`amdfq-vmm/`）机制成立、设计不合格——12 个计数器 + 名字表 + 标志位散在
 全局，一把非递归全局锁跨着真 runtime 调用，计数在解锁之后自增，最后还要一对重入闩兜底。peralloc
-路线（`../doc/amdfq.md` §12）就是按下面这套形状搬进 Rust 的，后面再加东西也不会再长出同样的形状。
+路线就是按下面这套形状搬进 Rust 的，后面再加东西也不会再长出同样的形状。
 
 ## D1 分配状态只有一个家
 
@@ -47,7 +47,7 @@
 hook 里只写 `log::info!` / `log::warn!`：不自己建文件、管道、序号表。sink 是 `logging.rs` 里的
 stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`off`/`error`/`warn`/`info`/`debug`/
 `trace`，默认 `info`）控级别，`warn` 只留异常——地址重复（`duplicate`）、释放一个 registry 里
-没有的地址（`untracked`），以及路线自己没做成的那几步：授权没授上
+没有的地址（`untracked`）、VRAM 保留把一笔申请拦成 OOM，以及路线自己没做成的那几步：授权没授上
 （含只授到设备本身）、pad 没映射成、撤销的四步里有失败、切设备或 peer 查询没成（D11）、设备序号超出
 设备表。宿主已经装了 logger 时不抢：`set_logger` 失败，我们的记录就顺着宿主的 sink 走。
 
@@ -60,10 +60,13 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 | 全局 | 位置 | 用途 |
 | --- | --- | --- |
 | `REGISTRY: LazyLock<RwLock<HashMap<Address, HookData>>>` | `registry.rs` | 唯一的分配状态，也是 crate 的锁（D3） |
-| `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + 路线的 8 个 VMM 入口（`hipMemSetAccess`、`hipMemCreate`/`Map`/`Unmap`/`Release`、`hipMemAddressReserve`/`Free`、`hipMemGetAllocationGranularity`）+ `hipGetDevice`/`hipSetDevice`/`hipGetLastError`/`hipDeviceSynchronize` + 2 个可选的 peer 查询（`hipGetDeviceCount`、`hipDeviceCanAccessPeer`） |
-| `ENTRIES: LazyLock<Option<Entries>>` | `peralloc.rs` | 路线是否就绪：这一组入口全都解析到了才开 |
+| `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + `hipMemGetInfo`（拦截给上层看的账面，剩余按 amdgpu `mem_info_vram_*` 算）+ 路线的 8 个 VMM 入口（`hipMemSetAccess`、`hipMemCreate`/`Map`/`Unmap`/`Release`、`hipMemAddressReserve`/`Free`、`hipMemGetAllocationGranularity`）+ `hipGetDevice`/`hipSetDevice`/`hipGetLastError`/`hipDeviceSynchronize` + 2 个可选的 peer 查询（`hipGetDeviceCount`、`hipDeviceCanAccessPeer`） |
+| `ENTRIES: LazyLock<Option<Entries>>` | `peralloc.rs` | 路线是否就绪：这一组入口全都解析到了才开。VRAM 保留读 sysfs，不依赖 `hipMemGetInfo` |
 | `DEVICES: [OnceLock<Option<Device>>; 32]` | `peralloc.rs` | 每张卡一份状态（D11）：分配粒度、该卡共享的 pad granule、能访问它的 peer 表；建失败也记住，序号超出上界直接转发 |
-| `EVER_MAPPED: LazyLock<RwLock<BTreeMap<usize, usize>>>` | `peralloc.rs` | 曾经 Map 过的 VA 跨度（首地址 → reserve 长度）。free 之后仍在表里；新的 reserve 若与其中任何一段相交，这一笔不 Map，转发给 runtime（D10） |
+| `MAPPED_SPANS: LazyLock<RwLock<BTreeMap<usize, usize>>>` | `peralloc.rs` | 正在映射的 VA 跨度（首地址 → reserve 长度）。新的 reserve 若与其中任何一段相交，这一笔不 Map，转发给 runtime；复用模式下 free 把该段从表里移除，never-reuse 模式下 free 之后仍留在表里——于是它退化成「曾经 Map 过」的集合（D10） |
+| `VRAM_RESERVE: LazyLock<usize>` | `peralloc.rs` | 驱动计数器 free 的地板（`AMDFQ_VRAM_RESERVE` 字节，缺省 `0`，即关闭；非 0 是内核修复前的旧 workaround，D10）。`mem_info_vram_total - mem_info_vram_used < reserve + block` 时 `hipMalloc` 返回 OOM，不 Create、不转发。拦截的 `hipMemGetInfo` 把 `free` 改成同一剩余减 reserve，`total` 改成 sysfs total |
+| `VA_NEVER_REUSE: LazyLock<bool>` | `peralloc.rs` | `AMDFQ_VA_NEVER_REUSE`（`1`/`0`，缺省 `0`）：`1` 时 free 不把 VA 还给驱动，跨度留在 `MAPPED_SPANS` 里（D10） |
+| `SYSFS_MISSING_WARNED: AtomicBool` | `peralloc.rs` | amdgpu `mem_info_vram_*` 读不到时只打一次 warn，之后仍跳过保留检查 |
 | `INSTALL: LazyLock<()>` | `logging.rs` | 装 logger 并设级别 |
 | `LOGGER` | `logging.rs` | 无状态 sink |
 
@@ -85,7 +88,7 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 
 `real.rs` 是 crate 里唯一出现 `dlsym`、`RTLD_NEXT` 和符号名字符串的文件，每个符号一个
 `LazyLock<Option<F>>`（比 C 版 `if (real == NULL)` 的首次调用多线程安全）。想加一个门：`hooks.rs`
-里一个函数 + `real.rs` 里一行 `LazyLock`，别的地方不碰符号名。
+里一个函数 + `real.rs` 里一行 `LazyLock`，别的地方不碰符号名。`hipMemGetInfo` 是第三个门：拦截给上层看的账面；保留检查读 `/sys/class/drm/cardN/device/mem_info_vram_{used,total}`。
 
 ## D9 map 里的值必须 `Send + Sync`
 
@@ -100,19 +103,28 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 绝不让 runtime 看见那个指针——撤销前先把当前设备切回记录里的那一张（`Extent::device`），因为 unmap /
 release 都作用于当前设备（D11）。
 
-曾经 Map 过的 VA 在进程生命周期内不复用：free 只 `hipMemUnmap` 和 `hipMemRelease`，不
-`hipMemAddressFree`，那段地址一直占着。`EVER_MAPPED` 记下每一段已经 Map 过的 `[va, va+total)`；
-之后 `hipMemAddressReserve` 若交回与其中任何一段相交的范围，这一笔不 Map（相交的那次 reserve
-也不释放，以免打穿已经占住的跨度）。从未 Map 成功的 reserve（create / map 失败）仍
-`hipMemAddressFree`。hook 把已占用 VA 字节数写到 `<stem>.<pid>.json`（`AMDFQ_VA_STATUS`，缺省则与
-`trainer/control.py` 同一 runtime 目录下的 `amdfq_vmm_va`），Ranko Dashboard 用来画「已用 / 总 VA」。
+free 之后那段 VA 归谁，由 `AMDFQ_VA_NEVER_REUSE` 决定，缺省是**还给驱动**：teardown 在
+`hipMemUnmap` + `hipMemRelease` 之后调 `hipMemAddressFree`，并把这一段从 `MAPPED_SPANS` 移除，
+地址可以再次被 reserve / Map。`MAPPED_SPANS` 于是是「正在映射的跨度」，`range_taken` 拒绝的只是与
+**在用**映射相交的那一笔 reserve（相交的那次 reserve 也不释放，以免打穿已经占住的跨度）。
+
+`AMDFQ_VA_NEVER_REUSE=1` 是内核修复前的旧行为，保留着是为了能一键退回：那时拆 mapping 不会作废
+compute VM 的 TLB，同址复用会把陈旧翻译读出来，所以 free 只 unmap + release，
+`hipMemAddressFree` 不调，跨度留在表里，永不复用；此时 `range_taken`
+的判据退化成「曾经 Map 过」。2026-09 的内核已修（拆 mapping 作废 TLB），所以缺省不再需要这一条。
+
+`hipMemCreate` 在 reserve 之前：物理 OOM 不占 VA。从未 Map 成功的 reserve（map 失败）在两种模式下
+都仍然 `hipMemAddressFree`。hook 把 `MAPPED_SPANS` 累计的字节数、跨度数与当前模式写到
+`<stem>.<pid>.json`（`AMDFQ_VA_STATUS`，缺省则与 `trainer/control.py` 同一 runtime 目录下的
+`amdfq_vmm_va`），字段为 `used_bytes` / `spans` / `never_reuse`；Ranko Dashboard 用它画「已用 /
+总 VA」，并按模式换文案（never-reuse 下这个数是累计占用过的，复用模式下是当前占用的）。
 
 这里曾有一条例外：「fork 继承来的块什么都不做」（旧的 `Outcome::Inherited`），已删。理由不是它多余，
 而是它照顾的场景在 HIP 的界外——`hipInit` 的 note（`hip/hip_runtime_api.h:2223`，本机副本在
 `_rocm_sdk_core/include/hip/`）写明：子进程在 fork 之后还要继续跑 HIP 代码、又不立刻 `exec()` 时，
 进程不应在 fork 之前初始化 HIP runtime，父子应各自在 fork 之后初始化，「跨 fork 继承 runtime state
 可能带来未定义行为或初始化失败」。也就是说「子进程 free 掉父进程的块」不是要支持的行为，本文不为
-fork 之后定义任何行为（同一段也记在 `../../conclusions/hip-runtime-calls.md` §3）。
+fork 之后定义任何行为（HIP 的 `hipInit` note 就是这条界线；那条线的记录已封存）。
 
 ## D11 状态按设备分，授权含 peer
 

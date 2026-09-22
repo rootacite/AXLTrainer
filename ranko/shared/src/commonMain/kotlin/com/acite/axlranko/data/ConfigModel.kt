@@ -25,6 +25,8 @@ data class EnvironmentConfig(
     @SerialName("output_dir") val outputDir: String,
     @SerialName("logging_dir") val loggingDir: String,
     val amdfq: String = "none",
+    @SerialName("amdfq_vram_reserve_gib") val amdfqVramReserveGib: Double = 0.0,
+    @SerialName("amdfq_va_never_reuse") val amdfqVaNeverReuse: Boolean = false,
 )
 
 @Serializable

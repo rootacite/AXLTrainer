@@ -23,7 +23,9 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
 | `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. |
 | `output_name` | `"rein"` | Run name; prefix of every artifact path, of the run directory, and of the TensorBoard project. Sanitized to `[A-Za-z0-9._-]` in the run id and checkpoint filename. |
-| `amdfq` | `"none"` | Allocation patch for the next Train start: `"none"`, `"tail"` (`amdfq-tail-rs`), or `"vmm"` (`amdfq-vmm-rs`). Ranko Utils → **ROCm**. `start_train.sh` `LD_PRELOAD`s the matching release `.so`; a missing library fails the start instead of running unpatched. On RDNA 4, Tail or VMM is strongly preferred; VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool, and it does not return GPU VA (Dashboard shows used / total while VMM is selected). |
+| `amdfq` | `"none"` | Allocation patch for the next Train start: `"none"`, `"tail"` (`amdfq-tail-rs`), or `"vmm"` (`amdfq-vmm-rs`). Ranko Utils → **ROCm**. `start_train.sh` `LD_PRELOAD`s the matching release `.so`; a missing library fails the start instead of running unpatched. On RDNA 4, Tail or VMM is strongly preferred; VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool. |
+| `amdfq_vram_reserve_gib` | `0.0` | GiB of driver-reported free VRAM (`/sys/class/drm/cardN/device/mem_info_vram_total − mem_info_vram_used`) the VMM hook will not consume. This is the amdgpu counter, not `hipMemGetInfo` (which does not see the compositor or RADV). The hooked `hipMemGetInfo` reports that remaining minus this floor so the caching allocator sees other clients. Before `hipMemCreate`, the hook compares the same counter against this floor plus the rounded request; if the allocation would leave less, `hipMalloc` returns OOM instead of creating or forwarding. **Optional**: this was the workaround for the driver handing a process's frames to another one on eviction, which the 2026-09 kernel fixed — leave it at `0` (`0` is also the default and means off) unless you run an older kernel. Ranko Utils → **ROCm**. Takes effect on the next Train start. Ignored unless `amdfq = "vmm"`. |
+| `amdfq_va_never_reuse` | `false` | **Optional** VMM-hook switch, ignored unless `amdfq = "vmm"`. `false` (default): a `hipFree` gives its range's GPU virtual address back to the driver, so the address is reusable and the Dashboard's VA bar only shows what the hook holds right now. `true`: the pre-fix behaviour, kept for an older kernel — a range that was mapped once keeps its VA for the process lifetime and is never mapped again, so that bar only grows. The workaround existed because tearing a mapping down used to leave the compute VM's TLB stale, which made same-address reuse unsafe; the 2026-09 kernel fixed that. Ranko Utils → **ROCm**. Takes effect on the next Train start. |
 
 ### `[model_spec]` — base-model family + checkpoint metadata
 
@@ -162,8 +164,8 @@ repeat = 3
 | `name` | no | the prompt's first tag, else `Set N` |
 
 - **No blocks at all** = exactly one set built from the scalars above, i.e. the single-prompt
-  behaviour. `validation.sample_*` overrides (used by `fixes/` and `test/verify_mask_pipeline.py`)
-  keep working in that case.
+  behaviour. `validation.sample_*` overrides (used by `test/verify_mask_pipeline.py`) keep working
+  in that case.
 - **Ranges** (enforced by `trainer/config.py` and by the Utils form): `width`/`height` 64–4096,
   `steps` 1–150, `guidance_scale` 0–30, `seed` 0–2³²−1, `repeat` 1–32, `prompt` non-empty.
   A violation aborts the run at startup with the offending index (`validation.samples[2]: steps …`).

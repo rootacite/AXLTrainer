@@ -84,7 +84,7 @@ private fun VmmVaBar(vmmVa: HardwareVmmVa) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                text = "GPU VA (not returned)",
+                text = if (vmmVa.vaNeverReuse) "GPU VA (not returned)" else "GPU VA (live)",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = colors.text,
@@ -102,7 +102,11 @@ private fun VmmVaBar(vmmVa: HardwareVmmVa) {
                 trackColor = colors.bgCard.copy(alpha = 0.6f),
             )
             Text(
-                text = "VMM keeps reserved VA for the process lifetime.",
+                text = if (vmmVa.vaNeverReuse) {
+                    "VA never reused (legacy workaround): a freed range keeps its address for the process lifetime, so this only grows."
+                } else {
+                    "VA is given back when a block is freed, so this is what the patch holds right now."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.textDim,
             )

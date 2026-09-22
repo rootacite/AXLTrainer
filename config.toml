@@ -8,7 +8,14 @@ logging_dir = "/home/acite/LLM/axltrainer/logs"
 train_data_dir = "/home/acite/LLM/Character/LLLJ/"
 output_name = "lllj"
 # none | tail | vmm — Ranko Utils → ROCm. Takes effect on the next Train start.
-amdfq = "none"
+amdfq = "vmm"
+# GiB of driver-reported free VRAM (amdgpu mem_info_vram_*) the VMM hook will not consume. 0 = off (default).
+# The pre-fix workaround for eviction handing a process's frames to another one; the 2026-09 kernel fixed that.
+# Ranko Utils → ROCm. Takes effect on the next Train start. Ignored unless amdfq = "vmm".
+amdfq_vram_reserve_gib = 0
+# Pre-fix workaround: a freed range keeps its GPU virtual address for the process lifetime. false = the hook
+# gives the VA back on free (needs the 2026-09 kernel). Ranko Utils → ROCm. Ignored unless amdfq = "vmm".
+amdfq_va_never_reuse = false
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"
@@ -33,7 +40,7 @@ learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 20
+epoch = 12
 save_every_n_epochs = 1
 save_every_n_steps = 50
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
@@ -42,9 +49,9 @@ save_every_n_steps = 50
 resume_lora_path = ""
 
 [network]
-network_dim = 48
+network_dim = 64
 network_alpha = 32
-network_dropout = 0.2
+network_dropout = 0.08
 clip_skip = 1
 max_token_length = 225
 
@@ -70,10 +77,10 @@ shuffle_caption = true
 keep_tokens = 2
 caption_extension = ".txt"
 noise_offset = 0.05
-flush_memory_every_step = true
+flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 5.0E-5
+unet_learning_rate = 3.0E-5
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -81,7 +88,7 @@ unet_eps = 1.0E-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 6.0E-6
+te_learning_rate = 3.0E-6
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99

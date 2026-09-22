@@ -461,6 +461,7 @@ private fun RocmFields(
     viewModel: UtilsScreenViewModel,
 ) {
     val form = uiState.form
+    val errors = uiState.fieldErrors
     val colors = rankoColors
     PorcelainCard {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -470,7 +471,7 @@ private fun RocmFields(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "If you are using an RDNA 4 AMD GPU, strongly prefer the Tail or VMM patch. VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool. VMM does not return GPU virtual address space (workaround for an AMD bug); the Dashboard shows used / total VA while it is selected. Takes effect on the next Train start.",
+                text = "If you are using an RDNA 4 AMD GPU, strongly prefer the Tail or VMM patch. VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool. The two switches below are the workarounds for the driver bugs the 2026-09 kernel fixed: leave both off unless you are on an older kernel. Takes effect on the next Train start.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.textDim,
             )
@@ -496,6 +497,19 @@ private fun RocmFields(
                     color = colors.qualityRed,
                 )
             }
+            ConfigTextField(
+                label = "Reserved VRAM (GiB)",
+                value = form.amdfqVramReserveGib,
+                onValueChange = { viewModel.updateForm { copy(amdfqVramReserveGib = it) } },
+                error = errors["amdfq_vram_reserve_gib"],
+                supporting = "Used only when Allocation patch is VMM. Optional workaround for the pre-fix kernel: the hook keeps this many GiB free on the card, reports that remaining to the allocator, and returns OOM rather than creating a block that would leave less. Remaining VRAM is the amdgpu sysfs counter, not hipMemGetInfo. Default 0 (off). Takes effect on the next Train start.",
+            )
+            ConfigSwitch(
+                label = "VA never reused (legacy)",
+                checked = form.amdfqVaNeverReuse,
+                description = "Used only when Allocation patch is VMM. Pre-fix behaviour: a freed range keeps its GPU virtual address for the process lifetime, so the Dashboard's VA bar only grows. Off by default — with the 2026-09 kernel the hook gives the address back on free. Takes effect on the next Train start.",
+                onChecked = { viewModel.updateForm { copy(amdfqVaNeverReuse = it) } },
+            )
         }
     }
 }

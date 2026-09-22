@@ -52,7 +52,7 @@ pub(crate) enum Origin {
     /* The runtime's own memory: hipFree gets the caller's pointer back unchanged. */
     Runtime,
     /* An extent this crate reserved (peralloc.rs): unmapped and the handle released here, without
-     * the runtime ever seeing the pointer. The VA stays reserved for the process lifetime. */
+     * the runtime ever seeing the pointer. The VA goes back too unless AMDFQ_VA_NEVER_REUSE is on. */
     Extent(Extent),
 }
 
@@ -61,8 +61,8 @@ pub(crate) enum Origin {
 pub(crate) struct Extent {
     /* Bytes mapped from `handle`: the request rounded up to the allocation granularity. */
     pub(crate) block: usize,
-    /* Bytes reserved at the record's address: `block` plus one pad granule. After the range has
-     * been mapped once, this span is never given back (DESIGN.md D10). */
+    /* Bytes reserved at the record's address: `block` plus one pad granule. Given back to the driver
+     * with the handle, unless AMDFQ_VA_NEVER_REUSE keeps the span (DESIGN.md D10). */
     pub(crate) total: usize,
     /* The block's allocation handle. */
     pub(crate) handle: Handle,

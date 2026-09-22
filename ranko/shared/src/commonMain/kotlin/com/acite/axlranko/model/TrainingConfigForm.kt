@@ -34,6 +34,8 @@ data class TrainingConfigForm(
     val trainDataDir: String = "",
     val outputName: String = "",
     val amdfq: String = "none",
+    val amdfqVramReserveGib: String = "0",
+    val amdfqVaNeverReuse: Boolean = false,
 
     val baseModelVersion: String = "",
     val modelspecArchitecture: String = "",
@@ -152,6 +154,7 @@ data class TrainingConfigForm(
         if (amdfq.trim().lowercase() !in amdfqOptions) {
             errors["amdfq"] = "Choose none, tail, or vmm"
         }
+        requireDouble("amdfq_vram_reserve_gib", amdfqVramReserveGib, min = 0.0)
 
         requireText("pretrained_model_name_or_path", pretrainedModelNameOrPath)
         requireText("output_dir", outputDir)
@@ -259,6 +262,8 @@ data class TrainingConfigForm(
                 "train_data_dir" to q(trainDataDir.trim()),
                 "output_name" to q(outputName.trim()),
                 "amdfq" to q(amdfq.trim().lowercase().ifBlank { "none" }),
+                "amdfq_vram_reserve_gib" to f(amdfqVramReserveGib),
+                "amdfq_va_never_reuse" to b(amdfqVaNeverReuse),
             ),
             "model_spec" to mapOf(
                 "base_model_version" to q(baseModelVersion.trim()),
@@ -405,6 +410,8 @@ data class TrainingConfigForm(
                 trainDataDir = env.trainDataDir,
                 outputName = env.outputName,
                 amdfq = env.amdfq.trim().lowercase().ifBlank { "none" },
+                amdfqVramReserveGib = formatNumber(env.amdfqVramReserveGib),
+                amdfqVaNeverReuse = env.amdfqVaNeverReuse,
                 baseModelVersion = spec.baseModelVersion,
                 modelspecArchitecture = spec.modelspecArchitecture,
                 modelspecImplementation = spec.modelspecImplementation,

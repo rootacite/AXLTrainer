@@ -107,6 +107,18 @@ class TomlFloatEncodingTest {
         assertEquals("none", base.amdfq)
         assertEquals("\"vmm\"", base.copy(amdfq = "vmm").toTomlSections()["environment"]!!["amdfq"])
         assertTrue("amdfq" in ConfigSection.Rocm.fieldKeys)
+        assertEquals("0", base.amdfqVramReserveGib)
+        assertEquals(
+            "1.5",
+            base.copy(amdfqVramReserveGib = "1.5").toTomlSections()["environment"]!!["amdfq_vram_reserve_gib"],
+        )
+        assertTrue("amdfq_vram_reserve_gib" in ConfigSection.Rocm.fieldKeys)
+        assertEquals(false, base.amdfqVaNeverReuse)
+        assertEquals(
+            "true",
+            base.copy(amdfqVaNeverReuse = true).toTomlSections()["environment"]!!["amdfq_va_never_reuse"],
+        )
+        assertTrue("amdfq_va_never_reuse" in ConfigSection.Rocm.fieldKeys)
     }
 }
 

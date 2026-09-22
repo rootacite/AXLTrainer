@@ -36,6 +36,10 @@ class ResumeConfigTest {
         assertEquals(true, form.gradientCheckpointingTe)
         assertEquals("none", config.environment.amdfq)
         assertEquals("none", form.amdfq)
+        assertEquals(0.0, config.environment.amdfqVramReserveGib)
+        assertEquals("0", form.amdfqVramReserveGib)
+        assertEquals(false, config.environment.amdfqVaNeverReuse)
+        assertEquals(false, form.amdfqVaNeverReuse)
     }
 
     @Test
@@ -46,6 +50,30 @@ class ResumeConfigTest {
             mapOf("environment" to mapOf("amdfq" to TomlDocumentPatcher.quote("vmm"))),
         )
         assertTrue(patched.contains("amdfq = \"vmm\""))
+        assertTrue(patched.contains("output_name = \"haruko\""))
+        assertTrue(patched.contains("[bookkeeping]"))
+    }
+
+    @Test
+    fun patcherInsertsVramReserveIntoLegacyFile() {
+        val source = LEGACY_CONFIG.replace("RESUME_PLACEHOLDER", "")
+        val patched = TomlDocumentPatcher.apply(
+            source,
+            mapOf("environment" to mapOf("amdfq_vram_reserve_gib" to "0.0")),
+        )
+        assertTrue(patched.contains("amdfq_vram_reserve_gib = 0.0"))
+        assertTrue(patched.contains("output_name = \"haruko\""))
+        assertTrue(patched.contains("[bookkeeping]"))
+    }
+
+    @Test
+    fun patcherInsertsVaNeverReuseIntoLegacyFile() {
+        val source = LEGACY_CONFIG.replace("RESUME_PLACEHOLDER", "")
+        val patched = TomlDocumentPatcher.apply(
+            source,
+            mapOf("environment" to mapOf("amdfq_va_never_reuse" to "true")),
+        )
+        assertTrue(patched.contains("amdfq_va_never_reuse = true"))
         assertTrue(patched.contains("output_name = \"haruko\""))
         assertTrue(patched.contains("[bookkeeping]"))
     }

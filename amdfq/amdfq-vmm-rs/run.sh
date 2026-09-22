@@ -25,7 +25,11 @@ usage: run.sh [--debug|--release] <train|test> [arguments...]
   --debug  build the hook into target/debug, --release into target/release (default)
 
 environment: AXL_PYTHON (interpreter for test, default python3; for train its directory is prepended
-             to PATH, because start_train.sh calls a bare python), AMDFQ_LOG_FILE, AMDFQ_LOG_LEVEL
+             to PATH, because start_train.sh calls a bare python), AMDFQ_LOG_FILE, AMDFQ_LOG_LEVEL,
+             AMDFQ_VRAM_RESERVE (driver-counter free floor in bytes, default 0 = off; train also
+             takes this from config.toml via start_train.sh), AMDFQ_VA_NEVER_REUSE (0 = a freed span
+             gives its VA back, 1 = keeps it for the process lifetime; default 0, train also takes
+             this from config.toml)
 EOF
 }
 

@@ -1,13 +1,20 @@
 //! `amdfq-vmm-rs` — the LD_PRELOAD interposer for the HIP allocation gates, Rust side.
 //!
-//! `hipMalloc` is served by the peralloc route (`peralloc.rs`, ../doc/amdfq.md §12): a per-request
+//! `hipMalloc` is served by the peralloc route (`peralloc.rs`): a per-request
 //! `hipMemAddressReserve`, the block mapped from a handle created for it, and one shared pad granule
 //! mapped behind every block, so the slack a bf16 kernel over-reads costs one granule per device
-//! instead of one granule of VRAM per live allocation. A VA that has been mapped is never mapped
-//! again: `hipFree` unmaps and releases the handle, and leaves the address reserved. Everything the
+//! instead of one granule of VRAM per live allocation. `hipFree` unmaps and releases the handle, and
+//! then gives the VA back too — so an address can be reserved and mapped again — unless
+//! `AMDFQ_VA_NEVER_REUSE=1` asks for the pre-fix behaviour, which keeps the span for the process
+//! lifetime. Everything the
 //! route declines to serve — a runtime without the VMM entry points, a failed reserve/create/map, a
 //! device whose state could not be built — is forwarded to the runtime with the caller's size
 //! unchanged, and a free is only ever unmapped here if it came out of an extent this crate reserved.
+//! A request that would leave driver-reported free VRAM (`mem_info_vram_total - mem_info_vram_used`)
+//! below `AMDFQ_VRAM_RESERVE` (bytes, default `0`, i.e. off) is not forwarded: `hipMalloc`
+//! returns `hipErrorOutOfMemory` and does not call `hipMemCreate`. The hooked `hipMemGetInfo` reports
+//! that same remaining minus the reserve, so the caching allocator sees compositor and RADV occupancy
+//! and does not retry sizes this crate will refuse.
 //!
 //! ```bash
 //! cargo build --release --offline                 # -> target/release/libamdfq_vmm_rs.so
@@ -24,12 +31,13 @@
 //! extent), `forwarded` (the runtime's), `released`, or — at `warn` — the two anomalies worth seeing,
 //! an address that was already live (`duplicate`) and a free of an address the registry never held
 //! (`untracked`). `AMDFQ_LOG_LEVEL` (`off`/`error`/`warn`/`info`/`debug`/`trace`, default `info`)
-//! filters them.
+//! filters them. `AMDFQ_VRAM_RESERVE` is the driver-counter free floor in bytes (default `0`);
+//! `AMDFQ_VA_NEVER_REUSE` (`0`/`1`, default `0`) keeps a freed span's VA for the process lifetime.
 //!
 //! | module | role |
 //! | --- | --- |
-//! | `hooks.rs` | the C symbols themselves: `#[unsafe(no_mangle)] pub unsafe extern "C" fn` (the two allocation gates) |
-//! | `peralloc.rs` | the VMM route: `serve` / `release`, the per-device state, the ever-mapped VA set |
+//! | `hooks.rs` | the C symbols themselves: `#[unsafe(no_mangle)] pub unsafe extern "C" fn` (`hipMalloc` / `hipFree` / `hipMemGetInfo`) |
+//! | `peralloc.rs` | the VMM route: `serve` / `release`, the per-device state, the mapped-span (or never-reused) VA set |
 //! | `real.rs` | the only place a real symbol is resolved: next-object lookup, then cached |
 //! | `registry.rs` | `Address -> HookData`, the only shared state and the only lock |
 //! | `logging.rs` | the `log` sink (stderr, one `write(2)` per line) |

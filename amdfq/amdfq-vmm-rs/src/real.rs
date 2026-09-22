@@ -7,11 +7,11 @@ use std::ffi::{CStr, c_char, c_void};
 use std::mem::{size_of, transmute_copy};
 use std::sync::LazyLock;
 
-/* The two allocation gates (../doc/amdfq.md §7.1). */
+/* The two allocation gates. */
 pub(crate) type HipMallocFn = unsafe extern "C" fn(ptr: *mut *mut c_void, size: usize) -> HipError;
 pub(crate) type HipFreeFn = unsafe extern "C" fn(ptr: *mut c_void) -> HipError;
 
-/* The VMM entry points the peralloc route builds on (../doc/amdfq.md §12). */
+/* The VMM entry points the peralloc route builds on. */
 pub(crate) type HipGetDeviceFn = unsafe extern "C" fn(device: *mut i32) -> HipError;
 /* hipSetDevice: a free runs its teardown calls on the block's own device (DESIGN.md D11). */
 pub(crate) type HipSetDeviceFn = unsafe extern "C" fn(device: i32) -> HipError;
@@ -63,6 +63,11 @@ pub(crate) type HipGetLastErrorFn = unsafe extern "C" fn() -> HipError;
  * back (ihipFree), and the route's teardown does not go through that path, so it asks for the same
  * wait itself. */
 pub(crate) type HipDeviceSynchronizeFn = unsafe extern "C" fn() -> HipError;
+
+/* Optional: the VRAM-reserve check reads HIP's free/total ledger before hipMemCreate. The route
+ * still serves if this symbol is missing; it just cannot enforce the floor. */
+pub(crate) type HipMemGetInfoFn =
+    unsafe extern "C" fn(free: *mut usize, total: *mut usize) -> HipError;
 
 /* RTLD_NEXT, as glibc spells it: the search starts after this object, so it can never hand back the
  * interposer itself. */
@@ -122,3 +127,5 @@ pub(crate) static HIP_GET_LAST_ERROR: LazyLock<Option<HipGetLastErrorFn>> =
     LazyLock::new(|| resolve(c"hipGetLastError"));
 pub(crate) static HIP_DEVICE_SYNCHRONIZE: LazyLock<Option<HipDeviceSynchronizeFn>> =
     LazyLock::new(|| resolve(c"hipDeviceSynchronize"));
+pub(crate) static HIP_MEM_GET_INFO: LazyLock<Option<HipMemGetInfoFn>> =
+    LazyLock::new(|| resolve(c"hipMemGetInfo"));

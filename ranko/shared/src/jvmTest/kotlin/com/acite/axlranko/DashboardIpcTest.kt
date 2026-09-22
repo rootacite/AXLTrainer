@@ -256,7 +256,8 @@ class DashboardIpcTest {
                 "total_bytes": 281474976710656,
                 "total_source": "journal",
                 "pid": 1234,
-                "spans": 4
+                "spans": 4,
+                "never_reuse": true
               }
             }
         """.trimIndent()
@@ -268,6 +269,7 @@ class DashboardIpcTest {
         assertEquals("journal", va?.totalSource)
         assertEquals(1234, va?.pid)
         assertEquals(4, va?.spans)
+        assertEquals(true, va?.vaNeverReuse)
     }
 
     @Test

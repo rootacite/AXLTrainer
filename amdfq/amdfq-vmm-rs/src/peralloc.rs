@@ -1,4 +1,4 @@
-/* The peralloc route (../doc/amdfq.md §12), ported from the retired C VMM tree (amdfq-vmm/amdfq_vmm.c): hipMalloc's requests are
+/* The peralloc route, ported from the retired C VMM tree (amdfq-vmm/amdfq_vmm.c): hipMalloc's requests are
  * served from address ranges this crate reserves and populates itself, so the slack behind a block
  * costs *one* physical granule for the whole process instead of one granule of VRAM per live
  * allocation — which is what padding every request costs, once the runtime rounds it up.
@@ -10,14 +10,17 @@
  *
  * `block` is the request rounded up to the mapping granularity, mapped from a handle created for it;
  * `pad` is a mapping of one handle created once per process, so a kernel reading past the end of its
- * operand (../../conclusions/bf16-kernel-overrun.md) lands in memory that exists. Measured 2026-09-17
+ * operand lands in memory that exists. Measured 2026-09-17
  * (the retired C VMM tree (amdfq-vmm/vmm_probe.c)): one handle maps at many addresses at once, 1000 mappings of one pad
  * handle cost the physical 2 MiB once, and a read across the boundary returns rather than faulting.
  *
- * One hipMemAddressReserve per allocation. After that range has been mapped, it is never given
- * back: a free unmaps and releases the handle, and leaves the VA reserved so the process cannot
- * map any address in the span again. hipMemAddressFree is only for a reserve that never became a
- * mapping (create/map failed). No arena base, no bump pointer and no free list.
+ * One hipMemCreate per allocation, then one hipMemAddressReserve. Create is first so a physical
+ * OOM never leaves a reserved VA. What a free does with the VA is `AMDFQ_VA_NEVER_REUSE`'s call:
+ * off (the default) the teardown gives the span back with hipMemAddressFree, so the address is
+ * reusable; on (the workaround for the driver bugs the kernel fixed 2026-09) the VA stays reserved
+ * for the process lifetime and the span is never mapped again (DESIGN.md D10). A reserve that never
+ * became a mapping (map failed) is freed either way. No arena base, no bump pointer and no free
+ * list.
  *
  * State is per device, not per process: whichever device a gate runs on has its own granularity, its
  * own shared pad granule and its own peer set, built on that device's first use (D11). The device is
@@ -37,7 +40,7 @@
  *
  * A free of a served extent is a teardown: the runtime never sees the pointer (DESIGN.md D10).
  *
- * The serve path locks nothing: concurrent hipMalloc calls run their own reserve/create/map sequences
+ * The serve path locks nothing: concurrent hipMalloc calls run their own create/reserve/map sequences
  * at the same time, and that is the runtime's business to get right (DESIGN.md D2). */
 
 use crate::hip::{
@@ -52,7 +55,7 @@ use std::ffi::{c_void, OsString};
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
@@ -125,16 +128,201 @@ const MAX_DEVICES: usize = 32;
 
 static DEVICES: [OnceLock<Option<Device>>; MAX_DEVICES] = [const { OnceLock::new() }; MAX_DEVICES];
 
-/* Spans that have been mapped at least once: start -> reserved length. A later reserve that
- * overlaps one of these is not mapped (DESIGN.md D10). Held only across the map operation. */
-static EVER_MAPPED: LazyLock<RwLock<BTreeMap<usize, usize>>> =
+/* Spans that are mapped right now: start -> reserved length. A later reserve that overlaps one of
+ * these is not mapped. In never-reuse mode a span never leaves this map, so it is then the set of
+ * spans that were *ever* mapped (DESIGN.md D10). Held only across the map operation. */
+static MAPPED_SPANS: LazyLock<RwLock<BTreeMap<usize, usize>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
-/* True if `[address, address + total)` overlaps a span that has already been mapped. */
+/* Driver-counter free floor: refuse Create when
+ * `mem_info_vram_total - mem_info_vram_used < reserve + block`. `AMDFQ_VRAM_RESERVE` is bytes;
+ * unset is 0 (off, the default); a non-zero value is the workaround for a driver that hands a KFD
+ * process's frames to another one on eviction (DESIGN.md D10). Logged once, on first hipMalloc.
+ * hipMemGetInfo is not this floor: it does not see the compositor or RADV. */
+const DEFAULT_VRAM_RESERVE: usize = 0;
+
+static VRAM_RESERVE: LazyLock<usize> = LazyLock::new(parse_vram_reserve);
+
+static SYSFS_MISSING_WARNED: AtomicBool = AtomicBool::new(false);
+
+/* `AMDFQ_VA_NEVER_REUSE` keeps the pre-fix behaviour: a freed span keeps its VA for the process
+ * lifetime. Off by default — the kernel now invalidates the compute VM's TLB when a mapping is torn
+ * down, which is what made same-address reuse unsafe (DESIGN.md D10). */
+static VA_NEVER_REUSE: LazyLock<bool> = LazyLock::new(parse_never_reuse);
+
+pub(crate) fn vram_reserve() -> usize {
+    *VRAM_RESERVE
+}
+
+pub(crate) fn va_never_reuse() -> bool {
+    *VA_NEVER_REUSE
+}
+
+fn parse_never_reuse() -> bool {
+    match std::env::var("AMDFQ_VA_NEVER_REUSE") {
+        Err(std::env::VarError::NotPresent) => {
+            log::info!("va never reuse=off (default)");
+            false
+        }
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(0) => {
+                log::info!("va never reuse=off");
+                false
+            }
+            Ok(_) => {
+                log::info!("va never reuse=on: a freed span keeps its VA (pre-fix workaround)");
+                true
+            }
+            Err(_) => {
+                log::warn!("AMDFQ_VA_NEVER_REUSE={raw:?} is not an integer, using off");
+                false
+            }
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            log::warn!("AMDFQ_VA_NEVER_REUSE is not UTF-8, using off");
+            false
+        }
+    }
+}
+
+fn read_sysfs_u64(path: &Path) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/* amdgpu cards that export the VRAM counters, sorted by `cardN`. HIP device i is the i-th. */
+fn amdgpu_vram_dirs() -> Vec<PathBuf> {
+    let mut cards: Vec<(u32, PathBuf)> = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return Vec::new();
+    };
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        let Some(n) = name
+            .to_str()
+            .and_then(|s| s.strip_prefix("card")?.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let dir = ent.path().join("device");
+        if !dir.join("mem_info_vram_total").is_file() {
+            continue;
+        }
+        cards.push((n, dir));
+    }
+    cards.sort_by_key(|(n, _)| *n);
+    cards.into_iter().map(|(_, dir)| dir).collect()
+}
+
+fn driver_vram(hip_device: i32) -> Option<(usize, usize)> {
+    let idx = usize::try_from(hip_device).ok()?;
+    let dir = amdgpu_vram_dirs().into_iter().nth(idx)?;
+    let used = usize::try_from(read_sysfs_u64(&dir.join("mem_info_vram_used"))?).ok()?;
+    let total = usize::try_from(read_sysfs_u64(&dir.join("mem_info_vram_total"))?).ok()?;
+    Some((used, total))
+}
+
+fn driver_remaining(hip_device: i32) -> Option<usize> {
+    let (used, total) = driver_vram(hip_device)?;
+    Some(total.saturating_sub(used))
+}
+
+fn current_hip_device() -> Option<i32> {
+    let get_device = (*real::HIP_GET_DEVICE)?;
+    let mut id = 0;
+    if unsafe { get_device(&mut id) } != HIP_SUCCESS {
+        return None;
+    }
+    Some(id)
+}
+
+/* Report driver remaining minus the reserve so the caching allocator sees compositor / RADV
+ * occupancy and does not retry sizes this crate will refuse. */
+pub(crate) fn shade_mem_info(free: *mut usize, total: *mut usize) {
+    let reserve = vram_reserve();
+    if reserve == 0 {
+        return;
+    }
+    let Some(id) = current_hip_device() else {
+        return;
+    };
+    let Some((used, sys_total)) = driver_vram(id) else {
+        return;
+    };
+    let remaining = sys_total.saturating_sub(used);
+    let shaded_free = remaining.saturating_sub(reserve);
+    if !total.is_null() {
+        unsafe { *total = sys_total };
+    }
+    if !free.is_null() {
+        unsafe { *free = shaded_free };
+    }
+    if !free.is_null() && !total.is_null() {
+        unsafe {
+            if *free > *total {
+                *free = *total;
+            }
+        }
+    }
+}
+
+fn parse_vram_reserve() -> usize {
+    match std::env::var("AMDFQ_VRAM_RESERVE") {
+        Err(std::env::VarError::NotPresent) => {
+            log::info!("vram reserve={DEFAULT_VRAM_RESERVE} (default, off)");
+            DEFAULT_VRAM_RESERVE
+        }
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(0) => {
+                log::info!("vram reserve=0 (disabled)");
+                0
+            }
+            Ok(bytes) => {
+                log::info!("vram reserve={bytes}");
+                bytes
+            }
+            Err(_) => {
+                log::warn!(
+                    "AMDFQ_VRAM_RESERVE={raw:?} is not an integer byte count, using {DEFAULT_VRAM_RESERVE}"
+                );
+                DEFAULT_VRAM_RESERVE
+            }
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            log::warn!("AMDFQ_VRAM_RESERVE is not UTF-8, using {DEFAULT_VRAM_RESERVE}");
+            DEFAULT_VRAM_RESERVE
+        }
+    }
+}
+
+/* True if this Create would leave driver-reported free below the reserve. Unreadable sysfs
+ * does not become OOM: the Create-failure path still exists. */
+fn vram_reserve_blocks(device: i32, block: usize) -> bool {
+    let reserve = *VRAM_RESERVE;
+    if reserve == 0 {
+        return false;
+    }
+    let Some(remaining) = driver_remaining(device) else {
+        if !SYSFS_MISSING_WARNED.swap(true, Ordering::Relaxed) {
+            log::warn!("amdgpu mem_info_vram_* not readable: vram reserve skipped");
+        }
+        return false;
+    };
+    if remaining < reserve.saturating_add(block) {
+        log::warn!(
+            "hipMalloc blocked: driver_free={remaining} reserve={reserve} block={block}"
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/* True if `[address, address + total)` overlaps a span that is mapped right now — or, in
+ * never-reuse mode, one that has ever been mapped. */
 fn range_taken(address: Address, total: usize) -> bool {
     let start = address.as_usize();
     let end = start.saturating_add(total);
-    let mapped = EVER_MAPPED
+    let mapped = MAPPED_SPANS
         .read()
         .unwrap_or_else(|poison| poison.into_inner());
     if let Some((&prev, &len)) = mapped.range(..=start).next_back() {
@@ -150,12 +338,34 @@ fn range_taken(address: Address, total: usize) -> bool {
     false
 }
 
-/* Records that this reserved span has been mapped, so it is never mapped again. */
+/* Records that this reserved span has been mapped. In never-reuse mode the record stays for the
+ * process lifetime; otherwise the teardown takes it back out with `forget_mapped`. */
 fn remember_mapped(address: Address, total: usize) {
-    let mut mapped = EVER_MAPPED
+    let mut mapped = MAPPED_SPANS
         .write()
         .unwrap_or_else(|poison| poison.into_inner());
     mapped.insert(address.as_usize(), total);
+    drop(mapped);
+    publish_spans();
+}
+
+/* Reuse mode: the span went back to the driver with the handle, so it leaves the map and a later
+ * reserve may be served inside it. */
+fn forget_mapped(address: Address) {
+    let mut mapped = MAPPED_SPANS
+        .write()
+        .unwrap_or_else(|poison| poison.into_inner());
+    mapped.remove(&address.as_usize());
+    drop(mapped);
+    publish_spans();
+}
+
+/* What the map holds now: the VA this process is holding, or, in never-reuse mode, all it has ever
+ * held. */
+fn publish_spans() {
+    let mapped = MAPPED_SPANS
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner());
     let used = mapped.values().fold(0u64, |acc, &len| acc.saturating_add(len as u64));
     let spans = mapped.len();
     drop(mapped);
@@ -164,7 +374,8 @@ fn remember_mapped(address: Address, total: usize) {
 
 /* Ranko reads `<stem>.<pid>.json`. Stem is `AMDFQ_VA_STATUS` if set, otherwise the same
  * runtime dir as trainer/control.py (`AXL_RUNTIME_DIR` / `$XDG_RUNTIME_DIR/axltrainer` /
- * `/tmp/axltrainer-$UID`) plus `amdfq_vmm_va`. Throttled. */
+ * `/tmp/axltrainer-$UID`) plus `amdfq_vmm_va`. `used_bytes` is what the map holds now, whose
+ * meaning the mode decides, and `never_reuse` says which mode it is. Throttled. */
 const VA_STATUS_INTERVAL_MS: u64 = 1000;
 static VA_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 static VA_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
@@ -233,8 +444,9 @@ fn publish_va_status(used_bytes: u64, spans: usize) {
     let mut tmp = dest.clone();
     tmp.push(".tmp");
     let ts = (now as f64) / 1000.0;
+    let never_reuse = if va_never_reuse() { "true" } else { "false" };
     let body = format!(
-        "{{\"pid\":{pid},\"used_bytes\":{used_bytes},\"spans\":{spans},\"ts\":{ts:.3}}}\n"
+        "{{\"pid\":{pid},\"used_bytes\":{used_bytes},\"spans\":{spans},\"never_reuse\":{never_reuse},\"ts\":{ts:.3}}}\n"
     );
     let write_ok = (|| {
         let mut file = fs::File::create(&tmp)?;
@@ -362,25 +574,56 @@ fn prop(device_id: i32) -> AllocationProp {
     }
 }
 
-/* Serves one hipMalloc request, or returns None to have the hook forward it unchanged. */
-pub(crate) fn serve(size: usize) -> Option<HookData> {
-    let entries = (*ENTRIES).as_ref()?;
+/* What the peralloc route decided for one hipMalloc. Oom is not Forward: the request must not
+ * reach hipMemCreate or the runtime allocator. */
+pub(crate) enum Serve {
+    Extent(HookData),
+    Forward,
+    Oom,
+}
+
+/* Serves one hipMalloc request, or asks the hook to forward it / return OOM. */
+pub(crate) fn serve(size: usize) -> Serve {
+    let _ = *VRAM_RESERVE;
+    let _ = *VA_NEVER_REUSE;
+    let Some(entries) = (*ENTRIES).as_ref() else {
+        return Serve::Forward;
+    };
     if size == 0 {
-        return None;
+        return Serve::Forward;
     }
     /* The device this request belongs to is the one the caller is on, read here (D11). */
-    let id = current_device(entries)?;
+    let Some(id) = current_device(entries) else {
+        return Serve::Forward;
+    };
     /* A device whose state cannot be built serves nothing: its pad granule would be missing (the C
      * version disabled the route the same way). */
-    let dev = device_state(entries, id)?;
+    let Some(dev) = device_state(entries, id) else {
+        return Serve::Forward;
+    };
     /* The block rounds up to the granularity and the pad is one granule behind it, so the request has
      * to leave room for both. */
     if size > usize::MAX - 2 * dev.granule {
-        return None;
+        return Serve::Forward;
     }
 
     let block = size.div_ceil(dev.granule) * dev.granule;
     let total = block + dev.granule;
+
+    /* Keep `reserve` bytes of driver-reported free VRAM. The pad granule is a shared handle already
+     * paid for; only `block` would be created. */
+    if vram_reserve_blocks(id, block) {
+        return Serve::Oom;
+    }
+
+    /* Physical first: if this fails, no VA has been reserved. */
+    let handle = match create(entries, block, dev.id) {
+        Ok(handle) => handle,
+        Err(ret) => {
+            log::warn!("hipMalloc(size={size}) hipMemCreate(block={block}) -> {ret}, forwarding");
+            return Serve::Forward;
+        }
+    };
 
     let address = match reserve(entries, total, dev.granule) {
         Ok(address) => address,
@@ -388,31 +631,27 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
             log::warn!(
                 "hipMalloc(size={size}) hipMemAddressReserve(total={total}) -> {ret}, forwarding"
             );
-            return None;
+            let released = unsafe { (entries.release)(handle.as_raw()) };
+            if released != HIP_SUCCESS {
+                log::warn!("hipMemRelease after failed reserve -> {released}");
+            }
+            return Serve::Forward;
         }
     };
-    /* A span that has already been mapped stays reserved; mapping it again is the reuse this
-     * route refuses. The overlapping reserve is also left in place — freeing it could punch a
-     * hole in the older span. */
+    /* A span that is mapped right now is not handed out again — in never-reuse mode that includes
+     * every span that was ever mapped. The overlapping reserve is also left in place: freeing it
+     * could punch a hole in the older span. The handle is ours and has not been mapped, so it is
+     * released. */
     if range_taken(address, total) {
         log::warn!(
             "hipMalloc(size={size}) hipMemAddressReserve(total={total}) -> va={address} overlaps a mapped span, forwarding"
         );
-        return None;
+        warn_if_failed("hipMemRelease", address, unsafe {
+            (entries.release)(handle.as_raw())
+        });
+        return Serve::Forward;
     }
 
-    let handle = match create(entries, block, dev.id) {
-        Ok(handle) => handle,
-        Err(ret) => {
-            log::warn!("hipMalloc(size={size}) hipMemCreate(block={block}) -> {ret}, forwarding");
-            warn_if_failed(
-                "hipMemAddressFree",
-                address,
-                free_address(entries, address, total),
-            );
-            return None;
-        }
-    };
     let mapped = unsafe { (entries.map)(address.as_ptr(), block, 0, handle.as_raw(), 0) };
     if mapped != HIP_SUCCESS {
         log::warn!(
@@ -426,13 +665,14 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
             address,
             free_address(entries, address, total),
         );
-        return None;
+        return Serve::Forward;
     }
     /* The range has been mapped: it is abandoned as a VA even if this request is not served. */
     remember_mapped(address, total);
     /* A block whose grant did not land is not served: with device-only the host read faults, with no
      * grant the device read does, and the runtime never sees this pointer either way (DESIGN.md D10),
-     * so the mapping and handle are undone here and the VA stays reserved. */
+     * so the mapping and handle are undone here and the VA stays reserved — and stays in the map,
+     * because this is not a teardown. */
     if set_access(entries, dev, address, block, "block") != Access::Granted {
         log::warn!(
             "hipMalloc(size={size}) not served: va={address} block={block} has no device+host grant"
@@ -443,7 +683,7 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
         warn_if_failed("hipMemRelease", address, unsafe {
             (entries.release)(handle.as_raw())
         });
-        return None;
+        return Serve::Forward;
     }
 
     /* The block is valid and usable without the slack behind it, so a pad mapping that fails costs
@@ -465,7 +705,7 @@ pub(crate) fn serve(size: usize) -> Option<HookData> {
         None
     };
 
-    Some(HookData {
+    Serve::Extent(HookData {
         address,
         size,
         origin: Origin::Extent(Extent {
@@ -531,8 +771,8 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
      * external/SVM free) when the memory is not pool-owned, so work still reading the block has
      * finished by the time the mapping goes away. The route bypasses that path and takes its blocks
      * apart itself, so it owes the same wait — there is no public "sync all streams", the device-wide
-     * sync is the equivalent. Kept for that parity, not as a fix: the NaN and the hang survive it
-     * (../doc/hook-free-path-nan-vs-oom.md §6). */
+     * sync is the equivalent. Kept for that parity, not as a fix: the NaNs and the hang seen on this
+     * free path survive it. */
     let synced = unsafe { (entries.device_synchronize)() };
 
     if synced != HIP_SUCCESS {
@@ -541,9 +781,10 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
         clear_error(entries);
     }
 
-    /* Unmap and release the handle; the reserved VA is left in place so this span cannot be
-     * mapped again (DESIGN.md D10). A step that fails is a warning — the record is already out
-     * of the registry (D6). */
+    /* Unmap and release the handle. What happens to the VA is the mode's call (D10): reuse mode
+     * gives the span back below, so it can be reserved and mapped again; never-reuse mode leaves it
+     * in place, which is the pre-fix workaround. A step that fails is a warning — the record is
+     * already out of the registry (D6). */
     let mut incomplete = false;
     let unmapped = unsafe { (entries.unmap)(address.as_ptr(), extent.block) };
     incomplete |= unmapped != HIP_SUCCESS;
@@ -558,6 +799,18 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
     let released = unsafe { (entries.release)(extent.handle.as_raw()) };
     incomplete |= released != HIP_SUCCESS;
     warn_if_failed("hipMemRelease", address, released);
+
+    if !va_never_reuse() {
+        let freed = free_address(entries, address, extent.total);
+        incomplete |= freed != HIP_SUCCESS;
+        warn_if_failed("hipMemAddressFree", address, freed);
+        if freed == HIP_SUCCESS {
+            /* The only sight the outside has of a span becoming reusable: teardown is otherwise
+             * silent when every step worked. */
+            log::info!("hipFree(va={address}) gave {} bytes of VA back, reusable", extent.total);
+        }
+        forget_mapped(address);
+    }
 
     incomplete
 }

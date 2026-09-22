@@ -194,6 +194,7 @@ data class HardwareVmmVa(
     @SerialName("total_source") val totalSource: String = "default",
     val pid: Int? = null,
     val spans: Int = 0,
+    @SerialName("never_reuse") val vaNeverReuse: Boolean = false,
 )
 
 @Serializable

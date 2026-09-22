@@ -19,7 +19,7 @@ enum class ConfigSection(
     Rocm(
         title = "ROCm",
         description = "RDNA 4 allocation patch: none, tail guard, or VMM",
-        fieldKeys = setOf("amdfq"),
+        fieldKeys = setOf("amdfq", "amdfq_vram_reserve_gib", "amdfq_va_never_reuse"),
     ),
     ModelSpec(
         title = "Model Spec",
