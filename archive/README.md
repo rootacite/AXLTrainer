@@ -13,9 +13,9 @@ original paths, so unpacking restores exactly the layout the files had.
 
 | Bundle | Size | sha256 | What is in it |
 | --- | --- | --- | --- |
-| `amdfq-pocs-2026-09.tar.zst.gpg` | 952 985 B | `b7dc40fcc73fe78cae563b8c1e5098ca97909f3089df67f12eea0e8dc4635c6a` | The original C tail guard (`amdfq/amdfq-tail`, sources and CMake builds), the HIP VMM churn/integrity probe (`amdfq/vmm-cc`), the two cross-process arms (`amdfq/vmm-ru`, `amdfq/vmm-ru.oneshot-wip`), the Vulkan/RADV arm (`amdfq/fk-vmm`), the hipMalloc-stream replay tool and its captured streams (`amdfq/replay`, `amdfq/streams`), and the cost-comparison notes (`amdfq/eva-2.md`). |
-| `gfx1201-disclosure-2026-09.tar.zst.gpg` | 3 296 783 B | `5a588b75aa3830976f913e909995159d80386cf74ffcaa1a04fdf7354877f130` | The PoC binaries and sources with their evidence tree (`amdfq/final`: `exploit1*`, `half-raw-2s*`, `evi/`, `tools/`), and the vendor security-report package (`amdfq/doc/psirt`: report, email, attachments, evidence, poc, pictures). |
-| `gfx1201-research-2026-09.tar.zst.gpg` | 27 313 131 B | `919e647a324c2a61c8770a96b602c0bddde97dd06df3c4332f93ea2290c0b4e6` | The writeups (`amdfq/doc`: route comparisons, live measurement notes, the overread narrative, the VA-never-reuse pair, the torch-test ladder and its stdout extracts), the kernel-overread conclusions (`conclusions/`), the field reports and repros (`fixes/`: fix1, fix2, fix3, hip1), and the HIP probes (`tools/hip/`). |
+| `amdfq-pocs-2026-09.tar.zst.gpg` | 953 543 B | `8f28ed445ceb14eb230c3901de1cd25981f11ff84252ab850943691b86d772e2` | The original C tail guard (`amdfq/amdfq-tail`, sources and CMake builds), the HIP VMM churn/integrity probe (`amdfq/vmm-cc`), the two cross-process arms (`amdfq/vmm-ru`, `amdfq/vmm-ru.oneshot-wip`), the Vulkan/RADV arm (`amdfq/fk-vmm`), the hipMalloc-stream replay tool and its captured streams (`amdfq/replay`, `amdfq/streams`), and the cost-comparison notes (`amdfq/eva-2.md`). |
+| `gfx1201-disclosure-2026-09.tar.zst.gpg` | 3 290 218 B | `1b4d1ab42a49986e76aafeb5343e74bea5e171d780b243e9dce488f66b98e0d3` | The PoC binaries and sources with their evidence tree (`amdfq/final`: `exploit1*`, `half-raw-2s*`, `evi/`, `tools/`), and the vendor security-report package (`amdfq/doc/psirt`: report, email, attachments, evidence, poc, pictures). |
+| `gfx1201-research-2026-09.tar.zst.gpg` | 27 312 186 B | `2dbce26dd9bd676ae68fff31d9fbf42606133edf78b1934b1c6373989fa387f1` | The writeups (`amdfq/doc`: route comparisons, live measurement notes, the overread narrative, the VA-never-reuse pair, the torch-test ladder and its stdout extracts), the kernel-overread conclusions (`conclusions/`), the field reports and repros (`fixes/`: fix1, fix2, fix3, hip1), the HIP probes (`tools/hip/`), and this machine's HIP toolchain notes (`HIP.md`). |
 
 Total: 31 MB in the working tree.
 
@@ -37,31 +37,40 @@ mkdir -p /tmp/sealed && gpg --batch --quiet --decrypt --passphrase-file ~/.axl-a
 
 ## Plaintext mirror
 
-The same files also exist, unencrypted, at `/storage/amdfq_sealed/` (`/storage` is the NFS mount on
-the author's network), with the original relative paths preserved — `amdfq/vmm-ru`, `conclusions/`,
-`fixes/`, `tools/hip` … 951 files, 125 MB. It needs no passphrase, and it is the recovery path if the
-key file is ever lost. It is a mirror, not a working copy: change the bundles and this together.
+The same files also exist, unencrypted, at `/storage/amdfq_sealed/` (the NFS mount on the author's
+network), with the original relative paths preserved — `amdfq/vmm-ru`, `conclusions/`, `fixes/`,
+`tools/hip`, `HIP.md` … 952 files. It needs no passphrase, and it is the recovery path if the key file
+is ever lost. It is a mirror, not a working copy: change the bundles and this together.
 
 ## Residue: git history
 
 The removal was committed as a working-tree change only. Everything that was tracked before it —
-`amdfq/streams`, `amdfq/replay`, most of `amdfq/doc`, `conclusions/`, `fixes/`, `HIP.md`'s old
-references, `tools/hip/` — is still reachable in this repository's history
-(`git log --diff-filter=D`, `git show <commit>:<path>`). Rewriting that history has not been done;
-until it is, the working tree is not the only place this material lives.
+`amdfq/streams`, `amdfq/replay`, most of `amdfq/doc`, `conclusions/`, `fixes/`, `HIP.md` — is still
+reachable in this repository's history (`git log --diff-filter=D`, `git show <commit>:<path>`).
+Rewriting that history has not been done; until it is, the working tree is not the only place this
+material lives.
+
+## Provenance
+
+The first sealing run (2026-09-23 03:08) built and verified all three bundles against the working tree,
+and the tree copies were deleted only after that: every bundle was decrypted and `diff -r`-compared to
+its source paths, and the mirror was compared file-for-file (951 files, no differences).
+
+A later run rebuilt the bundles and was interrupted by an unclean machine shutdown: the disclosure
+bundle came back as a 0-byte file (its data never reached the disk) and the research bundle was left
+one revision old. All three were then rebuilt from the mirror — which is why the mirror, not the
+working tree, is the reference copy — and re-verified the same way (952 files, no differences, including
+`HIP.md`). The passphrase and the mirror were untouched by that shutdown.
 
 ## How the bundles were made
 
 ```bash
-# per bundle, from the repo root; <paths> are the original relative paths
-tar -C <repo> -cf - <paths> | zstd -19 -T0 \
+# per bundle; <paths> are the original relative paths, and the mirror is the tar root because the
+# working-tree copies are gone
+tar -C /storage/amdfq_sealed -cf - <paths> | zstd -19 -T2 \
   | gpg --batch --yes --symmetric --cipher-algo AES256 \
         --passphrase-file ~/.axl-archive-key -o archive/<name>.tar.zst.gpg
 
-# and the plaintext mirror, paths preserved
+# the plaintext mirror itself, paths preserved (run before the tree copies were deleted)
 cd <repo> && rsync -aR --checksum <paths> /storage/amdfq_sealed/
 ```
-
-Before the working tree copies were deleted, both routes were verified against them: every bundle was
-decrypted and `diff -r`-compared to its source paths, and the mirror was compared file-for-file
-(951 files, no differences).

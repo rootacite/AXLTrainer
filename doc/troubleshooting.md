@@ -18,6 +18,8 @@ The field report this was diagnosed from is sealed in `archive/` — 涉及负�
 
 **Root cause:** RX 9070 XT (gfx1201) Tensile GEMM reads one page past a torch allocation during LoRA backward (TE LoRA → UNet cross-attn `d(encoder_hidden_states)` is enough). Fatality depends on whether the next page is unmapped (`HSA_SVM_GUARD_PAGES` defaults to 1); the same over-read against a mapped neighbour is silent. The read is bounded (at most 4 KiB past the operand) and its values are discarded inside the kernel — the tail loop zeroes the registers it loaded — so it moves no numbers; the unmapped page is what turns it into a process kill. Which shapes and configurations lose that particular lottery is a scatter rather than a rule, and the experiment records behind it are sealed in `archive/` — 涉及负责任披露流程，暂不公开.
 
+The HIP toolchain notes for this stack (the wheel layout, the four environment fixes that make `hipcc` work, the VMM API pitfalls) and the probes they go with are sealed in `archive/` — 涉及负责任披露流程，暂不公开.
+
 **Workarounds:** nothing trainer-side fixes this — these kernels read past their operands whatever the configuration, and no stack has been immune: the current pin and the one before it both die, on different shapes. The measures below change the *outcome*, not the over-read, and are ranked by cost:
 
 - **Treat it as a restart event** — what this repo does by default. The process exits `-6` and leaves `state.json` at `training` with a dead PID; a Reset clears it. Keep the checkpoint cadence tight enough that losing one interval is acceptable, and restart with `[training].resume_lora_path` (weights only — step/epoch counters restart at 0).

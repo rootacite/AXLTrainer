@@ -5,17 +5,19 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/home/acite/LLM/Character/LLLJ/"
+train_data_dir = "/tmp/lllj-smoke/"
 output_name = "lllj"
 # none | tail | vmm — Ranko Utils → ROCm. Takes effect on the next Train start.
 amdfq = "vmm"
-# GiB of driver-reported free VRAM (amdgpu mem_info_vram_*) the VMM hook will not consume. 0 = off (default).
-# The pre-fix workaround for eviction handing a process's frames to another one; the 2026-09 kernel fixed that.
+# GiB of driver-reported free VRAM (amdgpu mem_info_vram_*) the VMM hook will not consume. 0 = off.
+# The pre-fix workaround for eviction handing a process's frames to another one. NEEDED on the stock
+# kernel: the current boot is 7.2.6-zen2-1-zen, which lacks that fix.
 # Ranko Utils → ROCm. Takes effect on the next Train start. Ignored unless amdfq = "vmm".
-amdfq_vram_reserve_gib = 0
+amdfq_vram_reserve_gib = 0.5
 # Pre-fix workaround: a freed range keeps its GPU virtual address for the process lifetime. false = the hook
-# gives the VA back on free (needs the 2026-09 kernel). Ranko Utils → ROCm. Ignored unless amdfq = "vmm".
-amdfq_va_never_reuse = false
+# gives the VA back on free, which needs the fixed kernel (7.2.7-acite++); the stock kernel does not. NEEDED as
+# long as this boots the stock kernel. Ranko Utils → ROCm. Ignored unless amdfq = "vmm".
+amdfq_va_never_reuse = true
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"
@@ -40,9 +42,9 @@ learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 12
+epoch = 1
 save_every_n_epochs = 1
-save_every_n_steps = 50
+save_every_n_steps = 10
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
 # training starts. Weights only: step/epoch counting still starts at 0, and this
 # run writes into its own timestamped run directory.
