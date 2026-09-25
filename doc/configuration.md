@@ -21,11 +21,52 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 | `pretrained_model_name_or_path` | `"/opt/models/diffusers/waillu_170"` | SDXL base model. A diffusers directory, or a single-file checkpoint path (`from_single_file`). |
 | `output_dir` | `"/home/acite/LLM/axltrainer/outputs"` | Root for run directories: each run writes `{output_dir}/{output_name}_{YYYYMMDD_HHMMSS}/…`. Created if missing. |
 | `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
-| `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. |
+| `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. Since `[[environment.train_data]]` exists, this key **mirrors that list's first entry** and is the single folder the paths that expect one read (checkpoint metadata, the Utils → Environment tag button, and a config that has no list). The trainer drops it as soon as the list has an entry. |
 | `output_name` | `"rein"` | Run name; prefix of every artifact path, of the run directory, and of the TensorBoard project. Sanitized to `[A-Za-z0-9._-]` in the run id and checkpoint filename. |
 | `amdfq` | `"none"` | Allocation patch for the next Train start: `"none"`, `"tail"` (`amdfq-tail-rs`), or `"vmm"` (`amdfq-vmm-rs`). Ranko Utils → **ROCm**. `start_train.sh` `LD_PRELOAD`s the matching release `.so`; a missing library fails the start instead of running unpatched. On RDNA 4, Tail or VMM is strongly preferred; VMM uses less VRAM system-wide because it bypasses ROCr's Memory Pool. |
 | `amdfq_vram_reserve_gib` | `0.0` | GiB of driver-reported free VRAM (`/sys/class/drm/cardN/device/mem_info_vram_total − mem_info_vram_used`) the VMM hook will not consume. This is the amdgpu counter, not `hipMemGetInfo` (which does not see the compositor or RADV). The hooked `hipMemGetInfo` reports that remaining minus this floor so the caching allocator sees other clients. Before `hipMemCreate`, the hook compares the same counter against this floor plus the rounded request; if the allocation would leave less, `hipMalloc` returns OOM instead of creating or forwarding. **Optional**: this was the workaround for the driver handing a process's frames to another one on eviction, which the 2026-09 kernel fixed — leave it at `0` (`0` is also the default and means off) unless you run an older kernel. Ranko Utils → **ROCm**. Takes effect on the next Train start. Ignored unless `amdfq = "vmm"`. |
 | `amdfq_va_never_reuse` | `false` | **Optional** VMM-hook switch, ignored unless `amdfq = "vmm"`. `false` (default): a `hipFree` gives its range's GPU virtual address back to the driver, so the address is reusable and the Dashboard's VA bar only shows what the hook holds right now. `true`: the pre-fix behaviour, kept for an older kernel — a range that was mapped once keeps its VA for the process lifetime and is never mapped again, so that bar only grows. The workaround existed because tearing a mapping down used to leave the compute VM's TLB stale, which made same-address reuse unsafe; the 2026-09 kernel fixed that. Ranko Utils → **ROCm**. Takes effect on the next Train start. |
+| `amdfq_pool_mib` | `64` | **Optional** VMM-hook allocation pool, in MiB; ignored unless `amdfq = "vmm"`. `0` is off: every `hipMalloc` gets its own `hipMemCreate` + reserve + map. A value in `16`–`512` turns on one `hipMemCreate` per pool of that size: a request of **at most half the pool size** is carved out of a pool that already exists (no driver call at all), and anything larger keeps its own handle. Several pools may exist at once, a new one is built when no existing pool has room, and a pool is released — handle, mapping and (unless `amdfq_va_never_reuse`) its VA — once the upper layer has freed every block carved out of it. Values outside `16`–`512` are clamped by the hook, and a pool that cannot be built completely falls back to the per-request route. Ranko Utils → **ROCm**. Takes effect on the next Train start. The hook's own default, with `AMDFQ_POOL_SIZE` unset, is off; this row is what the shipped config asks for, and it is the value the pool-size sweep measured as 0.6 % *slower* than no pool at all on this repo's own workload (`test/bench_alloc_pool.py`).<br><br>**A pool is not better when bigger.** It is committed VRAM the driver cannot hand to anything else until its last block is freed, so an oversized pool risks OOM and fragmenting the card, and the savings fall off — the small-request traffic it removes is a bounded share of each step. One more consequence of sharing: blocks inside a pool are neighbours, so an over-read past a block still lands in mapped memory but an over-*write* past its end can reach another live block, where a solo allocation would have hit the throwaway pad behind it. |
+
+### `[[environment.train_data]]` — dataset folders and their repeats
+
+The datasets a run trains on: one block per folder, `repeat` = how often that folder's images are
+drawn inside a single epoch.
+
+```toml
+train_data_dir = "/home/acite/LLM/Character/LLLJ/"   # mirrors the first block
+output_name = "lllj"
+
+[[environment.train_data]]
+path = "/home/acite/LLM/Character/LLLJ/"
+repeat = 3
+
+[[environment.train_data]]
+path = "/home/acite/Pictures/05_babara"
+repeat = 1
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `path` | — (required) | Dataset folder, same shape as `train_data_dir` (images + same-named `.txt` captions, optional `{stem}.mask.png`). |
+| `repeat` | `1` | How many times this folder is drawn inside one epoch, `1`–`512`. A missing path and a repeat outside the range are refused at startup with `train_data[<i>]: …`; `train_data` must be an array of tables. |
+
+- **No block at all** means one entry built from the `train_data_dir` scalar with `repeat = 1`, which is
+  what every config written before this list keeps doing.
+- The repeat reaches training in one place: the folder's images get their record index **repeated** in the
+  bucket list the batch sampler draws from. So one epoch is `images × repeat` samples, and `len(dataloader)`
+  — from which `steps_per_epoch`, the total step count, the progress bars and the TE cosine schedule are all
+  derived — grows with the sum. `len(dataset)` itself stays the number of unique images (the latent warm-up
+  walks that index range, and must not reload one latent per repeat).
+- A batch is still one aspect-ratio bucket's worth of images, so a repeated image can land in the same batch
+  as its own copy (with its own noise draw and its own weight in the batch mean). A small folder with a large
+  repeat can therefore fill a batch with near-copies of the same few images.
+- Each folder keeps **its own** `<folder>/.latents_cache/`: the cache key hashes the absolute image path
+  and the fit geometry, so two folders never collide and a folder's cache is re-encoded on its own.
+
+Ranko's Utils → Environment section is the editor (a row per folder with its repeat), and the Images,
+Statistics and Tag dataset surfaces act on the folder selected there. `[[validation.samples]]`'s own
+`repeat` is unrelated: that one is how many images a sample point renders.
 
 ### `[model_spec]` — base-model family + checkpoint metadata
 
@@ -90,7 +131,7 @@ bucket and the leftover bars carry loss weight 0, so they neither train nor coun
 | Key | Default | Notes |
 | --- | --- | --- |
 | `cache_latents` | `true` | Pre-encode all images to latents before training. |
-| `cache_latents_to_disk` | `true` | Persist encoded latents to `<train_data_dir>/.latents_cache/` (SHA1-keyed `.pt` files, atomic writes). Reused across runs. |
+| `cache_latents_to_disk` | `true` | Persist encoded latents to `<train_data_dir>/.latents_cache/` (SHA1-keyed `.pt` files, atomic writes). Reused across runs while the file holds the keyed bucket's latent; a file that does not is re-encoded. |
 | `gradient_checkpointing_unet` | `true` | After PEFT wrap, call `enable_gradient_checkpointing()` on the UNet. Saves VRAM by recomputing activations in backward; turn off for faster steps if the GPU has headroom. |
 | `gradient_checkpointing_te` | `true` | Same for both text encoders (`gradient_checkpointing_enable` / `enable_gradient_checkpointing`, plus `enable_input_require_grads` because embeddings stay frozen). |
 | `shuffle_caption` | `true` | Shuffle caption tokens after `keep_tokens`, deterministically per epoch. |

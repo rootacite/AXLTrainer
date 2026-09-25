@@ -16,15 +16,18 @@
 | --- | --- |
 | `HookData::address` | 块首地址：`hipMalloc` 交给调用方的那个指针，同时是 map 的 key |
 | `HookData::size` | 调用方要的字节数，原样保存 |
-| `HookData::origin` | 这笔块归谁：`Runtime`（runtime 自己分的，free 原样转回去）或 `Extent(…)`（本 crate reserve 出来的） |
+| `HookData::origin` | 这笔块归谁：`Runtime`（runtime 自己分的，free 原样转回去）、`Extent(…)`（本 crate 单独 reserve + Create 出来的）或 `Pooled(…)`（从池里切出来的，free 把区间还给池，D12） |
 | `Extent::block` | 从 `handle` 映射出来的字节数：请求向上取整到分配粒度 |
 | `Extent::total` | 该地址上 reserve 的总字节数：`block` + 一颗 pad granule；一旦 Map 过就不再 `hipMemAddressFree`（D10） |
 | `Extent::handle` | 块自己的 `hipMemGenericAllocationHandle_t`，free 时 `hipMemRelease` |
 | `Extent::pad` | 块后面那颗共享 pad granule 的字节数；映射失败就是 `None` |
 | `Extent::device` | 这块属于哪张卡：unmap / release 都作用于「当前设备」，free 先 `hipSetDevice` 切回去（D11） |
+| `Pooled::pool` | 这笔区间来自哪个池（池 id，D12）；id 单调递增、永不复用，所以旧记录不可能指到一个新池上 |
+| `Pooled::offset` / `Pooled::len` | 区间在池里的起点与长度（长度是请求向上取到 granule）。池自己的 handle、跨度、粒度、设备属于池，不存在记录里 |
 
-布局本身（`\|---- block ----\|---- pad（共享 handle）----\|`）和它的来由写在 `peralloc.rs` 头部。
-没有并行的计数器、标志位、名字表——所以也就不会出现 C 版那种「计数和实际块对不上」。
+布局本身（`\|---- block ----\|---- pad（共享 handle）----\|`）和它的来由写在 `peralloc.rs` 头部；池化块的
+布局是池的一整段映射里的一个区间，写在 `pool.rs` 头部（D12）。没有并行的计数器、标志位、名字表——所以也就
+不会出现 C 版那种「计数和实际块对不上」。
 
 ## D2 并发立场：torch 会并发调的 hip API，就当它并发安全
 
@@ -38,9 +41,10 @@
 
 ## D3 锁只包住自己的数据结构
 
-加锁只包住 crate 自己的数据结构（`REGISTRY` 的 map），转发、teardown 和日志都在
-锁外：任何 `real::*()` 调用期间都不持有锁。这条是可机械检查的——`src/hooks.rs` 里不允许出现
-`RwLock`/`Mutex`/`.lock(`/`.read(`/`.write(`，`test.sh` 每次都查。
+加锁只包住 crate 自己的数据结构（`REGISTRY` 的 map；池的 `POOLS` 表与空闲表，D5/D12），转发、teardown、
+建池、拆池和日志都在锁外：任何 `real::*()` 调用期间都不持有锁。这条是可机械检查的——`src/hooks.rs` 里不
+允许出现 `RwLock`/`Mutex`/`.lock(`/`.read(`/`.write(`，`test.sh` 每次都查（池的锁在 `pool.rs`，那里的
+runtime 调用同样在锁外）。
 
 ## D4 日志走 `log` crate
 
@@ -59,13 +63,16 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 
 | 全局 | 位置 | 用途 |
 | --- | --- | --- |
-| `REGISTRY: LazyLock<RwLock<HashMap<Address, HookData>>>` | `registry.rs` | 唯一的分配状态，也是 crate 的锁（D3） |
+| `REGISTRY: LazyLock<RwLock<HashMap<Address, HookData>>>` | `registry.rs` | 唯一的分配状态，也是 crate 第一把锁（D3） |
 | `real.rs` 的符号缓存，每个符号一个 `LazyLock<Option<F>>` | `real.rs` | 真符号解析：两个分配门 + `hipMemGetInfo`（拦截给上层看的账面，剩余按 amdgpu `mem_info_vram_*` 算）+ 路线的 8 个 VMM 入口（`hipMemSetAccess`、`hipMemCreate`/`Map`/`Unmap`/`Release`、`hipMemAddressReserve`/`Free`、`hipMemGetAllocationGranularity`）+ `hipGetDevice`/`hipSetDevice`/`hipGetLastError`/`hipDeviceSynchronize` + 2 个可选的 peer 查询（`hipGetDeviceCount`、`hipDeviceCanAccessPeer`） |
 | `ENTRIES: LazyLock<Option<Entries>>` | `peralloc.rs` | 路线是否就绪：这一组入口全都解析到了才开。VRAM 保留读 sysfs，不依赖 `hipMemGetInfo` |
 | `DEVICES: [OnceLock<Option<Device>>; 32]` | `peralloc.rs` | 每张卡一份状态（D11）：分配粒度、该卡共享的 pad granule、能访问它的 peer 表；建失败也记住，序号超出上界直接转发 |
 | `MAPPED_SPANS: LazyLock<RwLock<BTreeMap<usize, usize>>>` | `peralloc.rs` | 正在映射的 VA 跨度（首地址 → reserve 长度）。新的 reserve 若与其中任何一段相交，这一笔不 Map，转发给 runtime；复用模式下 free 把该段从表里移除，never-reuse 模式下 free 之后仍留在表里——于是它退化成「曾经 Map 过」的集合（D10） |
 | `VRAM_RESERVE: LazyLock<usize>` | `peralloc.rs` | 驱动计数器 free 的地板（`AMDFQ_VRAM_RESERVE` 字节，缺省 `0`，即关闭；非 0 是内核修复前的旧 workaround，D10）。`mem_info_vram_total - mem_info_vram_used < reserve + block` 时 `hipMalloc` 返回 OOM，不 Create、不转发。拦截的 `hipMemGetInfo` 把 `free` 改成同一剩余减 reserve，`total` 改成 sysfs total |
 | `VA_NEVER_REUSE: LazyLock<bool>` | `peralloc.rs` | `AMDFQ_VA_NEVER_REUSE`（`1`/`0`，缺省 `0`）：`1` 时 free 不把 VA 还给驱动，跨度留在 `MAPPED_SPANS` 里（D10） |
+| `POOL_SIZE: LazyLock<usize>` | `pool.rs` | `AMDFQ_POOL_SIZE`（字节，缺省 `0` 即关闭），clamp 到 [16 MiB, 512 MiB]，非整数按关闭处理（D12） |
+| `POOLS: LazyLock<RwLock<Table>>` | `pool.rs` | 活着的池：池 id → `Pool`（跨度、reserve 长度、handle、粒度、尾部 pad、空闲表、`live` 计数）。crate 的第二把锁，只包住池表与空闲表；建池、拆池的 runtime 调用都在锁外（D3/D12） |
+| `SIZE_UNAVAILABLE_WARNED: AtomicBool` | `pool.rs` | granule 比池还大（该设备上池不可能成立）时只 warn 一次 |
 | `SYSFS_MISSING_WARNED: AtomicBool` | `peralloc.rs` | amdgpu `mem_info_vram_*` 读不到时只打一次 warn，之后仍跳过保留检查 |
 | `INSTALL: LazyLock<()>` | `logging.rs` | 装 logger 并设级别 |
 | `LOGGER` | `logging.rs` | 无状态 sink |
@@ -143,3 +150,47 @@ fork 之后定义任何行为（HIP 的 `hipInit` note 就是这条界线；那�
 
 一张卡第一次被用到时，该卡的 `OnceLock` 会让并发的 `hipMalloc` 等这一次建立（建好之后是纯读）——
 和旧版首次 init 同一性质，多卡只是把这一次挪到每张卡的头一笔分配上。
+
+## D12 小请求先从池里切，池空了就还给驱动
+
+`AMDFQ_POOL_SIZE`（字节，变量缺省 = 关闭，clamp 到 [16 MiB, 512 MiB]，非整数按关闭处理）打开池路线
+（`pool.rs`）。「变量缺省即关闭」是刻意的：hook 被手工 preload 时不该凭空拿到池。仓库 shipped 的
+`config.toml` 把 `amdfq_pool_mib` 给成 `64`，于是正常训练启动（`start_train.sh`）是带着 64 MiB 的池跑的；
+那个值对应的实测代价见 D12 末尾。它存在的理由：一笔 `hipMalloc` 在直连路线上要付一次 `hipMemCreate` +
+一次 `hipMemAddressReserve` + 两次 `hipMemMap` + 两次 `hipMemSetAccess`，而一个训练步会打上上百次
+`hipMalloc`、其中大头是同一批小尺寸。池把这些驱动侧调用从「每笔请求」降到「每个池」。
+
+规则（按顺序）：
+
+1. `size <= PoolSize / 2` 的请求**优先**从池里切；更大的请求照 D10 的直连路线走（一笔请求一个 Create）。
+   阈值取一半，是为了让一个池里至少放得下两笔最大的可切分请求——池不会为一笔请求而存在。
+2. 池大小取该设备 granule 的**偶数倍**，于是 `PoolSize / 2` 是整数个 granule，阈值内的任何请求都必然
+   放得进一个空池（`pool.rs` 的单元测试覆盖这一条）。
+3. **可以同时存在多个池**：本设备已有的池里没有装得下的空闲区间时新建一个；建池在锁外，所以并发线程可能
+   各建一个，这是允许的。
+4. 池的整段是**一次** `hipMemMap`，尾部一颗共享 pad granule：池内任意块的后面直到池尾都是映射内存，块与块
+   之间不需要 per-block pad，尾部那颗保护的是「落在池尾的那一笔」。块的越界**读**因此仍然落在映射内存里
+   （与直连落在共享 pad 上同效）；越界**写**则可能落进邻块，而直连落进的是没人读的 pad——这是池化相对直连
+   唯一新增的语义风险，也是不建议开大池、不默认开启的技术理由之一。
+5. **建池全有或全无**：Create → Reserve(PoolSize + granule) → Map 整段 → SetAccess 整段 → 尾部 pad 的
+   Map/SetAccess，任何一步失败就撤销已做的步骤并**回落到直连路线**。于是「池建不起来」的后果就是池关闭时
+   的行为，不会更糟。尾部 pad 也纳入构造而不像直连那样可省：省掉它，池尾那一笔会在**每一笔**落在池尾的
+   请求上暴露，而不是只影响一笔。
+6. **池空即还**：`live` 归零时把池的 handle、整段映射与 VA 一起还给驱动（VA 归不归还看
+   `AMDFQ_VA_NEVER_REUSE`，与 D10 同规则）。归还走的是直连拆卸同一段代码——把粒度换成 `PoolSize` 的
+   `Extent` 交给 `peralloc::teardown`，设备切回、`hipDeviceSynchronize`、VA 记账都不另开一套。
+7. 显存保留（`AMDFQ_VRAM_RESERVE`）只对**新池真正新提交的 `PoolSize`** 生效；池内切分不新提交物理内存。
+   保留水位拒绝建池时回落到直连路线，让这笔小请求按它自己的大小重新判定——与池关闭时一致。
+
+代价写在明处：池是别人拿不到的**已提交**显存（OOM 与碎片化的来源），能省的每步驱动调用次数有上界（边际
+收益递减）。这就是 Ranko 与 `doc/configuration.md` 上那句「池并非越大越好」的来由，也是 hook 一侧在变量
+未设时默认关闭的来由。同一把尺子下，`(PoolSize/2, PoolSize]` 区间的请求仍会做一次小于 `PoolSize` 的
+Create：本方案的不变量是「被池化的 MemCreate 恒为 `PoolSize`」，不是「任何 MemCreate 都不得小于
+`PoolSize`」。
+
+这条路线**没有**被实测成更快。`test/bench_alloc_pool.py` 在同一份 `config.toml` 负载上（128 张子集、每
+run 201 步、一档一次运行）量到：池关闭的中位步时 1.070–1.074 s，16/32/64/128 MiB 分别是 −0.1% / ±0.0% /
+−0.6% / −1.0%，256 MiB 两次尝试都在第 125 步被 OOM 终止，而池关闭的 9 次运行里只中止过 1 次。每次运行的
+损失轨迹与基线逐位相同，所以池本身是对的、只是不快：一个 run 内 13448 次 `hipMalloc` 摊在 215 s 的训练
+窗口上，即使每次分配的开销归零也只有 0.1–0.2% 的上限，而建池/拆池有自己的开销。仓库 shipped 的
+`amdfq_pool_mib = 64` 因此是维护者的选择，不是性能结论。

@@ -4,7 +4,7 @@ Beyond the desktop app, the repo ships several scriptable tools for preparing an
 
 ## `tools/` — caption/dataset utilities
 
-All scripts live in `tools/` and run from anywhere (paths are positional). Captions are the comma-separated tag lists in the `.txt` files next to images. An optional loss mask `{stem}.mask.png` (always PNG, grayscale; white = train, black = ignore) may sit next to the image; if it is absent, a training PNG/WebP with an alpha channel uses that alpha as the mask. Listings skip `*.mask.png` so a sidecar is never treated as a training sample. `dropper.py` / `tag_coser.py` move the sidecar with the image+caption pair. Unless noted, operations are **destructive in place** — back up before bulk edits.
+All scripts live in `tools/` and run from anywhere (paths are positional). Captions are the comma-separated tag lists in the `.txt` files next to images. An optional loss mask `{stem}.mask.png` (always PNG, grayscale; white = train, black = ignore) may sit next to the image; if it is absent, a training PNG/WebP with an alpha channel uses that alpha as the mask. Listings skip `*.mask.png` so a sidecar is never treated as a training sample. `dropper.py` / `tag_coser.py` move the sidecar with the image+caption pair. `mask_blur.py` writes such a sidecar from the alpha, which is how a hard, binary silhouette edge is softened without touching the training image. Unless noted, operations are **destructive in place** — back up before bulk edits.
 
 | Script | Purpose | Usage |
 | --- | --- | --- |
@@ -14,8 +14,9 @@ All scripts live in `tools/` and run from anywhere (paths are positional). Capti
 | `tag_counter.py` | Read-only tag frequency report (rank, count, % of files). | `python tag_counter.py <dir>` |
 | `tag_filter.py` | List images whose caption contains **all** given tags (AND, case-insensitive). Read-only. | `python tag_filter.py <dir> 'tag1, tag2'` |
 | `tag_editor.py` | PyQt6 GUI caption editor (thumbnail list + preview + editor). | `python tag_editor.py <dataset_dir>` |
-| `suf.py` | Shuffle dataset order and renumber files to zero-padded sequences, keeping image+caption pairs together. | `python suf.py <directory_path>` |
+| `suf.py` | Shuffle dataset order and renumber files to zero-padded sequences, keeping image+caption pairs together. **It splits names on the last dot, so `{stem}.mask.png` becomes a group of its own**: a run separates every mask from its image and leaves the masks as bare `<N>.png` files that the trainer then reads as samples (measured: 3 samples + 3 masks → 6 groups). Use the Statistics tab's **Shuffle Dataset** for a mask-safe rename. | `python suf.py <directory_path>` |
 | `stand_compose.py` | Composite transparent "stand" PNGs onto random background images (scaled to background height, centered). | `python stand_compose.py <stand_dir> <bg_dir> <output_dir>` |
+| `mask_blur.py` | Gaussian-blur each image's alpha channel into a `{stem}.mask.png` sidecar, which then overrides that alpha in training. The training images are never modified; a sidecar this tool did not write (hand-painted in Ranko) is skipped unless `--overwrite`. Blurs in parallel, one worker per CPU core. | `python mask_blur.py DIR [DIR ...] [--radius 16] [--jobs N] [--recursive] [--overwrite] [--dry-run] [-v]` |
 | `inspect_lora.py` | Inspect a LoRA `.safetensors`: metadata dict, key count, prefix distribution (`lora_unet`, `lora_te`, …), sample keys with shapes/dtypes. Read-only. | `python inspect_lora.py <lora.safetensors>` |
 | `dumper.py` | Dump a directory tree + all readable file contents into one UTF-8 text file (respects `.dumpignore`, skips binaries, honors `--max-bytes`). Useful for sharing project context with an AI. | `python dumper.py [root] -o OUTPUT [--max-bytes N] [--include-hidden] [--follow-symlinks] [--no-verbose]` |
 | `snapping.py` | KDE/Wayland active-window screenshot (2 s delay, then captures and crops the titlebar). Exploratory helper. | `python snapping.py` |
@@ -25,6 +26,8 @@ Notes:
 - `caper.py`, `dropper.py`, `tag_counter.py`, `tag_filter.py`, and `tag_coser.py` match tags as exact comma-separated tokens (after stripping whitespace) — except `tag_coser.py`, which uses substring matching.
 - `dropper.py` / `tag_coser.py` move files to a `trash/` subfolder rather than deleting, so mistakes are recoverable.
 - `tag_editor.py` (Qt6) skips anything under a `trash` dir.
+- `mask_blur.py` needs Pillow only (no torch) and writes its sidecars at the training image's own size on purpose: the loader resizes a sidecar back to the source size first, so a differently sized one would return as nearest-neighbour steps instead of a blur. `--radius` is the Gaussian σ in source-image pixels, i.e. `--radius 16` reaches a 2048 px image trained at 1024 as roughly 8 px; at ratio 1 the alpha path is exactly binary, while a 2×–4× downscale already leaves a 2–5 px ramp from the loader's own LANCZOS fit. Values outside 8–32 px still run, with a note on stderr; `--dry-run` reports without writing; the sidecar carries an `axl_mask_blur` PNG text chunk holding the radius, and that marker is what makes a rerun replace its own output. Exit code 1 means at least one image could not be read or written.
+- `mask_blur.py` fans the images out over `--jobs` worker processes, defaulting to one per CPU core (`0`); a single image, or `--jobs 1`, runs in-process. The pool preserves the input order, so the report reads the same either way, and one worker holds one decoded image at a time — lower `--jobs` if RAM is tight. Measured on 80 tall 立绘 (~1014×3204): 9.0 s at `--jobs 1` against 0.71 s at the default on a 28-core machine.
 
 ## `tagger/` — ONNX caption generator
 

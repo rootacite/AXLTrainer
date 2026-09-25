@@ -108,6 +108,9 @@ class TomlFloatEncodingTest {
         assertEquals("\"vmm\"", base.copy(amdfq = "vmm").toTomlSections()["environment"]!!["amdfq"])
         assertTrue("amdfq" in ConfigSection.Rocm.fieldKeys)
         assertEquals("0", base.amdfqVramReserveGib)
+        // ktoml refuses an integer literal for a Double, so saving the reserve row as 0 has to
+        // leave `0.0` behind; a bare `0` stops Ranko from parsing its own config.toml.
+        assertEquals("0.0", base.toTomlSections()["environment"]!!["amdfq_vram_reserve_gib"])
         assertEquals(
             "1.5",
             base.copy(amdfqVramReserveGib = "1.5").toTomlSections()["environment"]!!["amdfq_vram_reserve_gib"],
@@ -119,6 +122,20 @@ class TomlFloatEncodingTest {
             base.copy(amdfqVaNeverReuse = true).toTomlSections()["environment"]!!["amdfq_va_never_reuse"],
         )
         assertTrue("amdfq_va_never_reuse" in ConfigSection.Rocm.fieldKeys)
+        // The pool row is a Kotlin `Int`, so it stays a bare integer literal. The shipped default is
+        // 64 MiB (`0` is off, and the hook clamps anything outside [16, 512] MiB, which the picker
+        // never offers).
+        assertEquals("64", base.amdfqPoolMib)
+        assertEquals("64", base.copy(amdfqPoolMib = "").toTomlSections()["environment"]!!["amdfq_pool_mib"])
+        assertEquals("128", base.copy(amdfqPoolMib = "128").toTomlSections()["environment"]!!["amdfq_pool_mib"])
+        assertEquals("0", base.copy(amdfqPoolMib = "0").toTomlSections()["environment"]!!["amdfq_pool_mib"])
+        assertTrue("amdfq_pool_mib" in ConfigSection.Rocm.fieldKeys)
+        assertEquals(null, base.validate()["amdfq_pool_mib"])
+        assertEquals(null, base.copy(amdfqPoolMib = "512").validate()["amdfq_pool_mib"])
+        assertEquals("0, or 16 to 512", base.copy(amdfqPoolMib = "8").validate()["amdfq_pool_mib"])
+        assertEquals("0, or 16 to 512", base.copy(amdfqPoolMib = "1024").validate()["amdfq_pool_mib"])
+        assertEquals("Enter an integer", base.copy(amdfqPoolMib = "sixty").validate()["amdfq_pool_mib"])
+        assertTrue(TrainingConfigForm.amdfqPoolMibOptions.all { it == 0 || it in 16..512 })
     }
 }
 

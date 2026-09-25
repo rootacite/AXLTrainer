@@ -36,6 +36,9 @@ def _write_mask(path: Path, size, paint) -> None:
 
 def _cfg(data_dir: str, resolution: int = 64, **overrides) -> TrainConfig:
     cfg = TrainConfig(
+        # The repo's `[[environment.train_data]]` blocks outrank `train_data_dir`: a test that
+        # points the config at its own folder has to drop them or it reads another dataset.
+        train_data=[],
         train_data_dir=data_dir,
         enable_bucket=False,
         train_resolution=resolution,

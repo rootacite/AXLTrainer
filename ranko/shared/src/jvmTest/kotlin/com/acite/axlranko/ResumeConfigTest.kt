@@ -23,6 +23,21 @@ class ResumeConfigTest {
         return file
     }
 
+    /** The same fixture with the VMM reserve row already sitting in `[environment]`. */
+    private fun writeConfigWithReserve(value: String): java.io.File {
+        val file = Files.createTempFile("axl-config", ".toml").toFile()
+        file.deleteOnExit()
+        file.writeText(
+            LEGACY_CONFIG
+                .replace("RESUME_PLACEHOLDER", "")
+                .replace(
+                    "output_name = \"haruko\"",
+                    "output_name = \"haruko\"\namdfq_vram_reserve_gib = $value",
+                ),
+        )
+        return file
+    }
+
     @Test
     fun legacyConfigWithoutResumeKeyParses() {
         val config = assertNotNull(loadTrainerConfig(writeConfig().absolutePath.toPath()))
@@ -40,6 +55,9 @@ class ResumeConfigTest {
         assertEquals("0", form.amdfqVramReserveGib)
         assertEquals(false, config.environment.amdfqVaNeverReuse)
         assertEquals(false, form.amdfqVaNeverReuse)
+        // A config written before the row existed gets the shipped default, not off.
+        assertEquals(64, config.environment.amdfqPoolMib)
+        assertEquals("64", form.amdfqPoolMib)
     }
 
     @Test
@@ -64,6 +82,56 @@ class ResumeConfigTest {
         assertTrue(patched.contains("amdfq_vram_reserve_gib = 0.0"))
         assertTrue(patched.contains("output_name = \"haruko\""))
         assertTrue(patched.contains("[bookkeeping]"))
+    }
+
+    /** The pool row is not in a legacy config.toml at all: the patcher has to add it, and a second
+     * save must not append a second copy. */
+    @Test
+    fun patcherInsertsPoolSizeIntoLegacyFile() {
+        val source = LEGACY_CONFIG.replace("RESUME_PLACEHOLDER", "")
+        val patched = TomlDocumentPatcher.apply(
+            source,
+            mapOf("environment" to mapOf("amdfq_pool_mib" to "64")),
+        )
+        assertTrue(patched.contains("amdfq_pool_mib = 64"))
+        assertTrue(patched.contains("output_name = \"haruko\""))
+        assertTrue(patched.contains("[bookkeeping]"))
+
+        val again = TomlDocumentPatcher.apply(
+            patched,
+            mapOf("environment" to mapOf("amdfq_pool_mib" to "128")),
+        )
+        assertEquals(1, again.split("amdfq_pool_mib").size - 1)
+        assertTrue(again.contains("amdfq_pool_mib = 128"))
+    }
+
+    /**
+     * The reserve row is a Kotlin `Double`, and ktoml refuses an integer literal for a `Double`:
+     * a bare `amdfq_vram_reserve_gib = 0` stops Ranko from parsing its own config.toml. Saving the
+     * row as 0 therefore has to leave a float literal behind.
+     */
+    @Test
+    fun savingZeroReserveLeavesAFloatLiteral() {
+        val file = writeConfigWithReserve("0.5")
+        val form = TrainingConfigForm.from(assertNotNull(loadTrainerConfig(file.absolutePath.toPath())))
+            .copy(amdfqVramReserveGib = "0")
+
+        val patched = TomlDocumentPatcher.apply(file.readText(), form.toTomlSections())
+        assertTrue(patched.contains("amdfq_vram_reserve_gib = 0.0"))
+        assertEquals(1, patched.split("amdfq_vram_reserve_gib").size - 1)
+
+        file.writeText(patched)
+        val reloaded = assertNotNull(loadTrainerConfig(file.absolutePath.toPath()))
+        assertEquals(0.0, reloaded.environment.amdfqVramReserveGib)
+        assertEquals("0", TrainingConfigForm.from(reloaded).amdfqVramReserveGib)
+    }
+
+    /** A hand-written `0` in that row must not cost Ranko its startup. */
+    @Test
+    fun integerLiteralInTheReserveRowStillParses() {
+        val config = assertNotNull(loadTrainerConfig(writeConfigWithReserve("0").absolutePath.toPath()))
+        assertEquals(0.0, config.environment.amdfqVramReserveGib)
+        assertEquals("0", TrainingConfigForm.from(config).amdfqVramReserveGib)
     }
 
     @Test

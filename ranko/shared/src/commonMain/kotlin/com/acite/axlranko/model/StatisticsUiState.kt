@@ -1,11 +1,22 @@
 package com.acite.axlranko.model
 
+import com.acite.axlranko.data.TrainDataEntryConfig
+
 
 data class StatisticsUiState(
     val isLoading: Boolean = true,
     val isRefreshing: Boolean = false,
     val errorMessage: String? = null,
+    /** `[[environment.train_data]]`: the folders the picker offers, and the scanned one. */
+    val datasetDirs: List<TrainDataEntryConfig> = emptyList(),
+    val datasetDirIndex: Int = 0,
     val datasetItems: List<DatasetItem> = emptyList(),
+    /** Images found in the folder, whether or not they have a caption: what a shuffle renames. */
+    val imageCount: Int = 0,
+    /** Shuffle-and-renumber progress plus its last result; `errorMessage` stays the scan fuse. */
+    val isShuffling: Boolean = false,
+    val statusMessage: String? = null,
+    val statusIsError: Boolean = false,
     val tagStats: List<TagStat> = emptyList(),
     val selectedTags: Set<String> = emptySet(),
     val isAndMode: Boolean = true, // true: Intersection (AND), false: Union (OR)

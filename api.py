@@ -13,7 +13,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from trainer.amdfq_patch import resolve_preload
 from trainer.checkpoints import discover_checkpoints, resolve_resume_path
-from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets
+from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets, resolve_train_data_entries
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
@@ -536,7 +536,16 @@ def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("cannot tag while training is using the GPU")
 
     cfg = _train_config_dict()
-    directory = params.get("directory") or cfg.get("train_data_dir")
+    directory = params.get("directory")
+    if not directory:
+        # No directory asked for: tag the first configured dataset folder, i.e. the one the
+        # `train_data_dir` scalar mirrors. Resolving the list here also accepts a hand-written
+        # config that carries `[[environment.train_data]]` blocks and no scalar.
+        try:
+            entries = resolve_train_data_entries(cfg)
+        except ValueError as exc:
+            raise ValueError(f"cannot resolve the training data directory: {exc}") from exc
+        directory = entries[0].path if entries else None
     if not directory:
         raise ValueError("missing directory")
     directory_path = Path(str(directory)).expanduser()

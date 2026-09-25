@@ -27,7 +27,7 @@ actual fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
             )
         )
         val tomlString = java.io.File(tomlPath.toString()).readText()
-        mt.decodeFromString(AxlTrainerConfig.serializer(), tomlString)
+        mt.decodeFromString(AxlTrainerConfig.serializer(), TomlIntegerLiterals.normalize(tomlString))
     } catch (e: Exception) {
         e.printStackTrace()
         null

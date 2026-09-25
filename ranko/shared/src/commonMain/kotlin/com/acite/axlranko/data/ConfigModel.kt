@@ -21,13 +21,35 @@ data class AxlTrainerConfig(
 data class EnvironmentConfig(
     @SerialName("pretrained_model_name_or_path") val pretrainedModelNameOrPath: String,
     @SerialName("train_data_dir") val trainDataDir: String,
+    @SerialName("train_data") val trainData: List<TrainDataEntryConfig> = emptyList(),
     @SerialName("output_name") val outputName: String,
     @SerialName("output_dir") val outputDir: String,
     @SerialName("logging_dir") val loggingDir: String,
     val amdfq: String = "none",
     @SerialName("amdfq_vram_reserve_gib") val amdfqVramReserveGib: Double = 0.0,
     @SerialName("amdfq_va_never_reuse") val amdfqVaNeverReuse: Boolean = false,
+    @SerialName("amdfq_pool_mib") val amdfqPoolMib: Int = 64,
 )
+
+/**
+ * One `[[environment.train_data]]` entry: a dataset folder and how often its images are drawn
+ * inside one epoch. `train_data_dir` mirrors the first entry's path.
+ */
+@Serializable
+data class TrainDataEntryConfig(
+    val path: String,
+    val repeat: Int = 1,
+)
+
+/**
+ * The dataset folders the trainer trains on: the `[[environment.train_data]]` blocks, or - for a
+ * config written before they existed - the single folder `train_data_dir` names, drawn once.
+ */
+fun EnvironmentConfig.trainDataEntries(): List<TrainDataEntryConfig> {
+    val blocks = trainData.filter { it.path.isNotBlank() }
+    if (blocks.isNotEmpty()) return blocks
+    return listOf(TrainDataEntryConfig(path = trainDataDir, repeat = 1))
+}
 
 @Serializable
 data class ModelSpecConfig(

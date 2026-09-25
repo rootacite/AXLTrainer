@@ -194,6 +194,11 @@ def base_config(**overrides: Any):
     from trainer.config import TrainConfig
 
     cfg = TrainConfig()
+    # The repo's `[[environment.train_data]]` blocks outrank `train_data_dir`, so a tier that
+    # points the config at its own work folder has to drop them: leaving them in reads - and
+    # writes latents into - the dataset `config.toml` names instead of the one it built.
+    if "train_data_dir" in overrides:
+        cfg.train_data = []
     cfg.max_data_loader_n_workers = 0
     cfg.persistent_workers = False
     for key, value in overrides.items():
@@ -660,7 +665,7 @@ def tier_plumbing(rep: Report, args: argparse.Namespace, work: Path) -> None:
     from trainer.utils import fit_geometry
 
     other_geom = fit_geometry(record_cache["src_w"], record_cache["src_h"], bucket_w, bucket_h // 2)
-    other_key = ds_cache._cache_path(image_path, other_geom)
+    other_key = ds_cache._cache_path(image_path, other_geom, ds_cache.latent_cache_dir)
     rep.check(
         tier, "a geometry change moves the latent cache key (a mask edit does not)",
         other_key != cache_file and cache_file.name == f"{sha1_text(cache_key)}.pt",

@@ -105,7 +105,7 @@ private fun VmmVaBar(vmmVa: HardwareVmmVa) {
                 text = if (vmmVa.vaNeverReuse) {
                     "VA never reused (legacy workaround): a freed range keeps its address for the process lifetime, so this only grows."
                 } else {
-                    "VA is given back when a block is freed, so this is what the patch holds right now."
+                    "VA is given back when a block is freed, so this is what the patch holds right now. A pool holds its whole span while any block carved out of it is still live."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.textDim,

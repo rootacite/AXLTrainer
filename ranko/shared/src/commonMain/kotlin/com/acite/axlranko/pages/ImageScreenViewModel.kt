@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
+import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.trainDataEntries
 import com.acite.axlranko.model.ImageItem
 import com.acite.axlranko.model.ImageScreenState
 import com.acite.axlranko.util.MaskCanvas
@@ -36,6 +38,7 @@ import kotlin.math.roundToInt
 @ContributesIntoMap(AppScope::class)
 class ImageScreenViewModel(
     private val refreshHub: DatasetRefreshHub,
+    private val datasetSelection: DatasetSelection,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ImageScreenState())
@@ -50,6 +53,9 @@ class ImageScreenViewModel(
     private var strokeY: Float? = null
     private var strokeErase: Boolean = false
     private var lastPublishNs: Long = 0L
+
+    /** File a Statistics jump asked for, opened once the rescan of its folder finishes. */
+    private var pendingSelectTxtPath: String? = null
 
     init {
         loadData()
@@ -66,13 +72,19 @@ class ImageScreenViewModel(
 
     fun reloadFromDisk(resetDrafts: Boolean) {
         viewModelScope.launch {
-            val currentDir = try {
-                ConfigImporter.getConfig().environment.trainDataDir
+            val pendingTxtPath = pendingSelectTxtPath
+            pendingSelectTxtPath = null
+            val entries = try {
+                ConfigImporter.getConfig().environment.trainDataEntries()
             } catch (_: Exception) {
-                _uiState.value.dataDir
+                emptyList()
             }
+            val selected = datasetSelection.index.value.coerceIn(0, entries.lastIndex.coerceAtLeast(0))
+            val currentDir = entries.getOrNull(selected)?.path ?: _uiState.value.dataDir
             if (currentDir.isEmpty()) return@launch
-            _uiState.update { it.copy(dataDir = currentDir) }
+            _uiState.update {
+                it.copy(dataDir = currentDir, datasetDirs = entries, datasetDirIndex = selected)
+            }
 
             withContext(Dispatchers.IO) {
                 val folder = File(currentDir)
@@ -95,7 +107,7 @@ class ImageScreenViewModel(
                     }
                 }
 
-                val newSelected = updatedItems.find { it.imagePath == currentSelectedPath }
+                val newSelected = selectionAfterRescan(updatedItems, pendingTxtPath, currentSelectedPath)
                 _uiState.update { state ->
                     state.copy(
                         imageItems = updatedItems,
@@ -115,8 +127,12 @@ class ImageScreenViewModel(
     private fun loadData() {
         viewModelScope.launch {
             try {
-                val dir = ConfigImporter.getConfig().environment.trainDataDir
-                _uiState.update { it.copy(dataDir = dir) }
+                val entries = ConfigImporter.getConfig().environment.trainDataEntries()
+                val selected = datasetSelection.index.value.coerceIn(0, entries.lastIndex.coerceAtLeast(0))
+                val dir = entries.getOrNull(selected)?.path.orEmpty()
+                _uiState.update {
+                    it.copy(dataDir = dir, datasetDirs = entries, datasetDirIndex = selected)
+                }
                 loadImages(dir)
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -135,28 +151,37 @@ class ImageScreenViewModel(
         }
     }
 
+    /** The picker switched dataset folders: unsaved mask strokes belong to the folder left behind. */
+    fun selectDatasetDir(index: Int) {
+        if (index == _uiState.value.datasetDirIndex) return
+        switchDatasetDir(index)
+    }
+
+    /**
+     * Jump here from a Statistics thumbnail. That page can have another `[[environment.train_data]]`
+     * folder open than this one, so an image missing from the loaded list means "scan that folder
+     * first": the jump is remembered and completes once the rescan is done.
+     */
+    fun selectItemByTxtPath(txtPath: String, datasetDirIndex: Int) {
+        val current = findImageByTxtPath(_uiState.value.imageItems, txtPath)
+        if (current != null) {
+            selectItem(current)
+            return
+        }
+        pendingSelectTxtPath = txtPath
+        switchDatasetDir(datasetDirIndex)
+    }
+
+    private fun switchDatasetDir(index: Int) {
+        flushPendingMask()
+        datasetSelection.select(index)
+        _uiState.update { it.copy(datasetDirIndex = index) }
+        reloadFromDisk(resetDrafts = true)
+    }
+
     fun selectItem(item: ImageItem) {
         val previous = _uiState.value.selectedItem
-        val dirty = _uiState.value.maskDirty
-        val snapshot = mask
-        if (
-            dirty &&
-            previous != null &&
-            previous.imagePath != item.imagePath &&
-            snapshot != null
-        ) {
-            val copy = snapshot.copyImage()
-            val path = previous.maskPath
-            val imagePath = previous.imagePath
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    ImageIO.write(copy, "png", File(path))
-                    updateHasSidecarMask(imagePath, true)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
+        if (previous != null && previous.imagePath != item.imagePath) flushPendingMask()
         _uiState.update { state ->
             state.copy(
                 selectedItem = item,
@@ -167,9 +192,22 @@ class ImageScreenViewModel(
         viewModelScope.launch(Dispatchers.IO) { loadMaskBuffers(item) }
     }
 
-    fun selectItemByTxtPath(txtPath: String) {
-        val i = _uiState.value.imageItems.first { it.txtPath == txtPath }
-        selectItem(i)
+    /** Writes the pending mask for the open image before the selection moves off it. */
+    private fun flushPendingMask() {
+        val state = _uiState.value
+        if (!state.maskDirty) return
+        val item = state.selectedItem ?: return
+        val copy = (mask ?: return).copyImage()
+        val path = item.maskPath
+        val imagePath = item.imagePath
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ImageIO.write(copy, "png", File(path))
+                updateHasSidecarMask(imagePath, true)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun updateEditorText(text: String) {

@@ -35,6 +35,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
+import com.acite.axlranko.pages.components.DatasetDirBar
+import com.acite.axlranko.pages.components.datasetDirLabel
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -74,10 +76,19 @@ fun StatisticsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    // 1. Critical Error / Safety Fuse State
-    if (uiState.errorMessage != null) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Above the gates: a folder that no longer exists is exactly when switching matters.
+        DatasetDirBar(
+            labels = uiState.datasetDirs.map { datasetDirLabel(it.path, it.repeat) },
+            selected = uiState.datasetDirIndex,
+            onSelect = viewModel::selectDatasetDir,
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)
+        )
+
+        // 1. Critical Error / Safety Fuse State
+        if (uiState.errorMessage != null) {
         Box(
-            modifier = Modifier.fillMaxSize().padding(32.dp),
+            modifier = Modifier.fillMaxWidth().weight(1f).padding(32.dp),
             contentAlignment = Alignment.Center
         ) {
             PorcelainCard {
@@ -101,22 +112,17 @@ fun StatisticsScreen(
                 }
             }
         }
-        return
-    }
-
-    // 2. Loading State
-    if (uiState.isLoading) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
-        }
-        return
-    }
-
-    // 3. Main Interface Layout
+        } else if (uiState.isLoading) {
+            // 2. Loading State
+            Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+        // 3. Main Interface Layout
     val colors = rankoColors
     val tokens = rankoTokens
     BoxWithConstraints(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxWidth().weight(1f)
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
 
@@ -283,7 +289,12 @@ fun StatisticsScreen(
                                         ),
                                         onClick = {
                                             smViewModel.currentScreen = Screen.Images
-                                            iviewModel.selectItemByTxtPath(item.txtFile.absolutePath)
+                                            // Images may have another dataset folder open; the
+                                            // jump follows the folder this thumbnail came from.
+                                            iviewModel.selectItemByTxtPath(
+                                                item.txtFile.absolutePath,
+                                                uiState.datasetDirIndex,
+                                            )
                                         }
                                     ) {
                                         AspectLockedAsyncImage(
@@ -333,6 +344,8 @@ fun StatisticsScreen(
             )
         }
     }
+        }
+    }
 }
 
 @Composable
@@ -343,6 +356,7 @@ fun ControlPanel(
 ) {
     val colors = rankoColors
     val tokens = rankoTokens
+    var confirmShuffle by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -467,5 +481,73 @@ fun ControlPanel(
                 emphasized = true,
             )
         }
+
+        HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Shuffle & Renumber", color = colors.text)
+                Text(
+                    text = "Renames every sample in this folder to 0001…, in random order. Each " +
+                        "caption (.txt) and mask (.mask.png) moves with its image. The latent " +
+                        "cache re-encodes once afterwards: it is keyed by file path.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textDim
+                )
+            }
+            CapsuleButton(
+                text = if (uiState.isShuffling) "Shuffling…" else "Shuffle Dataset",
+                onClick = { confirmShuffle = true },
+                enabled = !uiState.isShuffling && !uiState.isRefreshing && uiState.imageCount > 0,
+                compact = true,
+                danger = true,
+            )
+        }
+
+        uiState.statusMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (uiState.statusIsError) colors.qualityRed else colors.accentLilac,
+            )
+        }
+    }
+
+    if (confirmShuffle) {
+        val folder = uiState.datasetDirs.getOrNull(uiState.datasetDirIndex)?.path.orEmpty()
+        AlertDialog(
+            onDismissRequest = { confirmShuffle = false },
+            title = { Text("Shuffle and renumber this folder?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "All ${uiState.imageCount} images in this folder are renamed to a random " +
+                            "0001… sequence. Each caption (.txt) and mask (.mask.png) is renamed " +
+                            "with its image, so no sidecar can end up on another sample."
+                    )
+                    Text("Folder: $folder", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "Image count and captions are unchanged. The latent cache re-encodes " +
+                            "once on the next run, because its key is the image path.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmShuffle = false
+                        viewModel.shuffleDataset()
+                    }
+                ) { Text("Shuffle") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmShuffle = false }) { Text("Cancel") }
+            }
+        )
     }
 }

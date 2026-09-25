@@ -1,11 +1,64 @@
+# Paths left out of tools/dumper.py dumps.
+#
+# Matching (see tools/dumper.py: read_dumpignore / is_ignored_path) is a plain
+# root-relative path prefix: "doc/screenshots" covers that directory and everything
+# below it, "archive" covers the whole archive tree. A bare name matches at the repo
+# root only, globs are not supported, and hidden entries (.git, .venv, .idea, .gradle)
+# are already skipped. Any "build" directory is skipped by the dumper itself.
+
+# --- licences and top-level docs ---
 LICENSE
 README.md
-.venv/
-migraphx_cache/
+
+# --- agent / development notes (long prose, not source) ---
+AGENT.md
+AGENT.md.save
+doc/hardware-reset-investigation.md
+doc/mask-verification.md
+
+# --- sealed research material (encrypted archives, off-limits) ---
+archive
+
+# --- stray dumps and backups ---
+tools/tools.txt
+
+# --- tagger model outputs and data tables ---
+tagger/model.onnx
+tagger/selected_tags.csv
+tagger/translated_output.csv
+tagger/migraphx_cache
+migraphx_cache
 model.onnx
 selected_tags.csv
 translated_output.csv
-output/
+
+# --- build outputs ---
+amdfq/amdfq-tail-rs/target
+amdfq/amdfq-vmm-rs/target
 AxlEdge/build/
 AxlEdge/kotlin-js-store/
-config.py
+output/
+
+# --- gradle and IDE scaffolding (build boilerplate, not project logic) ---
+# ranko/gradle holds the wrapper, the version catalogue and the daemon JVM props.
+# Every build.gradle.kts is already dropped by the dumper's "build" substring rule.
+ranko/gradle
+ranko/gradlew
+ranko/gradlew.bat
+ranko/gradle.properties
+ranko/settings.gradle.kts
+ranko/AxlRanko.iml
+
+# --- screenshots and bytecode caches ---
+screenshots
+doc/screenshots
+axltrainer.jpg
+axltrainer.png
+__pycache__
+test/__pycache__
+trainer/__pycache__
+tagger/__pycache__
+ranko/tools/__pycache__
+
+# --- local python environment ---
+.venv/

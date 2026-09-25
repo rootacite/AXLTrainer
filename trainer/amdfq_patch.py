@@ -2,6 +2,9 @@
 
 `none` / `tail` / `vmm`. The trainer does not import this during the loop; `start_train.sh`
 and `api.py` `train_start` do, so a missing `.so` fails before GPU work. torch-free.
+
+The hook's own knobs (`amdfq_vram_reserve_gib`, `amdfq_va_never_reuse`, `amdfq_pool_mib`) travel the
+same path: config.toml → here → the `AMDFQ_*` variables the launcher exports.
 """
 
 from __future__ import annotations
@@ -19,7 +22,14 @@ _SO_RELATIVE = {
 }
 
 GIB = 1 << 30
+MIB = 1 << 20
 DEFAULT_VRAM_RESERVE_GIB = 0.0
+# Pool size in MiB: 0 is off, and the hook clamps anything else into this range itself. The *config*
+# default is a pool (what shipped config.toml carries); the hook's own default, with the environment
+# variable unset, is off — a hand-preload does not get a pool without asking for one.
+DEFAULT_POOL_MIB = 64
+MIN_POOL_MIB = 16
+MAX_POOL_MIB = 512
 
 
 def repo_root() -> Path:
@@ -91,9 +101,42 @@ def read_va_never_reuse(config_path: str | Path | None = None) -> bool:
     return normalize_va_never_reuse(_read_flat(path).get("amdfq_va_never_reuse"))
 
 
+def normalize_pool_mib(raw: Any) -> int:
+    """`0` (off) or a pool size in [16, 512] MiB.
+
+    Unlike the VRAM reserve, a value out of range is refused here rather than handed on: the hook
+    clamps, but a number that far out is a typo, and failing the start is the loud way to say so.
+    """
+    if raw is None or raw == "":
+        return DEFAULT_POOL_MIB
+    if isinstance(raw, bool):
+        raise ValueError(f"amdfq_pool_mib must be an integer number of MiB, not {raw!r}")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"amdfq_pool_mib must be an integer number of MiB, not {raw!r}") from exc
+    if value == 0:
+        return 0
+    if not MIN_POOL_MIB <= value <= MAX_POOL_MIB:
+        raise ValueError(
+            f"amdfq_pool_mib must be 0 (off) or between {MIN_POOL_MIB} and {MAX_POOL_MIB} MiB, "
+            f"not {raw!r}"
+        )
+    return value
+
+
+def read_pool_mib(config_path: str | Path | None = None) -> int:
+    path = Path(config_path) if config_path is not None else repo_root() / "config.toml"
+    return normalize_pool_mib(_read_flat(path).get("amdfq_pool_mib"))
+
+
+def pool_bytes(mib: int) -> int:
+    return int(mib) * MIB
+
+
 def resolve_preload(root: str | Path | None = None) -> dict[str, Optional[str]]:
-    """Return `{choice, so, va_status, vram_reserve, va_never_reuse}`. `so` is set for tail/vmm; a
-    missing file raises."""
+    """Return `{choice, so, va_status, vram_reserve, va_never_reuse, pool}`. `so` is set for
+    tail/vmm; a missing file raises. `pool` is the pool size in bytes (`0` = off)."""
     base = Path(root) if root is not None else repo_root()
     config_path = base / "config.toml"
     choice = read_amdfq(config_path)
@@ -117,20 +160,22 @@ def resolve_preload(root: str | Path | None = None) -> dict[str, Optional[str]]:
         va_status = str(runtime_dir() / "amdfq_vmm_va")
     reserve = str(vram_reserve_bytes(read_vram_reserve_gib(config_path)))
     never_reuse = "1" if read_va_never_reuse(config_path) else "0"
+    pool = str(pool_bytes(read_pool_mib(config_path)))
     return {
         "choice": choice,
         "so": so,
         "va_status": va_status,
         "vram_reserve": reserve,
         "va_never_reuse": never_reuse,
+        "pool": pool,
     }
 
 
 def launch_env_line(root: str | Path | None = None) -> str:
-    """`choice|so|va_status|vram_reserve|va_never_reuse` for `start_train.sh` (empty fields stay
+    """`choice|so|va_status|vram_reserve|va_never_reuse|pool` for `start_train.sh` (empty fields stay
     empty)."""
     info = resolve_preload(root)
     return (
         f"{info['choice']}|{info['so'] or ''}|{info['va_status'] or ''}|{info['vram_reserve'] or ''}"
-        f"|{info['va_never_reuse'] or ''}"
+        f"|{info['va_never_reuse'] or ''}|{info['pool'] or ''}"
     )

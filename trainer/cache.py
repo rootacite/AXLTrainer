@@ -144,8 +144,10 @@ def warm_latent_cache(
         flush_memory(device)
 
     def _handle_item(item: Dict[str, Any]) -> None:
-        cache_path = Path(item["cache_path"])
-        if cache_path.exists() or item["img_type"] != "pixel":
+        # `img_type` is the dataset's verdict on the cache, and it is the only one: a file that is
+        # missing, unreadable or not this bucket's latent already comes back as a pixel item, so
+        # checking `cache_path.exists()` here as well would re-admit exactly those files.
+        if item["img_type"] != "pixel":
             with pbar_lock:
                 pbar.update(1)
                 _note_progress()

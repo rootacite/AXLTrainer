@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
+import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.trainDataEntries
 import com.acite.axlranko.model.DatasetItem
 import com.acite.axlranko.model.StatisticsUiState
 import com.acite.axlranko.model.TagStat
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.acite.axlranko.util.isMaskSidecar
 import com.acite.axlranko.util.maskFileFor
+import com.acite.axlranko.util.shuffleAndRenumber
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -30,6 +33,7 @@ import kotlin.random.Random
 @ContributesIntoMap(AppScope::class)
 class StatisticsScreenViewModel(
     private val refreshHub: DatasetRefreshHub,
+    private val datasetSelection: DatasetSelection,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(StatisticsUiState())
     val uiState: StateFlow<StatisticsUiState> = _uiState.asStateFlow()
@@ -48,12 +52,19 @@ class StatisticsScreenViewModel(
      */
     fun scanDataset(isInitial: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
+            val entries = ConfigImporter.getConfig().environment.trainDataEntries()
+            val selected = datasetSelection.index.value.coerceIn(0, entries.lastIndex.coerceAtLeast(0))
             _uiState.update {
-                if (isInitial) it.copy(isLoading = true, errorMessage = null)
-                else it.copy(isRefreshing = true, errorMessage = null)
+                it.copy(
+                    datasetDirs = entries,
+                    datasetDirIndex = selected,
+                    isLoading = isInitial,
+                    isRefreshing = !isInitial,
+                    errorMessage = null
+                )
             }
 
-            val dirPath = ConfigImporter.getConfig().environment.trainDataDir
+            val dirPath = entries.getOrNull(selected)?.path.orEmpty()
             val dir = File(dirPath)
 
             if (!dir.exists() || !dir.isDirectory) {
@@ -112,11 +123,19 @@ class StatisticsScreenViewModel(
                     isLoading = false,
                     isRefreshing = false,
                     datasetItems = items,
+                    imageCount = imageMap.size,
                     tagStats = stats,
                     selectedTags = validSelected
                 )
             }
         }
+    }
+
+    /** The picker switched dataset folders: rescan the one it landed on. */
+    fun selectDatasetDir(index: Int) {
+        if (index == _uiState.value.datasetDirIndex) return
+        datasetSelection.select(index)
+        scanDataset()
     }
 
     fun toggleTagSelection(tag: String) {
@@ -274,6 +293,44 @@ class StatisticsScreenViewModel(
                 }
             }
             scanDataset()
+        }
+    }
+
+    /**
+     * 4. Shuffle the whole folder and renumber every sample to `0001…`, which is what
+     * `tools/suf.py` did. The rename walks each sample's group in `DatasetShuffle`, so a caption
+     * and a mask sidecar always follow their image; the scan's orphan fuse applies here too.
+     */
+    fun shuffleDataset() {
+        val state = _uiState.value
+        if (state.isShuffling || state.isRefreshing) return
+        val dir = File(state.datasetDirs.getOrNull(state.datasetDirIndex)?.path.orEmpty())
+        if (!dir.isDirectory) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update {
+                it.copy(isShuffling = true, statusMessage = "Shuffling ${dir.name}…", statusIsError = false)
+            }
+            try {
+                val report = shuffleAndRenumber(dir, imageExtensions)
+                _uiState.update {
+                    it.copy(
+                        isShuffling = false,
+                        statusMessage = "Shuffled ${report.groups} samples " +
+                            "(${report.renamedFiles} files) to ${report.firstStem}…${report.lastStem}",
+                    )
+                }
+                // Images and Utils hold absolute paths: they have to rescan, not just this page.
+                refreshHub.notifyDatasetChanged()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isShuffling = false,
+                        statusMessage = "Shuffle failed: ${e.message}",
+                        statusIsError = true,
+                    )
+                }
+            }
         }
     }
 }

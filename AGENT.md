@@ -17,6 +17,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 - Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
 - Terminology: **"the hook"** means `amdfq/amdfq-vmm-rs/` in its peralloc mode — the Rust `LD_PRELOAD` interposer that serves `hipMalloc` from address ranges it reserves itself (`amdfq/amdfq-vmm-rs/DESIGN.md`). Say **"the tail hook"** (or `amdfq/amdfq-tail-rs/`) when the tail-guard implementation is meant (`amdfq/amdfq-tail-rs/DESIGN.md`). The original C tail tree is `amdfq/amdfq-tail/`. The older C VMM tree (`amdfq-vmm/`) was deleted.
 - Two of the hook's behaviours are **optional workarounds for driver bugs the 2026-09 kernel fixed**, and both default to off: `amdfq_va_never_reuse` (a freed range keeps its VA forever) and `amdfq_vram_reserve_gib` (the hook leaves that many GiB of the amdgpu free counter untouched). They travel config.toml → `trainer/amdfq_patch.py` → `AMDFQ_VA_NEVER_REUSE` / `AMDFQ_VRAM_RESERVE` → the hook, and the Dashboard's VA bar changes meaning with the first one. Changing either default is a behaviour change: say why, and touch the config row, the Python default, the hook default and the Dashboard text together.
+- The hook's third knob, `amdfq_pool_mib` (`0`, off, or `16`–`512` MiB; the shipped config asks for `64`), is **not** a workaround but an allocation pool (DESIGN.md D12): one `hipMemCreate` builds a pool of that size, a request of at most half of it is carved out of one without any driver call, and a pool is released once the upper layer has freed everything carved out of it. It travels the same path (`trainer/amdfq_patch.py` → `AMDFQ_POOL_SIZE`, in bytes), and the hook itself stays off when that variable is unset — a hand-preload is not given a pool. It is on in the shipped config because that is what the maintainer chose, *not* because it is faster: `test/bench_alloc_pool.py` measured the pool off vs 16/32/64/128 MiB on this repo's own workload and found step rate flat to 1 % slower, with a pool-free run aborting 1 time in 9 against 2 out of 2 at 256 MiB. Re-run that script, in the env `environment.yml` names, before repeating or contradicting those numbers; the reasons it cannot help much (a per-allocation cost worth ≤0.2 % of a step, and pool create/teardown work of its own) are in the report it writes.
 - **A hypothesis may come from intuition; a conclusion needs corroboration — no conclusion from a single witness.** Reading source (quote it as `file:line`) earns a hypothesis worth testing, not a verdict: say which of the two you are handing over, and label the inferred part as inference. When the question is "does this actually break", the experiment comes first; reading the code and agreeing with yourself is still one witness. (2026-09-18: the CLR reverse-pointer hazard written up as F3 in `amdfq/amdfq-vmm-rs/` (DIFF.md, since removed) was read out as a likely cause of the hook's NaN/hang. A purpose-built HIP probe that rebuilds the same shape and churns it — 200 rounds of map/unmap over the shared pad, all three access states, free-and-reclaim — did not reproduce it, and closed the alignment worry read out of the same source. Two hypotheses died to one experiment; both had looked convincing on paper.)
 
 ---
@@ -137,6 +138,7 @@ Load path:
 
 - Python: `trainer/config.py` flattens **all TOML tables into one dict**. Section names do not exist at runtime on the Python side — only keys. `TrainConfig` fields default via `get_val(key, hardcoded)`. **TOML wins** over Python defaults.
 - Kotlin: `AxlTrainerConfig` is **sectional** (`environment`, `model_spec`, `training`, …). Utils tab saves via `TomlDocumentPatcher`: in-place replace of uncommented `key = value` inside named tables. Comments, blank lines, and unknown tables (e.g. `[bookkeeping]`) stay intact. **Do not rewrite the whole file.**
+- Kotlin load: ktoml refuses an integer literal for a `Double`, so `TomlIntegerLiterals` rewrites `key = 0` to `0.0` for the keys `AxlTrainerConfig` declares as `Double` before decoding. A hand-edited `amdfq_vram_reserve_gib = 0` must not cost Ranko its startup; the save side already writes `0.0` (`TomlDocumentPatcher.float`).
 
 Adding a hyperparameter (all four, or the GUI will drift):
 
@@ -169,6 +171,34 @@ must stay under `[validation]` (a top-level `[[samples]]` would be dropped, beca
 - Ranko: `SampleSetForm` in `TrainingConfigForm`, tabs in the Utils Validation section,
   `TomlDocumentPatcher.replaceArrayOfTables` for the blocks. The form writes `[validation]` from the
   **first** set, so the file never holds two contradictory prompts.
+
+### Train data entries (`[[environment.train_data]]`)
+
+The datasets a run trains on, one block per folder with a per-epoch `repeat` (kohya `num_repeats`
+semantics). It is the second list-shaped config and follows the same trick as the sample sets: the
+blocks stay under `[environment]`, so the Python side reads them as the flat key `train_data`, and
+the flat `train_data_dir` scalar stays beside them as the **mirror of the first entry**.
+
+- `resolve_train_data_entries(cfg)` (`trainer/config.py`, torch-free, accepts a `TrainConfig` *or*
+  the flattened mapping) resolves each entry; the blocks win over the scalar, `path` is required in
+  a block, `repeat` defaults to `1` and must be in `1..512`. **No blocks yield one entry built from
+  `train_data_dir` with repeat 1** — the single-folder behaviour, which is why every existing config
+  and every `cfg.train_data_dir = str(dir)` test still trains the same thing.
+- `train_data_dir` is what everything expecting *one* path reads: `models.py`'s `ss_train_data_dir`,
+  the `dataset_tag` fallback in `api.py` (which resolves the list and takes the first entry),
+  `agent.py --config`, and a config with no blocks. `main.py` resolves the list before loading the
+  model, so a malformed entry fails early.
+- Repeats reach training in one place: `LoraImageDataset` appends each record's index to its bucket
+  **`repeat`** times. The train loop reads nothing but `artifacts.dataloader`, so the epoch length,
+  `len(dataloader)` (hence `steps_per_epoch`, the total step count and the TE cosine schedule) and
+  the progress bars all follow that list length without a loop change. `__len__` stays the unique
+  image count — `warm_latent_cache` walks `range(len(dataset))` — and `total_samples` carries the
+  per-epoch figure.
+- Ranko: `TrainDataDirForm` in `TrainingConfigForm` (rows in the Utils Environment section),
+  `TomlDocumentPatcher.replaceArrayOfTables` for the blocks, `train_data_dir` written from the
+  **first** row so the file never holds two contradictory folders. `DatasetSelection` (a
+  `@SingleIn(AppScope)` holder of one index) is what the single-folder pages — Images, Statistics,
+  the tag card — share, so the folder picked on one is the folder the others open.
 
 ### Bucketing + fit geometry (the geometry contract)
 
@@ -329,6 +359,7 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 | `…/data/TrainerRepo.kt` | Repo-root discovery |
 | `…/data/ConfigModel.kt` | Sectional TOML model |
 | `…/data/TomlDocumentPatcher.kt` | Comment-preserving save |
+| `…/data/TomlIntegerLiterals.kt` | Bare-integer tolerance on load |
 | `…/data/ConfigImporter.kt` | expect/actual load/save |
 | `…/jvmMain/` | TOML IO, `getAppExecutionPath` |
 | `Graphs.kt` / `Factory.kt` | Metro `AppGraph` + ViewModel factory |
@@ -340,6 +371,8 @@ Every file/folder/save dialog goes through `util/FileDialogs.kt` (FileKit: XDG d
 Dashboard charts: the five training charts draw an always-on hover cursor with the exact step under the pointer, and mark the clicked step (dashed) plus the step a pick matched (bold, flagged). The **Train / Avg Loss** card additionally owns the checkpoint panel, opened by `Ctrl`+left click or by a left double click — the pick fires on the *picking* click, so a double click anchors at the second click, and the 400 ms window rule lives in `completesDoubleClick` (`pages/components/ChartPick.kt`). The panel shows the matched checkpoint highlighted, the clicked step's `Avg Loss`/`Loss`/UNet+TE LR, that step's samples with any generated ones, and can be dismissed by a click outside / close / `Esc`. It is resizable by dragging its bottom-right grip: placement is decided once from the click and the *default* size so a drag can never move the panel (`placePanelOrigin`/`clampPanelOrigin`), and the slots fill the dragged width (`sampleSlotWidth`, no 400 dp cap) with extra images wrapping instead of scrolling. `Save As` copies the LoRA file out through the OS save dialog with progress; `Generate sample` renders one extra image per §5. Pure helpers for the mapping, the nearest-checkpoint/sample selection, the click timing, the panel sizing/placement, the training-stat lookup and the generate-form validation live in `pages/components/ChartPick.kt`; the checkpoint list is scanned on click (2 s for 60+ files) and cached per session; the copy lives in `util/FileCopy.kt` and refuses to overwrite the source.
 
 Dataset scan in the GUI is **non-recursive**, one folder, image + same-stem `.txt`. Orphan captions **abort** the statistics scan. `ranko/tools/agent.py` mirrors this (`--allow-orphans` to inspect anyway). Trash for GUI/agent drops: `/tmp/axlranko/trash` (not the dataset’s own `trash/` used by some `tools/` scripts).
+
+Statistics → Control Panel **Shuffle & Renumber** is the GUI's `tools/suf.py`: `util/DatasetShuffle.kt` builds one group per stem (image(s) + `.txt` + `.mask.png`), then renames each group through a unique `axl-shuffle-*` name to `0001…`. The group is what keeps a mask on its image; a member keeps everything after the stem, so extensions and case survive. It refuses a folder with an orphan `.txt` (the scan's fuse), leaves directories (`.latents_cache`, `trash`) and files outside the contract alone, and rolls the applied renames back when one fails, so a mid-run kill leaves names a rerun recovers. The standalone `tools/suf.py` still splits on the last dot and therefore still separates `{stem}.mask.png` from its image (measured: it becomes a bare `<N>.png` sample) — the Kotlin path is the mask-safe one.
 
 Mask painting does **not** use Compose pointer APIs: `maskPaintInput` (`pages/components/MaskPaint.kt` expect, `jvmMain/.../MaskPaint.jvm.kt` actual) attaches a global AWT mouse listener to the host window (both buttons are reported) plus a 4 ms `MouseInfo` sampler while a stroke is active, because AWT coalesces motion events and fast strokes used to land as separate dots. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
 
@@ -353,11 +386,11 @@ Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopAp
 
 ## 8. Dataset contract
 
-Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp. Optional loss mask: `{stem}.mask.png` next to `{stem}.png` (always PNG). If the sidecar exists, MSE is weighted by that mask (white=train, black=ignore). If it is missing and the training image has an alpha channel, that alpha is the mask (0=ignore, 255=train). Either way the letterbox pad is weight 0, so **every** sample returns a full-bucket mask from `load_loss_mask`; only sidecar/alpha images count into `n_masked` (`Loss masks: n/m samples`). **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`). Drop/trash moves the sidecar with the pair.
+Sidecar captions, comma-separated tags, extensions: jpg/jpeg/png/webp/bmp. The dataset is the list of `[[environment.train_data]]` folders (`train_data_dir` alone when there is no list), each with its own per-epoch `repeat`; records stay unique per image and only the bucket lists carry the repeats (see §4). Optional loss mask: `{stem}.mask.png` next to `{stem}.png` (always PNG). If the sidecar exists, MSE is weighted by that mask (white=train, black=ignore). If it is missing and the training image has an alpha channel, that alpha is the mask (0=ignore, 255=train). Either way the letterbox pad is weight 0, so **every** sample returns a full-bucket mask from `load_loss_mask`; only sidecar/alpha images count into `n_masked` (`Loss masks: n/m samples`). A silhouette's alpha is a hard 0/255 step, so `tools/mask_blur.py` batch-writes that sidecar from the alpha instead: a Gaussian blur of it, `--radius` in source-image pixels, same size as the training image (the loader resizes a sidecar to the source size NEAREST-first, so any other size would come back stepped), marked with an `axl_mask_blur` PNG text chunk. A sidecar without that chunk (a mask painted in Ranko) is left alone unless `--overwrite`; the training images are never written. **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`). Drop/trash moves the sidecar with the pair.
 
 Python trainer `list_images` / Ranko / `agent.py` should stay consistent on extensions and “same stem” pairing. Ranko `parse_tags` = split `,` → trim → drop empty. Duplicates preserved in captions; stats dedupe per file.
 
-Latent cache: `<train_data_dir>/.latents_cache/{sha1(abs_path::bucket_w x bucket_h::left,top,fit_w x fit_h)}.pt`. The key carries the fit geometry, so any change to the bucket rule, the clamps or the fit path forces a one-time re-encode instead of silently serving latents built from differently placed pixels (a mask edit does *not* move the key — masks are not cached). Do not hand-edit cache files.
+Latent cache: one per dataset folder, `<folder>/.latents_cache/{sha1(abs_path::bucket_w x bucket_h::left,top,fit_w x fit_h)}.pt`. The key carries the absolute image path, so folders never collide, and the fit geometry, so any change to the bucket rule, the clamps or the fit path forces a one-time re-encode instead of silently serving latents built from differently placed pixels (a mask edit does *not* move the key — masks are not cached). A file is a hit only when it holds the keyed bucket's latent (4 channels, spatial / 8): an unreadable file, or one holding anything else — a stray write, a half-written file left by a killed run — is a miss, warned on stderr and re-encoded over, and `warm_latent_cache` skips only what the dataset itself calls a hit. Do not hand-edit cache files.
 
 `tagger/` is an ONNX WD-tagger (`python tagger/main.py DIR --threshold 0.35`). Model files sit next to the script (`model.onnx`, `selected_tags.csv`). `migraphx_cache/` is generated — do not treat as source. Ranko Utils → Environment **Tag dataset** uses IPC `dataset_tag`.
 
@@ -421,12 +454,14 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
 | Sample offload | `python -m unittest discover -s test -p 'test_sampling_offload.py'` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
 | GPU smoke | `python -m unittest discover -s test -p 'test_vram_gpu.py'` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
-| Latent cache | `python test/test_warm_latent_cache.py` | pipelined vs serial; `--real` needs a VAE |
-| Buckets | `python -m unittest discover -s test -p 'test_bucket_sampler.py'` | sampler batching/remainders, fit-geometry sweep (step alignment, clamps, no upscale, zero pad, cache key) |
+| Latent cache | `python test/test_warm_latent_cache.py` | pipelined vs serial; a cache file that is not the keyed latent is re-encoded; `--real` needs a VAE |
+| Buckets | `python -m unittest discover -s test -p 'test_bucket_sampler.py'` | sampler batching/remainders, fit-geometry sweep (step alignment, clamps, no upscale, zero pad, cache key), a cache file holding another shape (or nothing readable) counting as a miss |
+| Train data repeats | `python -m unittest discover -s test -p 'test_train_data_repeat.py'` | `resolve_train_data_entries` (blocks vs. the scalar, per-entry errors), per-folder latent caches, repeats expanding the buckets, an epoch drawing every image `repeat` times, `build_dataloader`'s length (what `steps_per_epoch` is derived from), collating one index twice |
 | Masked loss | `python -m unittest discover -s test -p 'test_masked_loss.py'` | sidecar exclusion, ones/zero/gray weights, alpha fallback, fit+pad alignment, zero-weight pad, a tall sample keeping both end bands |
 | Masked loss GPU | `python -m unittest discover -s test -p 'test_masked_loss_gpu.py'` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
+| Mask blur | `python -m unittest discover -s test -p 'test_mask_blur.py'` | sidecar naming/extensions, alpha extraction (RGBA/LA/palette), uniform-alpha skips, blur written at the source size with the `axl_mask_blur` marker and a monotone ramp, training image untouched, hand-painted sidecar protected vs `--overwrite`, rerun replaces its own output, `--dry-run`, worker-pool vs in-process runs agreeing byte for byte and keeping the input order, CLI end to end, one masked loader check (skipped without torch) |
 | Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
-| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display) |
+| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display), dataset shuffle (mask/caption pairing, padded renumbering, seeded order, untouched directories and foreign files, orphan refusal, rollback on a failed rename) |
 
 Python suites live in `test/` — a plain namespace directory, deliberately **without**
 `__init__.py`, so `import test` still resolves to the standard library package. Run them from the

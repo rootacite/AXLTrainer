@@ -1,15 +1,36 @@
 package com.acite.axlranko.model
 
 import com.acite.axlranko.data.AxlTrainerConfig
+import com.acite.axlranko.data.EnvironmentConfig
 import com.acite.axlranko.data.SampleSetConfig
 import com.acite.axlranko.data.TomlDocumentPatcher
+import com.acite.axlranko.data.TrainDataEntryConfig
 import com.acite.axlranko.data.ValidationConfig
+import com.acite.axlranko.data.trainDataEntries
 
 /** The TOML section the sample-set blocks live in. */
 const val SAMPLE_SETS_SECTION = "validation.samples"
 
 /** Prefix of the field-error keys that belong to one `[[validation.samples]]` entry. */
 const val SAMPLE_SET_ERROR_PREFIX = "samples."
+
+/** The TOML section the dataset-folder blocks live in. */
+const val TRAIN_DATA_SECTION = "environment.train_data"
+
+/** Prefix of the field-error keys that belong to one `[[environment.train_data]]` entry. */
+const val TRAIN_DATA_ERROR_PREFIX = "train_data."
+
+/** Repeat range shared with `TrainConfig`; the picker refuses anything outside it. */
+val TRAIN_DATA_REPEAT_RANGE = 1..512
+
+/**
+ * One dataset folder as editable text. `repeat` is how often its images are drawn inside a single
+ * epoch; the trainer reads the same range and refuses the value again before training starts.
+ */
+data class TrainDataDirForm(
+    val path: String = "",
+    val repeat: String = "1"
+)
 
 /**
  * One `[[validation.samples]]` entry as editable text. A key the file omits is shown with the
@@ -31,11 +52,13 @@ data class TrainingConfigForm(
     val pretrainedModelNameOrPath: String = "",
     val outputDir: String = "",
     val loggingDir: String = "",
-    val trainDataDir: String = "",
+    /** `[[environment.train_data]]`, in file order. Never empty: one folder always exists. */
+    val trainDataDirs: List<TrainDataDirForm> = listOf(TrainDataDirForm()),
     val outputName: String = "",
     val amdfq: String = "none",
     val amdfqVramReserveGib: String = "0",
     val amdfqVaNeverReuse: Boolean = false,
+    val amdfqPoolMib: String = "64",
 
     val baseModelVersion: String = "",
     val modelspecArchitecture: String = "",
@@ -103,9 +126,29 @@ data class TrainingConfigForm(
     /** The set the flat `[validation]` scalars mirror: deleting every set falls back to it. */
     val primarySampleSet: SampleSetForm get() = sampleSets.firstOrNull() ?: SampleSetForm()
 
+    /** The folder the flat `train_data_dir` scalar mirrors, i.e. what a single-folder reader sees. */
+    val primaryTrainDataDir: String get() = trainDataDirs.firstOrNull()?.path?.trim() ?: ""
+
     fun withSampleSet(index: Int, set: SampleSetForm): TrainingConfigForm {
         if (index !in sampleSets.indices) return this
         return copy(sampleSets = sampleSets.toMutableList().also { it[index] = set })
+    }
+
+    fun withTrainDataDir(index: Int, entry: TrainDataDirForm): TrainingConfigForm {
+        if (index !in trainDataDirs.indices) return this
+        return copy(trainDataDirs = trainDataDirs.toMutableList().also { it[index] = entry })
+    }
+
+    /**
+     * `+`: a blank row, not a copy of the open one. Two rows naming the same folder would train
+     * that folder's images twice as often, which is rarely what a second row is for.
+     */
+    fun appendTrainDataDir(): TrainingConfigForm = copy(trainDataDirs = trainDataDirs + TrainDataDirForm())
+
+    /** Deletes [index]; the last remaining row stays (training needs one dataset folder). */
+    fun removeTrainDataDir(index: Int): TrainingConfigForm {
+        if (trainDataDirs.size <= 1 || index !in trainDataDirs.indices) return this
+        return copy(trainDataDirs = trainDataDirs.filterIndexed { position, _ -> position != index })
     }
 
     /** `+`: a new set cloned from [cloneOf], so a variant is one edit away. */
@@ -155,12 +198,33 @@ data class TrainingConfigForm(
             errors["amdfq"] = "Choose none, tail, or vmm"
         }
         requireDouble("amdfq_vram_reserve_gib", amdfqVramReserveGib, min = 0.0)
+        // 0 is off; the hook clamps anything else into [16, 512] MiB, and the picker only offers
+        // values inside that range, so anything else here is a hand-edited config line.
+        val poolMib = amdfqPoolMib.trim().toIntOrNull()
+        if (poolMib == null) {
+            errors["amdfq_pool_mib"] = "Enter an integer"
+        } else if (poolMib != 0 && poolMib !in 16..512) {
+            errors["amdfq_pool_mib"] = "0, or 16 to 512"
+        }
 
         requireText("pretrained_model_name_or_path", pretrainedModelNameOrPath)
         requireText("output_dir", outputDir)
         requireText("logging_dir", loggingDir)
-        requireText("train_data_dir", trainDataDir)
         requireText("output_name", outputName)
+
+        if (trainDataDirs.isEmpty()) {
+            errors[TRAIN_DATA_ERROR_PREFIX + "0.path"] = "At least one dataset folder"
+        }
+        trainDataDirs.forEachIndexed { index, entry ->
+            val key = { field: String -> "$TRAIN_DATA_ERROR_PREFIX$index.$field" }
+            requireText(key("path"), entry.path)
+            requireInt(
+                key("repeat"),
+                entry.repeat,
+                min = TRAIN_DATA_REPEAT_RANGE.first,
+                max = TRAIN_DATA_REPEAT_RANGE.last,
+            )
+        }
 
         val preset = ModelSpecCatalog.byVersion(baseModelVersion.trim())
         if (preset == null) {
@@ -259,11 +323,14 @@ data class TrainingConfigForm(
                 "pretrained_model_name_or_path" to q(pretrainedModelNameOrPath.trim()),
                 "output_dir" to q(outputDir.trim()),
                 "logging_dir" to q(loggingDir.trim()),
-                "train_data_dir" to q(trainDataDir.trim()),
+                // Mirrors the first `[[environment.train_data]]` block, so the file never carries
+                // two contradictory dataset folders.
+                "train_data_dir" to q(primaryTrainDataDir),
                 "output_name" to q(outputName.trim()),
                 "amdfq" to q(amdfq.trim().lowercase().ifBlank { "none" }),
                 "amdfq_vram_reserve_gib" to f(amdfqVramReserveGib),
                 "amdfq_va_never_reuse" to b(amdfqVaNeverReuse),
+                "amdfq_pool_mib" to n(amdfqPoolMib.ifBlank { "64" }),
             ),
             "model_spec" to mapOf(
                 "base_model_version" to q(baseModelVersion.trim()),
@@ -364,7 +431,16 @@ data class TrainingConfigForm(
                 put("repeat", set.repeat.trim())
             }
         }
-        return mapOf(SAMPLE_SETS_SECTION to blocks)
+        val trainDataBlocks = trainDataDirs.map { entry ->
+            linkedMapOf<String, String>().apply {
+                put("path", TomlDocumentPatcher.quote(entry.path.trim()))
+                put("repeat", entry.repeat.trim().ifBlank { "1" })
+            }
+        }
+        return mapOf(
+            TRAIN_DATA_SECTION to trainDataBlocks,
+            SAMPLE_SETS_SECTION to blocks,
+        )
     }
 
     fun withBaseModelVersion(version: String): TrainingConfigForm {
@@ -381,6 +457,9 @@ data class TrainingConfigForm(
         val baseModelVersionOptions = ModelSpecCatalog.versions
         val mixedPrecisionOptions = listOf("bf16", "fp16", "no")
         val amdfqOptions = listOf("none", "tail", "vmm")
+        /** Pool sizes the picker offers, in MiB; 0 is off. The hook clamps to 16..512 and rounds to
+         * an even number of allocation granules, so these are all values it takes as written. */
+        val amdfqPoolMibOptions = listOf(0, 16, 32, 64, 128, 256, 512)
         val lrSchedulerOptions = listOf(
             "cosine",
             "cosine_with_restarts",
@@ -407,11 +486,12 @@ data class TrainingConfigForm(
                 pretrainedModelNameOrPath = env.pretrainedModelNameOrPath,
                 outputDir = env.outputDir,
                 loggingDir = env.loggingDir,
-                trainDataDir = env.trainDataDir,
+                trainDataDirs = trainDataDirsOf(env),
                 outputName = env.outputName,
                 amdfq = env.amdfq.trim().lowercase().ifBlank { "none" },
                 amdfqVramReserveGib = formatNumber(env.amdfqVramReserveGib),
                 amdfqVaNeverReuse = env.amdfqVaNeverReuse,
+                amdfqPoolMib = env.amdfqPoolMib.toString(),
                 baseModelVersion = spec.baseModelVersion,
                 modelspecArchitecture = spec.modelspecArchitecture,
                 modelspecImplementation = spec.modelspecImplementation,
@@ -466,6 +546,16 @@ data class TrainingConfigForm(
                 sampleSets = sampleSetsOf(vali)
             )
         }
+
+        /**
+         * Every `[[environment.train_data]]` entry. A config without any block is shown as the
+         * single folder `train_data_dir` names, with repeat 1 - which is what the trainer then
+         * trains on, so the row never claims a repeat the file does not carry.
+         */
+        private fun trainDataDirsOf(environment: EnvironmentConfig): List<TrainDataDirForm> =
+            environment.trainDataEntries().map { entry: TrainDataEntryConfig ->
+                TrainDataDirForm(path = entry.path, repeat = entry.repeat.toString())
+            }
 
         /**
          * Every `[[validation.samples]]` entry, with a key the entry omits shown as the

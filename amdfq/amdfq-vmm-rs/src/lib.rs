@@ -6,7 +6,10 @@
 //! instead of one granule of VRAM per live allocation. `hipFree` unmaps and releases the handle, and
 //! then gives the VA back too — so an address can be reserved and mapped again — unless
 //! `AMDFQ_VA_NEVER_REUSE=1` asks for the pre-fix behaviour, which keeps the span for the process
-//! lifetime. Everything the
+//! lifetime. With `AMDFQ_POOL_SIZE` set (bytes, off by default, clamped into [16 MiB, 512 MiB]) a
+//! request of at most half that size is instead carved out of a pool of that size (`pool.rs`): one
+//! `hipMemCreate`, one reserve, one map and one pad granule for the whole pool, and pure bookkeeping
+//! per request. A pool whose last block is freed gives its handle and its VA back. Everything the
 //! route declines to serve — a runtime without the VMM entry points, a failed reserve/create/map, a
 //! device whose state could not be built — is forwarded to the runtime with the caller's size
 //! unchanged, and a free is only ever unmapped here if it came out of an extent this crate reserved.
@@ -32,14 +35,17 @@
 //! an address that was already live (`duplicate`) and a free of an address the registry never held
 //! (`untracked`). `AMDFQ_LOG_LEVEL` (`off`/`error`/`warn`/`info`/`debug`/`trace`, default `info`)
 //! filters them. `AMDFQ_VRAM_RESERVE` is the driver-counter free floor in bytes (default `0`);
-//! `AMDFQ_VA_NEVER_REUSE` (`0`/`1`, default `0`) keeps a freed span's VA for the process lifetime.
+//! `AMDFQ_VA_NEVER_REUSE` (`0`/`1`, default `0`) keeps a freed span's VA for the process lifetime;
+//! `AMDFQ_POOL_SIZE` is the pool size in bytes (default `0`, off), which is also the size of one
+//! `hipMemCreate` for everything small enough to be carved out of that pool.
 //!
 //! | module | role |
 //! | --- | --- |
 //! | `hooks.rs` | the C symbols themselves: `#[unsafe(no_mangle)] pub unsafe extern "C" fn` (`hipMalloc` / `hipFree` / `hipMemGetInfo`) |
 //! | `peralloc.rs` | the VMM route: `serve` / `release`, the per-device state, the mapped-span (or never-reused) VA set |
+//! | `pool.rs` | the allocation pool: `PoolSize` from `AMDFQ_POOL_SIZE`, the table of live pools, carving one request out of a pool, giving a pool back when its last block goes |
 //! | `real.rs` | the only place a real symbol is resolved: next-object lookup, then cached |
-//! | `registry.rs` | `Address -> HookData`, the only shared state and the only lock |
+//! | `registry.rs` | `Address -> HookData`, the only shared state over an allocation, and its only lock |
 //! | `logging.rs` | the `log` sink (stderr, one `write(2)` per line) |
 //! | `hip.rs` | the HIP types and codes this crate names, spelled out so no ROCm headers are needed |
 //!
@@ -50,5 +56,6 @@ mod hip;
 mod hooks;
 mod logging;
 mod peralloc;
+mod pool;
 mod real;
 mod registry;

@@ -3,23 +3,27 @@ package com.acite.axlranko.model
 enum class ConfigSection(
     val title: String,
     val description: String,
-    val fieldKeys: Set<String>
+    val fieldKeys: Set<String>,
+    /** Prefixes of the per-entry errors this section renders (`samples.1.steps`, `train_data.0.repeat`). */
+    val errorPrefixes: Set<String> = emptySet()
 ) {
     Environment(
         title = "Environment",
-        description = "Base model, dataset, and output paths",
+        description = "Base model, dataset folders, and output paths",
         fieldKeys = setOf(
             "pretrained_model_name_or_path",
             "output_dir",
             "logging_dir",
             "train_data_dir",
+            "train_data",
             "output_name",
-        )
+        ),
+        errorPrefixes = setOf(TRAIN_DATA_ERROR_PREFIX)
     ),
     Rocm(
         title = "ROCm",
         description = "RDNA 4 allocation patch: none, tail guard, or VMM",
-        fieldKeys = setOf("amdfq", "amdfq_vram_reserve_gib", "amdfq_va_never_reuse"),
+        fieldKeys = setOf("amdfq", "amdfq_vram_reserve_gib", "amdfq_va_never_reuse", "amdfq_pool_mib"),
     ),
     ModelSpec(
         title = "Model Spec",
@@ -132,7 +136,8 @@ enum class ConfigSection(
             "sample_seed",
             "sample_repeat",
             "guidance_scale"
-        )
+        ),
+        errorPrefixes = setOf(SAMPLE_SET_ERROR_PREFIX)
     ),
     Appearance(
         title = "Appearance",
@@ -142,10 +147,12 @@ enum class ConfigSection(
     ;
 
     /**
-     * Whether a `fieldErrors` key belongs to this section. Sample-set errors
-     * (`samples.2.steps`) are spelled with the entry index, so they need a prefix match.
+     * Whether a `fieldErrors` key belongs to this section. Entry errors
+     * (`samples.2.steps`, `train_data.0.repeat`) are spelled with the entry index, so they need
+     * a prefix match.
      */
-    fun owns(key: String): Boolean = key in fieldKeys || (this == Validation && key.startsWith(SAMPLE_SET_ERROR_PREFIX))
+    fun owns(key: String): Boolean =
+        key in fieldKeys || errorPrefixes.any { key.startsWith(it) }
 }
 
 data class UtilsUiState(
@@ -159,6 +166,8 @@ data class UtilsUiState(
     val selectedSection: ConfigSection = ConfigSection.Environment,
     /** Open tab in the Validation section's `[[validation.samples]]` editor. */
     val selectedSampleSet: Int = 0,
+    /** Which dataset folder the single-folder pages (Images, Statistics, Tag) act on. */
+    val datasetDirIndex: Int = 0,
     val form: TrainingConfigForm = TrainingConfigForm(),
     val savedForm: TrainingConfigForm = TrainingConfigForm(),
     val fieldErrors: Map<String, String> = emptyMap(),

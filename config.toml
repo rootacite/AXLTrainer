@@ -5,25 +5,65 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/home/acite/LLM/Character/LLLJ/"
-output_name = "lllj"
+train_data_dir = "/home/acite/LLM/Character/Koharu/3"
+output_name = "koharu"
+# Datasets trained together: one `[[environment.train_data]]` block per folder, `repeat` = how often
+# that folder's images are drawn inside a single epoch (1..512; 3 against 1 trains it three times as
+# often per epoch). With no block at all the list is empty and the `train_data_dir` line above is
+# trained once per epoch, which is what this file does right now. Ranko Utils → Environment edits both
+# and always writes `train_data_dir` as the first block's path; the trainer drops the scalar as soon as
+# a block exists. The epoch length, the step count and the LR schedule follow the sum, so raising a
+# repeat lengthens the run. It is not a loss-weighting knob: it changes how often a folder is drawn,
+# not what one image contributes. A small folder with a large repeat can fill a batch with near-copies
+# of the same few images.
+# [[environment.train_data]]
+# path = "/home/acite/LLM/Character/LLLJ/"
+# repeat = 3
+#
+# [[environment.train_data]]
+# path = "/home/acite/Pictures/05_babara"
+# repeat = 1
 # none | tail | vmm — Ranko Utils → ROCm. Takes effect on the next Train start.
 amdfq = "vmm"
 # GiB of driver-reported free VRAM (amdgpu mem_info_vram_*) the VMM hook will not consume. 0 = off.
 # The pre-fix workaround for eviction handing a process's frames to another one. NEEDED on the stock
 # kernel: the current boot is 7.2.6-zen2-1-zen, which lacks that fix.
 # Ranko Utils → ROCm. Takes effect on the next Train start. Ignored unless amdfq = "vmm".
-amdfq_vram_reserve_gib = 0
+amdfq_vram_reserve_gib = 0.128
 # Pre-fix workaround: a freed range keeps its GPU virtual address for the process lifetime. false = the hook
 # gives the VA back on free, which needs the fixed kernel (7.2.7-acite++); the stock kernel does not. NEEDED as
 # long as this boots the stock kernel. Ranko Utils → ROCm. Ignored unless amdfq = "vmm".
 amdfq_va_never_reuse = false
+# Allocation pool for the VMM hook, in MiB: 0 = off (every hipMalloc keeps its own hipMemCreate), else
+# 16..512. On: one hipMemCreate builds a pool of this size and any request of at most half of it is carved
+# out of a pool that already exists, with no driver call; a pool is released once the upper layer has freed
+# everything carved out of it. Ranko Utils → ROCm. Takes effect on the next Train start.
+# NOT a case of bigger is better: a pool is committed VRAM nothing else can use until its last block is
+# freed (OOM / fragmentation), and the small-request traffic it removes is a bounded share of each step, so
+# the gain flattens out. Measured on this repo's own workload (test/bench_alloc_pool.py, 201 steps per run,
+# pool off vs 16/32/64/128 MiB): step rate is flat to -1% and the cost grows with the size, so 256 MiB
+# aborted two runs out of two while the pool-off baseline aborted one in nine. A pool's blocks are also
+# neighbours — an over-read past a block still lands in mapped memory, but an over-write past its end can
+# reach another live block.
+amdfq_pool_mib = 0
 # train_data_dir = "/home/acite/LLM/Character/Towa/"
 # output_name = "towa"
 # train_data_dir = "/home/acite/Pictures/05_babara"
 # output_name = "babara"
 # train_data_dir = "/home/acite/Pictures/05_miyako"
 # output_name = "miyako"
+
+[[environment.train_data]]
+path = "/home/acite/LLM/Character/Koharu/3"
+repeat = 1
+
+[[environment.train_data]]
+path = "/home/acite/LLM/Character/Koharu/2"
+repeat = 2
+
+[[environment.train_data]]
+path = "/home/acite/LLM/Character/Koharu/1"
+repeat = 1
 
 [model_spec]
 base_model_version = "sdxl_base_v1-0"
@@ -34,7 +74,7 @@ modelspec_sai_model_spec = "1.0.0"
 [training]
 is_vpred = false
 min_snr_gamma = 5.0
-seed = 1145141919
+seed = 721
 mixed_precision = "bf16"
 train_batch_size = 2
 gradient_accumulation_steps = 1
@@ -42,18 +82,18 @@ learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 12
+epoch = 24
 save_every_n_epochs = 1
-save_every_n_steps = 50
+save_every_n_steps = 100
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
 # training starts. Weights only: step/epoch counting still starts at 0, and this
 # run writes into its own timestamped run directory.
 resume_lora_path = ""
 
 [network]
-network_dim = 64
-network_alpha = 32
-network_dropout = 0.08
+network_dim = 32
+network_alpha = 16
+network_dropout = 0.1
 clip_skip = 1
 max_token_length = 225
 
@@ -82,7 +122,7 @@ noise_offset = 0.05
 flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 3.0E-5
+unet_learning_rate = 1.0E-4
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -90,7 +130,7 @@ unet_eps = 1.0E-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 3.0E-6
+te_learning_rate = 1.0E-5
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99
@@ -101,47 +141,25 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "yuzu_style, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+sample_prompts = "yuzu_style, (koharu_character:1.1), 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.1), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1152
 sample_height = 768
 sample_steps = 35
 sample_seed = 0
-sample_repeat = 1
+sample_repeat = 3
 guidance_scale = 6.0
 
 [[validation.samples]]
 name = "yuzu"
-prompt = "yuzu_style, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+prompt = "yuzu_style, (koharu_character:1.1), 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.1), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
 negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 width = 1152
 height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 1
-
-[[validation.samples]]
-name = "rir"
-prompt = "yuzu_style, rir_character, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
-negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
-width = 1152
-height = 768
-steps = 35
-guidance_scale = 6.0
-seed = 0
-repeat = 1
-
-[[validation.samples]]
-name = "anj"
-prompt = "yuzu_style, anj_character, 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.2), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
-negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
-width = 1152
-height = 768
-steps = 35
-guidance_scale = 6.0
-seed = 0
-repeat = 1
+repeat = 3
 
 [bookkeeping]
 # TOML doesn't support Null directly in standard key-value pairs without specific schema handling,

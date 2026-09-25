@@ -53,7 +53,12 @@ class _MockLatentDist:
 
 
 class MockVAE(torch.nn.Module):
-    """Deterministic stand-in: latent = input (x * 2.0 * scaling_factor 0.5)."""
+    """Deterministic stand-in: latent = pooled pixels (x * 2.0 * scaling_factor 0.5).
+
+    The 8x pooling and the 4 channels are what a real VAE produces, and they are what make the
+    files this writes look like cache entries: the dataset serves a cached latent only when its
+    shape is the bucket's.
+    """
 
     def __init__(self):
         super().__init__()
@@ -64,7 +69,8 @@ class MockVAE(torch.nn.Module):
     def encode(self, x):
         self.encode_calls += 1
         self.batch_sizes.append(x.shape[0])
-        return type("Enc", (), {"latent_dist": _MockLatentDist(x * 2.0)})()
+        pooled = x[:, :1, ::8, ::8].expand(-1, 4, -1, -1)
+        return type("Enc", (), {"latent_dist": _MockLatentDist(pooled * 2.0)})()
 
 
 # ------------------------------------------------------------- test helpers
@@ -82,6 +88,10 @@ def make_dataset_dir(root: Path, n_images: int = 17) -> None:
 
 def make_cfg(data_dir: Path, **overrides) -> TrainConfig:
     cfg = TrainConfig()
+    # The repo's `[[environment.train_data]]` blocks outrank `train_data_dir`, so a test that
+    # points the config at its own folder has to drop them: leaving them in reads - and writes
+    # latents into - the dataset `config.toml` names.
+    cfg.train_data = []
     cfg.train_data_dir = str(data_dir)
     cfg.enable_bucket = True
     cfg.train_resolution = 1024
@@ -115,20 +125,28 @@ def collect_cached(root: Path) -> dict:
     out = {}
     for record in dataset.records:
         bw, bh = bucket_for(record["path"], cfg)
-        path = dataset._cache_path(record["path"], fit_geometry(record["src_w"], record["src_h"], bw, bh))
+        path = dataset._cache_path(
+            record["path"],
+            fit_geometry(record["src_w"], record["src_h"], bw, bh),
+            dataset.latent_cache_dir,
+        )
         assert path.exists(), f"missing cache file for {record['path'].name}"
         out[record["path"].stem] = (path, torch.load(path, map_location="cpu"))
     return out
 
 
 def run_serial(dataset, vae, cfg, device, dtype) -> None:
-    """Reference: the original serial loop from before the pipeline rewrite."""
+    """Reference: the original serial loop from before the pipeline rewrite.
+
+    Its skip rule is the pipelined one's - the dataset's `img_type`, which is "pixel" for
+    anything the cache cannot answer with - so both sides encode the same set of images.
+    """
     vae.eval()
     vae.to(device=device, dtype=dtype)
     for idx in range(len(dataset)):
         item = dataset[idx]
         cache_path = Path(item["cache_path"])
-        if cache_path.exists() or item["img_type"] != "pixel":
+        if item["img_type"] != "pixel":
             continue
         pixel_values = item["img_data"].unsqueeze(0).to(device=device, dtype=dtype)
         latent = vae.encode(pixel_values).latent_dist.sample() * vae.config.scaling_factor
@@ -219,7 +237,7 @@ def test_mixed_precached() -> None:
         item = ds0[0]
         cache_path = Path(item["cache_path"])
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(torch.zeros(4, 8, 8), cache_path)
+        torch.save(torch.zeros(4, item["bucket_h"] // 8, item["bucket_w"] // 8), cache_path)
 
         ds1 = LoraImageDataset(cfg)
         vae = MockVAE()
@@ -232,6 +250,34 @@ def test_mixed_precached() -> None:
         assert sum(vae.batch_sizes) == 7, vae.batch_sizes
         assert all(b <= 4 for b in vae.batch_sizes)
         print(f"  [ok] pre-cached 1 of 8 skipped; encoded batches={vae.batch_sizes}")
+
+
+def test_foreign_cache_file_is_re_encoded() -> None:
+    """A file that does not hold its bucket's latent is re-encoded over, not trusted."""
+    from trainer import cache
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        make_dataset_dir(root, n_images=8)
+        cfg = make_cfg(root)
+
+        ds0 = LoraImageDataset(cfg)
+        item = ds0[0]
+        cache_path = Path(item["cache_path"])
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.zeros(4, 8, 8), cache_path)
+
+        ds1 = LoraImageDataset(cfg)
+        vae = MockVAE()
+        cache.warm_latent_cache(
+            ds1, vae, cfg, torch.device("cpu"), torch.float32,
+            prefetch_workers=4, encode_batch_size=4,
+        )
+        assert sum(vae.batch_sizes) == 8, vae.batch_sizes
+        rewritten = torch.load(cache_path, map_location="cpu")
+        expected = (4, item["bucket_h"] // 8, item["bucket_w"] // 8)
+        assert tuple(rewritten.shape) == expected, (rewritten.shape, expected)
+        print(f"  [ok] foreign cache file re-encoded as {tuple(rewritten.shape)}")
 
 
 def test_gate_disabled() -> None:
@@ -328,6 +374,7 @@ def main() -> int:
         ("equivalence vs serial", test_equivalence_with_serial),
         ("skip on second run", test_skip_on_second_run),
         ("mixed pre-cached", test_mixed_precached),
+        ("foreign cache file re-encoded", test_foreign_cache_file_is_re_encoded),
         ("gate disabled", test_gate_disabled),
     ]
     if args.real:

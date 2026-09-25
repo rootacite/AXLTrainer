@@ -6,7 +6,7 @@ from pathlib import Path
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
-from config import TrainConfig, resolve_sample_sets, tracker_hparams
+from config import TrainConfig, resolve_sample_sets, resolve_train_data_entries, tracker_hparams
 from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
@@ -60,8 +60,11 @@ def main() -> None:
     stopped_during = None
 
     try:
-        # Fail before the model load when a `[[validation.samples]]` entry is unusable.
+        # Fail before the model load when a `[[validation.samples]]` entry is unusable or an
+        # `[[environment.train_data]]` entry is malformed (the dataset resolves the latter again
+        # when it is built).
         sample_sets = resolve_sample_sets(cfg)
+        resolve_train_data_entries(cfg)
         artifacts = build_train_objects(cfg)
         control.set_resume(artifacts.resume)
         accelerator = artifacts.accelerator
@@ -75,6 +78,13 @@ def main() -> None:
             ds = artifacts.train_dataset
             n_masked = getattr(ds, "n_masked", 0)
             print(f"Loss masks: {n_masked}/{len(ds)} samples")
+            # Silent only for the plain single-folder case, so a repeat is never implicit.
+            if len(ds.entries) > 1 or any(entry.repeat != 1 for entry in ds.entries):
+                folders = " + ".join(
+                    f"{entry.path} x{entry.repeat} ({count} images)"
+                    for entry, count in zip(ds.entries, ds.entry_image_counts)
+                )
+                print(f"Dataset: {folders} = {ds.total_samples} samples/epoch (repeats included)")
             n_padded = getattr(ds, "n_padded", 0)
             if n_padded:
                 dims = sorted({(r["bucket_w"], r["bucket_h"]) for r in ds.records})

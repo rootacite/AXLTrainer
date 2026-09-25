@@ -610,6 +610,20 @@ class DatasetTagIpcTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.handle_dataset_tag({"directory": "/tmp/axl-missing-tag-dir", "threshold": 0.35})
 
+    def test_no_directory_falls_back_to_the_first_train_data_entry(self):
+        """A hand-written config carrying only `[[environment.train_data]]` blocks still tags."""
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(
+                api,
+                "_load_toml_config",
+                return_value={"train_data": [{"path": raw, "repeat": 2}, {"path": "/tmp/second"}]},
+            ):
+                with mock.patch.object(
+                    api, "run_tagger_process", return_value={"processed": 0}
+                ) as tagged:
+                    api.handle_dataset_tag({"threshold": 0.35})
+            self.assertEqual(str(tagged.call_args.args[0]), raw)
+
     def test_bad_threshold(self):
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaises(ValueError):

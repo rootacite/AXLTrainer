@@ -1,3 +1,5 @@
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +41,10 @@ def _write_images(root: Path, sizes: list[tuple[int, int]]) -> None:
 
 def _cfg(data_dir: Path, **overrides) -> TrainConfig:
     cfg = TrainConfig()
+    # The repo's `[[environment.train_data]]` blocks outrank `train_data_dir`, so a test that
+    # points the config at its own folder has to drop them: leaving them in reads - and writes
+    # latents into - the dataset `config.toml` names.
+    cfg.train_data = []
     cfg.train_data_dir = str(data_dir)
     cfg.enable_bucket = True
     cfg.train_resolution = 1024
@@ -119,11 +125,38 @@ class DatasetBucketTest(unittest.TestCase):
         item = dataset[0]
         cache_path = Path(item["cache_path"])
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(torch.zeros(4, 8, 8), cache_path)
+        torch.save(torch.zeros(4, 128, 128), cache_path)  # img_000 is 1024²: a 128² latent
         cached = dataset[0]
         self.assertEqual(cached["img_type"], "latent")
-        self.assertEqual(tuple(cached["img_data"].shape), (4, 8, 8))
+        self.assertEqual(tuple(cached["img_data"].shape), (4, 128, 128))
         self.assertEqual(tuple(cached["loss_mask"].shape), (1, item["bucket_h"], item["bucket_w"]))
+
+    def test_cache_file_of_another_shape_is_a_miss(self):
+        # A file that does not hold this bucket's latent must not be served: an 8x8 placeholder
+        # beside real latents is what aborted a run mid-step with a stack shape error.
+        cfg = _cfg(self.root)
+        dataset = LoraImageDataset(cfg)
+        item = dataset[0]
+        cache_path = Path(item["cache_path"])
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.zeros(4, 8, 8), cache_path)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            stale = dataset[0]
+        self.assertEqual(stale["img_type"], "pixel")
+        self.assertEqual(tuple(stale["img_data"].shape), (3, item["bucket_h"], item["bucket_w"]))
+        self.assertIn(str(cache_path), err.getvalue())
+
+    def test_unreadable_cache_file_is_a_miss(self):
+        cfg = _cfg(self.root)
+        dataset = LoraImageDataset(cfg)
+        item = dataset[0]
+        cache_path = Path(item["cache_path"])
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b"half-written latent")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            broken = dataset[0]
+        self.assertEqual(broken["img_type"], "pixel")
+        self.assertIn("unreadable latent cache", err.getvalue())
 
     def test_collate_keeps_python_ints_and_stacks_latents(self):
         examples = [
@@ -233,13 +266,14 @@ class BucketGeometryTest(unittest.TestCase):
             _write_images(root, [(512, 1536)])
             ds = LoraImageDataset(_cfg(root))
             path = ds.records[0]["path"]
-            same = ds._cache_path(path, fit_geometry(512, 1536, 256, 896))
-            different = ds._cache_path(path, fit_geometry(512, 1536, 256, 768))
+            cache_dir = ds.latent_cache_dirs[0]
+            same = ds._cache_path(path, fit_geometry(512, 1536, 256, 896), cache_dir)
+            different = ds._cache_path(path, fit_geometry(512, 1536, 256, 768), cache_dir)
             self.assertNotEqual(same, different)
-            self.assertEqual(same, ds._cache_path(path, fit_geometry(512, 1536, 256, 896)))
-            # the dataset's own lookup uses the record's geometry
+            self.assertEqual(same, ds._cache_path(path, fit_geometry(512, 1536, 256, 896), cache_dir))
+            # the dataset's own lookup uses the record's geometry (and its own folder's cache)
             record = ds.records[0]
-            self.assertEqual(ds._cache_path(path, record["geom"]), Path(ds[0]["cache_path"]))
+            self.assertEqual(ds._cache_path(path, record["geom"], cache_dir), Path(ds[0]["cache_path"]))
 
 
 if __name__ == "__main__":

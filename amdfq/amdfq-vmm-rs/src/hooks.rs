@@ -12,6 +12,7 @@
 use crate::hip::{HIP_ERROR_NOT_FOUND, HIP_ERROR_OUT_OF_MEMORY, HIP_SUCCESS, HipError};
 use crate::logging;
 use crate::peralloc;
+use crate::pool;
 use crate::real;
 use crate::registry::{self, Address, HookData, Origin};
 use std::ffi::c_void;
@@ -27,15 +28,28 @@ pub unsafe extern "C" fn hipMalloc(ptr: *mut *mut c_void, size: usize) -> HipErr
     match peralloc::serve(size) {
         peralloc::Serve::Extent(record) => {
             unsafe { *ptr = record.address.as_ptr() };
-            if let Origin::Extent(extent) = &record.origin {
-                log::info!(
+            match &record.origin {
+                Origin::Extent(extent) => log::info!(
                     "hipMalloc(size={size}) -> ret=0 served va={} block={} extent={} pad={} device={}",
                     record.address,
                     extent.block,
                     extent.total,
                     extent.pad.unwrap_or(0),
                     extent.device,
-                );
+                ),
+                Origin::Pooled(pooled) => log::info!(
+                    "hipMalloc(size={size}) -> ret=0 pooled va={} pool={} offset={} len={}",
+                    record.address,
+                    pooled.pool,
+                    pooled.offset,
+                    pooled.len,
+                ),
+                /* A record the runtime owns is never built here, so this is unreachable; saying so
+                 * is cheaper than a silent wrong line if that ever changes. */
+                Origin::Runtime => log::warn!(
+                    "hipMalloc(size={size}) -> ret=0 served va={} has an origin the route does not build",
+                    record.address,
+                ),
             }
             if let Some(replaced) = registry::insert(record) {
                 log::warn!(
@@ -108,6 +122,23 @@ pub unsafe extern "C" fn hipFree(ptr: *mut c_void) -> HipError {
             log::info!(
                 "hipFree(ptr={address}) -> {outcome} size={size} device={}",
                 extent.device
+            );
+            HIP_SUCCESS
+        }
+        Some(HookData {
+            address,
+            size,
+            origin: Origin::Pooled(pooled),
+        }) => {
+            /* The range goes back to its pool, and the pool itself only when this was its last live
+             * block (pool.rs). The line keeps the `released size=` shape the self-check counts, and
+             * names the pool after it so a pooled free is told apart from a solo teardown. */
+            let outcome = pool::release(address, pooled);
+            log::info!(
+                "hipFree(ptr={address}) -> {outcome} size={size} pool={} offset={} len={}",
+                pooled.pool,
+                pooled.offset,
+                pooled.len
             );
             HIP_SUCCESS
         }

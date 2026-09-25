@@ -1,6 +1,9 @@
+import ctypes
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -13,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tagger.main import (
     DEFAULT_THRESHOLD,
+    _preload_migraphx_libs,
     load_labels,
     parse_args,
     scores_to_caption,
@@ -87,6 +91,39 @@ class TaggerUnitTest(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertEqual((folder / "0001.txt").read_text(encoding="utf-8"), "1girl, solo")
             self.assertEqual((folder / "0002.txt").read_text(encoding="utf-8"), "1girl, solo")
+
+    def test_preload_skipped_without_package(self):
+        with mock.patch("importlib.util.find_spec", return_value=None), mock.patch(
+            "ctypes.CDLL"
+        ) as cdll:
+            _preload_migraphx_libs()
+        cdll.assert_not_called()
+
+    def test_preload_loads_package_library(self):
+        with tempfile.TemporaryDirectory() as raw:
+            package = Path(raw) / "migraphx_libs"
+            package.mkdir()
+            lib = package / "libmigraphx_c.so.3"
+            lib.write_bytes(b"")
+            spec = types.SimpleNamespace(submodule_search_locations=[str(package)])
+            with mock.patch("importlib.util.find_spec", return_value=spec), mock.patch(
+                "ctypes.CDLL"
+            ) as cdll:
+                _preload_migraphx_libs()
+        cdll.assert_called_once()
+        self.assertEqual(Path(cdll.call_args.args[0]), lib)
+        self.assertEqual(cdll.call_args.kwargs["mode"], ctypes.RTLD_GLOBAL)
+
+    def test_preload_noop_when_library_missing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            package = Path(raw) / "migraphx_libs"
+            package.mkdir()
+            spec = types.SimpleNamespace(submodule_search_locations=[str(package)])
+            with mock.patch("importlib.util.find_spec", return_value=spec), mock.patch(
+                "ctypes.CDLL"
+            ) as cdll:
+                _preload_migraphx_libs()
+        cdll.assert_not_called()
 
 
 if __name__ == "__main__":

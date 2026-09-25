@@ -34,6 +34,8 @@ import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
+import com.acite.axlranko.pages.components.DatasetDirBar
+import com.acite.axlranko.pages.components.datasetDirLabel
 import java.awt.Cursor
 import java.io.File
 
@@ -50,7 +52,15 @@ public fun ImagesScreen(
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
 
-        Row(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            DatasetDirBar(
+                labels = uiState.datasetDirs.map { datasetDirLabel(it.path, it.repeat) },
+                selected = uiState.datasetDirIndex,
+                onSelect = viewModel::selectDatasetDir,
+                modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp)
+            )
+
+            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
 
             Box(modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight)) {
                 LazyColumn(
@@ -325,6 +335,7 @@ public fun ImagesScreen(
                     }
                 }
             }
+        }
         }
     }
 }

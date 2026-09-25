@@ -53,10 +53,13 @@ import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
 import com.acite.axlranko.model.SampleSetForm
+import com.acite.axlranko.model.TRAIN_DATA_ERROR_PREFIX
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
+import com.acite.axlranko.pages.components.DatasetDirBar
+import com.acite.axlranko.pages.components.datasetDirLabel
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -423,14 +426,7 @@ private fun EnvironmentFields(
             }
         }
     )
-    ConfigPathField(
-        label = "Train data directory",
-        value = form.trainDataDir,
-        error = errors["train_data_dir"],
-        supporting = "Image/tag dataset folder used by the Images and Statistics pages",
-        onValueChange = { viewModel.updateForm { copy(trainDataDir = it) } },
-        onBrowse = { viewModel.browseDirectory(form.trainDataDir) { copy(trainDataDir = it) } }
-    )
+    TrainDataDirsField(uiState, viewModel)
     AutoTagCard(uiState = uiState, viewModel = viewModel)
     ConfigTextField(
         label = "Output name",
@@ -510,7 +506,105 @@ private fun RocmFields(
                 description = "Used only when Allocation patch is VMM. Pre-fix behaviour: a freed range keeps its GPU virtual address for the process lifetime, so the Dashboard's VA bar only grows. Off by default — with the 2026-09 kernel the hook gives the address back on free. Takes effect on the next Train start.",
                 onChecked = { viewModel.updateForm { copy(amdfqVaNeverReuse = it) } },
             )
+            Text(
+                text = "Allocation pool",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Used only when Allocation patch is VMM. Off (default): every hipMalloc gets its own hipMemCreate. On: one hipMemCreate builds a pool of this size, and any request of at most half of it is carved out of one already built — no driver call at all. A pool is released when the upper layer has freed everything carved out of it. Takes effect on the next Train start.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TrainingConfigForm.amdfqPoolMibOptions.forEach { size ->
+                    CapsuleChoice(
+                        text = if (size == 0) "Off" else "$size MiB",
+                        selected = form.amdfqPoolMib.trim() == size.toString(),
+                        onClick = { viewModel.updateForm { copy(amdfqPoolMib = size.toString()) } },
+                    )
+                }
+            }
+            uiState.fieldErrors["amdfq_pool_mib"]?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.qualityRed,
+                )
+            }
+            Text(
+                text = "A pool is not better when bigger. It is committed VRAM the driver cannot hand to anything else until its last block is freed, so an oversized pool risks OOM and fragmenting the card, and the savings fall off: the traffic it removes is a bounded share of each training step. 16-64 MiB is the useful range.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
         }
+    }
+}
+
+@Composable
+private fun TrainDataDirsField(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel
+) {
+    val form = uiState.form
+    val errors = uiState.fieldErrors
+    val colors = rankoColors
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Train data directories", style = MaterialTheme.typography.labelLarge)
+        form.trainDataDirs.forEachIndexed { index, entry ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                ConfigTextField(
+                    label = "Folder ${index + 1}",
+                    value = entry.path,
+                    error = errors["$TRAIN_DATA_ERROR_PREFIX$index.path"],
+                    onValueChange = { value ->
+                        viewModel.updateTrainDataDir(index) { it.copy(path = value) }
+                    },
+                    modifier = Modifier.weight(1f),
+                    trailingIcon = {
+                        IconButton(onClick = { viewModel.browseTrainDataDir(index) }) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = "Browse")
+                        }
+                    }
+                )
+                ConfigTextField(
+                    label = "Repeat",
+                    value = entry.repeat,
+                    error = errors["$TRAIN_DATA_ERROR_PREFIX$index.repeat"],
+                    onValueChange = { value ->
+                        viewModel.updateTrainDataDir(index) { it.copy(repeat = value) }
+                    },
+                    modifier = Modifier.width(120.dp)
+                )
+                IconButton(
+                    onClick = { viewModel.removeTrainDataDir(index) },
+                    enabled = form.trainDataDirs.size > 1
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Delete this folder")
+                }
+            }
+        }
+        CapsuleButton(
+            text = "+ Add folder",
+            onClick = { viewModel.addTrainDataDir() },
+            compact = true,
+        )
+        Text(
+            text = "Repeat is how often a folder's images are drawn inside one epoch: 3 against 1 " +
+                "trains that folder three times as often per epoch. It changes how many times an " +
+                "image is drawn, not the weight one image carries, and the epoch length, step " +
+                "count and learning-rate schedule all follow the total. A small folder with a " +
+                "large repeat can fill a batch with near-copies of the same few images.",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.textDim
+        )
     }
 }
 
@@ -520,6 +614,9 @@ private fun AutoTagCard(
     viewModel: UtilsScreenViewModel
 ) {
     val thresholdValue = uiState.tagThreshold.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.35f
+    val dirs = uiState.form.trainDataDirs
+    val selectedDir = uiState.datasetDirIndex.coerceIn(0, dirs.lastIndex.coerceAtLeast(0))
+    val targetPath = dirs.getOrNull(selectedDir)?.path?.trim().orEmpty()
     PorcelainCard {
         Column(
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -530,9 +627,15 @@ private fun AutoTagCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Runs the WD ONNX tagger on GPU (MIGraphX) and overwrites every sidecar .txt in the train data directory. Images and Statistics reload when it finishes.",
+                text = "Runs the WD ONNX tagger on GPU (MIGraphX) and overwrites every sidecar .txt " +
+                    "in the selected dataset folder. Images and Statistics reload when it finishes.",
                 style = MaterialTheme.typography.bodySmall,
                 color = rankoColors.textDim
+            )
+            DatasetDirBar(
+                labels = dirs.map { datasetDirLabel(it.path, it.repeat) },
+                selected = selectedDir,
+                onSelect = viewModel::selectDatasetDir,
             )
             Text(
                 text = "Confidence  ${"%.2f".format(thresholdValue)}",
@@ -561,7 +664,7 @@ private fun AutoTagCard(
                 CapsuleButton(
                     text = if (uiState.isTagging) "Tagging…" else "Tag dataset",
                     onClick = { viewModel.runAutoTag() },
-                    enabled = !uiState.isTagging && !uiState.isSaving && uiState.form.trainDataDir.isNotBlank(),
+                    enabled = !uiState.isTagging && !uiState.isSaving && targetPath.isNotBlank(),
                     compact = true,
                     emphasized = true,
                 ) {

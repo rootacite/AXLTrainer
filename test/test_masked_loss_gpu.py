@@ -61,6 +61,7 @@ class MaskedLossGpuTest(unittest.TestCase):
             copied = _copy_two_samples(data_dir, dest)
             _center_white_mask(copied[0])
 
+            cfg.train_data = []  # the blocks outrank `train_data_dir`: train the clone, not the source
             cfg.train_data_dir = str(dest)
             cfg.cache_latents = False
             cfg.cache_latents_to_disk = False
@@ -196,6 +197,7 @@ class MaskedLossGpuTest(unittest.TestCase):
             copied[0].unlink(missing_ok=True)
             src_txt.unlink(missing_ok=True)
 
+            cfg.train_data = []  # the blocks outrank `train_data_dir`: train the clone, not the source
             cfg.train_data_dir = str(dest)
             cfg.cache_latents = False
             cfg.cache_latents_to_disk = False

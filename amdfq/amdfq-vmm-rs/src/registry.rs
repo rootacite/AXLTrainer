@@ -1,6 +1,7 @@
 /* The allocation state: one map, keyed by the block's start address (DESIGN.md D1). Its RwLock is
- * the crate's only lock, and it is held only across the map operation — never across a call into the
- * runtime, never across a log line (DESIGN.md D3). */
+ * the crate's only lock *over an allocation* — held only across the map operation, never across a
+ * call into the runtime and never across a log line (DESIGN.md D3). pool.rs keeps the live pools
+ * under its own lock, on the same terms. */
 
 use crate::hip::Handle;
 use std::collections::HashMap;
@@ -54,6 +55,21 @@ pub(crate) enum Origin {
     /* An extent this crate reserved (peralloc.rs): unmapped and the handle released here, without
      * the runtime ever seeing the pointer. The VA goes back too unless AMDFQ_VA_NEVER_REUSE is on. */
     Extent(Extent),
+    /* A range carved out of a pool (pool.rs): the block has no handle of its own, so a free gives
+     * the range back to the pool it came from — and that pool's own handle, mapping and VA go back
+     * the moment the range was its last live one. */
+    Pooled(Pooled),
+}
+
+/* What a free needs to undo one carved block: which pool, and where inside it. Everything else the
+ * teardown needs (the pool's handle, its span, its device) belongs to the pool and stays there. */
+#[derive(Clone, Copy)]
+pub(crate) struct Pooled {
+    pub(crate) pool: u64,
+    /* Bytes from the pool's start address: the block's own start is the record's address. */
+    pub(crate) offset: usize,
+    /* Bytes taken: the request rounded up to the device's allocation granularity. */
+    pub(crate) len: usize,
 }
 
 /* What a free needs to undo one served allocation. */

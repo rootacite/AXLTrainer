@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import importlib.util
 import json
 import os
 import sys
@@ -79,6 +81,27 @@ def process_image(image_path: str | Path) -> np.ndarray:
     return image_data
 
 
+def _preload_migraphx_libs() -> None:
+    """Load libmigraphx_c.so.3 before the MIGraphX EP is dlopen'ed.
+
+    The EP resolves that library through its own RUNPATH (the system /opt/rocm* trees),
+    so a pip-installed `migraphx_libs` directory is invisible to it and the provider
+    silently falls back to CPU. Loading it here with RTLD_GLOBAL satisfies the EP's
+    DT_NEEDED entry.
+    """
+    spec = importlib.util.find_spec("migraphx_libs")
+    locations = getattr(spec, "submodule_search_locations", None) if spec else None
+    if not locations:
+        return
+    lib = Path(list(locations)[0]) / "libmigraphx_c.so.3"
+    if not lib.is_file():
+        return
+    try:
+        ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+    except OSError as exc:
+        _log(f"[Warning] migraphx_libs preload failed ({exc}); MIGraphX may fall back to CPU")
+
+
 def create_session(
     model_path: str | Path = DEFAULT_MODEL,
     *,
@@ -94,6 +117,7 @@ def create_session(
     else:
         providers = []
         if "MIGraphXExecutionProvider" in available:
+            _preload_migraphx_libs()
             providers.append(("MIGraphXExecutionProvider", {"device_id": 0}))
         if "CUDAExecutionProvider" in available:
             providers.append("CUDAExecutionProvider")

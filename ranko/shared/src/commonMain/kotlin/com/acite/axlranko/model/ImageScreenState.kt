@@ -1,7 +1,12 @@
 package com.acite.axlranko.model
 
+import com.acite.axlranko.data.TrainDataEntryConfig
+
 data class ImageScreenState(
     val dataDir: String = "",
+    /** `[[environment.train_data]]`: the folders the picker offers, and the open one. */
+    val datasetDirs: List<TrainDataEntryConfig> = emptyList(),
+    val datasetDirIndex: Int = 0,
     val imageItems: List<ImageItem> = emptyList(),
     val selectedItem: ImageItem? = null,
     val editorText: String = "",

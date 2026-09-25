@@ -48,6 +48,7 @@ use crate::hip::{
     MEM_ALLOCATION_TYPE_PINNED, MEM_GRANULARITY_MINIMUM, MEM_GRANULARITY_RECOMMENDED,
     MEM_HANDLE_TYPE_NONE, MEM_LOCATION_DEVICE, MEM_LOCATION_HOST, MemLocation,
 };
+use crate::pool;
 use crate::real;
 use crate::registry::{Address, Extent, HookData, Origin};
 use std::collections::BTreeMap;
@@ -64,7 +65,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /* The runtime entry points the route needs, resolved as a set: the route stays off unless all of
  * them are there, rather than failing halfway through a request. */
 #[derive(Clone, Copy)]
-struct Entries {
+pub(crate) struct Entries {
     get_device: real::HipGetDeviceFn,
     set_device: real::HipSetDeviceFn,
     get_granularity: real::HipMemGetAllocationGranularityFn,
@@ -105,17 +106,17 @@ impl Entries {
 
 /* What the route knows about one device: its allocation granularity, the shared pad granule mapped
  * behind that device's blocks, and the devices that may reach them. */
-struct Device {
-    id: i32,
+pub(crate) struct Device {
+    pub(crate) id: i32,
     /* Block rounding and pad size, both the recommended granularity — the same magnitude the
      * runtime's own pool charges, so rounding costs nothing hipMalloc would not have cost anyway
      * (measured: a 1/2/4/8/32/44 MiB request all cost the request). */
-    granule: usize,
+    pub(crate) granule: usize,
     /* The one physical object on this device that every served block's pad is a mapping of: created
      * once, released never. */
-    pad: Handle,
+    pub(crate) pad: Handle,
     /* Devices that can read and write this device's memory (hipDeviceCanAccessPeer). */
-    peers: Vec<i32>,
+    pub(crate) peers: Vec<i32>,
 }
 
 /* The entry points the route needs, resolved as a set: the route stays off unless all of them are
@@ -152,6 +153,12 @@ static VA_NEVER_REUSE: LazyLock<bool> = LazyLock::new(parse_never_reuse);
 
 pub(crate) fn vram_reserve() -> usize {
     *VRAM_RESERVE
+}
+
+/* The resolved entry points, for the pool route (pool.rs): a pool is torn down from a `hipFree`,
+ * where the caller does not have them at hand the way `serve` does. */
+pub(crate) fn entries() -> Option<&'static Entries> {
+    (*ENTRIES).as_ref()
 }
 
 pub(crate) fn va_never_reuse() -> bool {
@@ -296,7 +303,7 @@ fn parse_vram_reserve() -> usize {
 
 /* True if this Create would leave driver-reported free below the reserve. Unreadable sysfs
  * does not become OOM: the Create-failure path still exists. */
-fn vram_reserve_blocks(device: i32, block: usize) -> bool {
+pub(crate) fn vram_reserve_blocks(device: i32, block: usize) -> bool {
     let reserve = *VRAM_RESERVE;
     if reserve == 0 {
         return false;
@@ -319,7 +326,7 @@ fn vram_reserve_blocks(device: i32, block: usize) -> bool {
 
 /* True if `[address, address + total)` overlaps a span that is mapped right now — or, in
  * never-reuse mode, one that has ever been mapped. */
-fn range_taken(address: Address, total: usize) -> bool {
+pub(crate) fn range_taken(address: Address, total: usize) -> bool {
     let start = address.as_usize();
     let end = start.saturating_add(total);
     let mapped = MAPPED_SPANS
@@ -340,7 +347,7 @@ fn range_taken(address: Address, total: usize) -> bool {
 
 /* Records that this reserved span has been mapped. In never-reuse mode the record stays for the
  * process lifetime; otherwise the teardown takes it back out with `forget_mapped`. */
-fn remember_mapped(address: Address, total: usize) {
+pub(crate) fn remember_mapped(address: Address, total: usize) {
     let mut mapped = MAPPED_SPANS
         .write()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -351,7 +358,7 @@ fn remember_mapped(address: Address, total: usize) {
 
 /* Reuse mode: the span went back to the driver with the handle, so it leaves the map and a later
  * reserve may be served inside it. */
-fn forget_mapped(address: Address) {
+pub(crate) fn forget_mapped(address: Address) {
     let mut mapped = MAPPED_SPANS
         .write()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -607,6 +614,14 @@ pub(crate) fn serve(size: usize) -> Serve {
         return Serve::Forward;
     }
 
+    /* A request a pool can take is served by one, with no runtime call of its own when a pool
+     * already has room (pool.rs). None means the knob is off, the request is above PoolSize/2, or
+     * the pool that would have served it could not be built — and all three fall through to the
+     * solo route below, which is what this file did before pools existed. */
+    if let Some(record) = pool::serve(entries, dev, size) {
+        return Serve::Extent(record);
+    }
+
     let block = size.div_ceil(dev.granule) * dev.granule;
     let total = block + dev.granule;
 
@@ -755,7 +770,7 @@ pub(crate) fn release(address: Address, extent: Extent) -> Outcome {
 }
 
 /* Takes one extent apart for real, and reports whether a step of that failed. */
-fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
+pub(crate) fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
     /* The block belongs to the device it was made on, and every call below acts on the current device,
      * which the caller may have moved away from (D11). */
     let switched = unsafe { (entries.set_device)(extent.device) };
@@ -817,7 +832,11 @@ fn teardown(entries: &Entries, address: Address, extent: Extent) -> bool {
 
 /* Both of these hand the runtime's own return code back: a request the route cannot set up is
  * forwarded, and why it was forwarded is the only thing that makes that visible. */
-fn reserve(entries: &Entries, total: usize, granule: usize) -> Result<Address, HipError> {
+pub(crate) fn reserve(
+    entries: &Entries,
+    total: usize,
+    granule: usize,
+) -> Result<Address, HipError> {
     let mut raw: *mut c_void = ptr::null_mut();
     let ret = unsafe { (entries.reserve)(&mut raw, total, granule, ptr::null_mut(), 0) };
     if ret != HIP_SUCCESS {
@@ -826,7 +845,7 @@ fn reserve(entries: &Entries, total: usize, granule: usize) -> Result<Address, H
     Ok(Address::from_ptr(raw))
 }
 
-fn create(entries: &Entries, block: usize, device_id: i32) -> Result<Handle, HipError> {
+pub(crate) fn create(entries: &Entries, block: usize, device_id: i32) -> Result<Handle, HipError> {
     let mut raw: *mut c_void = ptr::null_mut();
     let ret = unsafe { (entries.create)(&mut raw, block, &prop(device_id), 0) };
     if ret != HIP_SUCCESS {
@@ -837,6 +856,31 @@ fn create(entries: &Entries, block: usize, device_id: i32) -> Result<Handle, Hip
 
 fn free_address(entries: &Entries, address: Address, total: usize) -> HipError {
     unsafe { (entries.address_free)(address.as_ptr(), total) }
+}
+
+/* The three steps a pool's construction and its teardown run (pool.rs), spelled the same way the
+ * solo route runs them above: map, unmap, release the handle, and give the VA back. */
+pub(crate) fn map(entries: &Entries, address: Address, size: usize, handle: Handle) -> HipError {
+    unsafe { (entries.map)(address.as_ptr(), size, 0, handle.as_raw(), 0) }
+}
+
+pub(crate) fn unmap_warned(entries: &Entries, address: Address, size: usize) {
+    let ret = unsafe { (entries.unmap)(address.as_ptr(), size) };
+    if ret != HIP_SUCCESS {
+        log::warn!("hipMemUnmap(va={address} size={size}) -> {ret}");
+    }
+}
+
+pub(crate) fn release_warned(entries: &Entries, handle: Handle, what: &str) {
+    let ret = unsafe { (entries.release)(handle.as_raw()) };
+    if ret != HIP_SUCCESS {
+        log::warn!("hipMemRelease({what}) -> {ret}");
+    }
+}
+
+pub(crate) fn free_address_warned(entries: &Entries, address: Address, total: usize) {
+    let ret = free_address(entries, address, total);
+    warn_if_failed("hipMemAddressFree", address, ret);
 }
 
 /* A step of a teardown that returned an error, if it did. None of them is supposed to fail, so a
@@ -850,7 +894,7 @@ fn warn_if_failed(what: &str, address: Address, ret: HipError) {
 
 /* What the access grant for one range came to. */
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Access {
+pub(crate) enum Access {
     /* Every location that needs it may read and write the range: the block's device, its peers, the
      * host. What a served block needs. */
     Granted,
@@ -882,7 +926,7 @@ fn device_desc(id: i32) -> AccessDesc {
  * grants nothing to a mapping this route made, so a device that can reach this one is written into
  * the set here. What came of the grant is reported rather than swallowed: the second call asks for the
  * device alone, which says whether the range is unusable or only unreachable from outside the device. */
-fn set_access(
+pub(crate) fn set_access(
     entries: &Entries,
     dev: &Device,
     address: Address,

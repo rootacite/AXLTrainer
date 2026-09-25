@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.AppearanceRepository
 import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
+import com.acite.axlranko.data.DatasetSelection
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
@@ -12,6 +13,7 @@ import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
 import com.acite.axlranko.model.SampleSetForm
+import com.acite.axlranko.model.TrainDataDirForm
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
 import com.acite.axlranko.util.pickDirectoryDialog
@@ -37,6 +39,7 @@ class UtilsScreenViewModel(
     private val ipc: TrainerIpcClient,
     private val refreshHub: DatasetRefreshHub,
     private val appearanceRepo: AppearanceRepository,
+    private val datasetSelection: DatasetSelection,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UtilsUiState())
@@ -47,6 +50,11 @@ class UtilsScreenViewModel(
         viewModelScope.launch {
             appearanceRepo.settings.collect { value ->
                 _uiState.update { it.copy(appearance = value) }
+            }
+        }
+        viewModelScope.launch {
+            datasetSelection.index.collect { index ->
+                _uiState.update { it.copy(datasetDirIndex = index) }
             }
         }
     }
@@ -190,6 +198,32 @@ class UtilsScreenViewModel(
         _uiState.update { it.copy(leftWeight = weight.coerceIn(0.16f, 0.4f)) }
     }
 
+    fun updateTrainDataDir(index: Int, transform: (TrainDataDirForm) -> TrainDataDirForm) {
+        val entry = _uiState.value.form.trainDataDirs.getOrNull(index) ?: return
+        updateForm { withTrainDataDir(index, transform(entry)) }
+    }
+
+    fun addTrainDataDir() {
+        updateForm { appendTrainDataDir() }
+    }
+
+    fun removeTrainDataDir(index: Int) {
+        updateForm { removeTrainDataDir(index) }
+    }
+
+    fun browseTrainDataDir(index: Int) {
+        val current = _uiState.value.form.trainDataDirs.getOrNull(index)?.path ?: return
+        viewModelScope.launch {
+            val selected = pickDirectoryDialog("Select directory", current) ?: return@launch
+            updateTrainDataDir(index) { it.copy(path = selected) }
+        }
+    }
+
+    /** The dataset folder Images, Statistics and the tag card act on. */
+    fun selectDatasetDir(index: Int) {
+        datasetSelection.select(index)
+    }
+
     fun updateForm(transform: TrainingConfigForm.() -> TrainingConfigForm) {
         _uiState.update { state ->
             val newForm = state.form.transform()
@@ -276,7 +310,10 @@ class UtilsScreenViewModel(
     fun runAutoTag() {
         val state = _uiState.value
         if (state.isTagging || state.isSaving) return
-        val directory = state.form.trainDataDir.trim()
+        // The picker's folder, i.e. the one Images and Statistics are showing.
+        val dirs = state.form.trainDataDirs
+        val selected = state.datasetDirIndex.coerceIn(0, dirs.lastIndex.coerceAtLeast(0))
+        val directory = dirs.getOrNull(selected)?.path?.trim().orEmpty()
         if (directory.isEmpty()) {
             _uiState.update { it.copy(errorMessage = "Set a train data directory before tagging") }
             return

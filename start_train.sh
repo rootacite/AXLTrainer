@@ -21,7 +21,7 @@ export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,garbage_collection_thresho
 # [environment].amdfq: none | tail | vmm. Ranko Utils writes it; this is what actually preloads.
 # Fail here if the chosen .so is missing rather than starting a run without the patch.
 amdfq_line=$(python -u -c "from trainer.amdfq_patch import launch_env_line; print(launch_env_line())")
-IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status amdfq_vram_reserve amdfq_va_never_reuse <<< "$amdfq_line"
+IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status amdfq_vram_reserve amdfq_va_never_reuse amdfq_pool <<< "$amdfq_line"
 if [[ $amdfq_choice == tail || $amdfq_choice == vmm ]]; then
     if [[ -z $amdfq_so || ! -f $amdfq_so ]]; then
         echo "start_train.sh: $amdfq_choice patch library missing${amdfq_so:+: $amdfq_so}" >&2
@@ -45,6 +45,12 @@ if [[ $amdfq_choice == tail || $amdfq_choice == vmm ]]; then
     if [[ $amdfq_choice == vmm && -n $amdfq_va_never_reuse ]]; then
         export AMDFQ_VA_NEVER_REUSE="$amdfq_va_never_reuse"
         [[ $amdfq_va_never_reuse == 0 ]] || echo "start_train.sh: AMDFQ_VA_NEVER_REUSE=$amdfq_va_never_reuse" >&2
+    fi
+    # Not a workaround: the pool knob. 0 is off and is what the shipped config asks for, so only a
+    # non-zero value is worth a line here.
+    if [[ $amdfq_choice == vmm && -n $amdfq_pool ]]; then
+        export AMDFQ_POOL_SIZE="$amdfq_pool"
+        [[ $amdfq_pool == 0 ]] || echo "start_train.sh: AMDFQ_POOL_SIZE=$amdfq_pool" >&2
     fi
 fi
 

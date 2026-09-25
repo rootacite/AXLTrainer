@@ -2,16 +2,16 @@
 set -euo pipefail
 
 # Starts an arbitrary program under the allocation patch this repo's config.toml selects, i.e. the
-# same LD_PRELOAD / AMDFQ_VA_STATUS / AMDFQ_VRAM_RESERVE / AMDFQ_VA_NEVER_REUSE start_train.sh would
-# set:
+# same LD_PRELOAD / AMDFQ_VA_STATUS / AMDFQ_VRAM_RESERVE / AMDFQ_VA_NEVER_REUSE / AMDFQ_POOL_SIZE
+# start_train.sh would set:
 #
 #   ./start_hook.sh --workd "/opt/X" Y              # run Y with cwd /opt/X
 #   ./start_hook.sh python -u test/torch-test.py    # cwd defaults to the repo root
 #   ./start_hook.sh -- bash start_train.sh          # a path relative to the work directory
 #
 # The choice and its parameters come from [environment].amdfq (none | tail | vmm),
-# amdfq_vram_reserve_gib and amdfq_va_never_reuse, through trainer/amdfq_patch.py — the same source
-# start_train.sh reads.
+# amdfq_vram_reserve_gib, amdfq_va_never_reuse and amdfq_pool_mib, through trainer/amdfq_patch.py —
+# the same source start_train.sh reads.
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
@@ -24,8 +24,8 @@ usage: start_hook.sh [--workd DIR] [--] PROGRAM [ARGUMENTS...]
 
 The patch [environment].amdfq selects is preloaded into PROGRAM: tail and vmm put their release
 .so in LD_PRELOAD (vmm also exports AMDFQ_VA_STATUS, AMDFQ_VRAM_RESERVE from
-amdfq_vram_reserve_gib and AMDFQ_VA_NEVER_REUSE from amdfq_va_never_reuse), none runs PROGRAM
-untouched. A missing .so fails the start instead of running unpatched. AMDFQ_LOG_LEVEL and
+amdfq_vram_reserve_gib, AMDFQ_VA_NEVER_REUSE from amdfq_va_never_reuse and AMDFQ_POOL_SIZE from
+amdfq_pool_mib), none runs PROGRAM untouched. A missing .so fails the start instead of running unpatched. AMDFQ_LOG_LEVEL and
 AMDFQ_LOG_FILE pass through from the environment.
 
 PROGRAM is looked up after the directory change, so a relative path means "inside DIR"; write an
@@ -70,7 +70,7 @@ if ! amdfq_line=$(cd "$repo" && "${AXL_PYTHON:-python3}" -u \
     echo "start_hook.sh: could not read [environment].amdfq from $repo/config.toml" >&2
     exit 1
 fi
-IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status amdfq_vram_reserve amdfq_va_never_reuse <<< "$amdfq_line"
+IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status amdfq_vram_reserve amdfq_va_never_reuse amdfq_pool <<< "$amdfq_line"
 
 # Never guess: an unparsable line would otherwise read as "none" and run the target unpatched.
 case $amdfq_choice in
@@ -100,9 +100,12 @@ if [[ $amdfq_choice == tail || $amdfq_choice == vmm ]]; then
     if [[ $amdfq_choice == vmm && -n $amdfq_va_never_reuse ]]; then
         export AMDFQ_VA_NEVER_REUSE="$amdfq_va_never_reuse"
     fi
+    if [[ $amdfq_choice == vmm && -n $amdfq_pool ]]; then
+        export AMDFQ_POOL_SIZE="$amdfq_pool"
+    fi
 fi
 
 cd "$workdir"
-echo "start_hook.sh: amdfq=$amdfq_choice workdir=$PWD${amdfq_so:+ LD_PRELOAD=$amdfq_so}${AMDFQ_VRAM_RESERVE:+ AMDFQ_VRAM_RESERVE=$AMDFQ_VRAM_RESERVE}${AMDFQ_VA_NEVER_REUSE:+ AMDFQ_VA_NEVER_REUSE=$AMDFQ_VA_NEVER_REUSE}" >&2
+echo "start_hook.sh: amdfq=$amdfq_choice workdir=$PWD${amdfq_so:+ LD_PRELOAD=$amdfq_so}${AMDFQ_VRAM_RESERVE:+ AMDFQ_VRAM_RESERVE=$AMDFQ_VRAM_RESERVE}${AMDFQ_VA_NEVER_REUSE:+ AMDFQ_VA_NEVER_REUSE=$AMDFQ_VA_NEVER_REUSE}${AMDFQ_POOL_SIZE:+ AMDFQ_POOL_SIZE=$AMDFQ_POOL_SIZE}" >&2
 
 exec "$@"
