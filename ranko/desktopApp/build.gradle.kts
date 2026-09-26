@@ -24,7 +24,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "com.acite.axlranko"
-            packageVersion = "1.3.1"
+            packageVersion = "2.0.0"
             linux {
                 iconFile.set(project.file("icons/app_icon.png"))
             }
