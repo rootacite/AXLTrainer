@@ -361,6 +361,7 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 | `…/data/TomlDocumentPatcher.kt` | Comment-preserving save |
 | `…/data/TomlIntegerLiterals.kt` | Bare-integer tolerance on load |
 | `…/data/ConfigImporter.kt` | expect/actual load/save |
+| `…/data/ConfigProfileStore.kt` | `configs/` presets (Utils → Profiles): name rules, list/save/delete, and the apply merge — patch `config.toml` in place, decode the result before writing. The trainer never reads that folder. |
 | `…/jvmMain/` | TOML IO, `getAppExecutionPath` |
 | `Graphs.kt` / `Factory.kt` | Metro `AppGraph` + ViewModel factory |
 
@@ -373,6 +374,8 @@ Dashboard charts: the five training charts draw an always-on hover cursor with t
 Dataset scan in the GUI is **non-recursive**, one folder, image + same-stem `.txt`. Orphan captions **abort** the statistics scan. `ranko/tools/agent.py` mirrors this (`--allow-orphans` to inspect anyway). Trash for GUI/agent drops: `/tmp/axlranko/trash` (not the dataset’s own `trash/` used by some `tools/` scripts).
 
 Statistics → Control Panel **Shuffle & Renumber** is the GUI's `tools/suf.py`: `util/DatasetShuffle.kt` builds one group per stem (image(s) + `.txt` + `.mask.png`), then renames each group through a unique `axl-shuffle-*` name to `0001…`. The group is what keeps a mask on its image; a member keeps everything after the stem, so extensions and case survive. It refuses a folder with an orphan `.txt` (the scan's fuse), leaves directories (`.latents_cache`, `trash`) and files outside the contract alone, and rolls the applied renames back when one fails, so a mid-run kill leaves names a rerun recovers. The standalone `tools/suf.py` still splits on the last dot and therefore still separates `{stem}.mask.png` from its image (measured: it becomes a bare `<N>.png` sample) — the Kotlin path is the mask-safe one.
+
+Every page that changes dataset files on disk **must** call `DatasetRefreshHub.notifyDatasetChanged()` — Statistics' tag edits, drop and shuffle, Utils' tagger, Images' caption save. Images and Statistics both cache the folder and reload off that hub (`reloadFromDisk`, `scanDataset`), and its buffer drops the oldest signal rather than refusing a burst. The other direction needs no signal: the nav rail scans Statistics on entry. The Statistics → Images thumbnail jump has to rescan too (`selectItemByTxtPath` always reloads with the jump remembered) instead of selecting out of the cached list, which is what used to show captions and samples the other page had already replaced. Images' reload keeps an unsaved caption draft only while the file still holds the text the draft was based on.
 
 Mask painting does **not** use Compose pointer APIs: `maskPaintInput` (`pages/components/MaskPaint.kt` expect, `jvmMain/.../MaskPaint.jvm.kt` actual) attaches a global AWT mouse listener to the host window (both buttons are reported) plus a 4 ms `MouseInfo` sampler while a stroke is active, because AWT coalesces motion events and fast strokes used to land as separate dots. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
 

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -33,7 +34,10 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.util.TagTranslations
+import com.acite.axlranko.util.copyTextToClipboard
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
 import com.acite.axlranko.pages.components.DatasetDirBar
 import com.acite.axlranko.pages.components.datasetDirLabel
@@ -154,7 +158,7 @@ fun StatisticsScreen(
                     val displayedTagStats = remember(uiState.tagStats, uiState.tagSearchQuery) {
                         val q = uiState.tagSearchQuery.trim()
                         if (q.isEmpty()) uiState.tagStats
-                        else uiState.tagStats.filter { it.tag.contains(q, ignoreCase = true) }
+                        else uiState.tagStats.filter { TagTranslations.matchesQuery(it.tag, q) }
                     }
                     val totalItems = displayedTagStats.size
 
@@ -197,18 +201,40 @@ fun StatisticsScreen(
                                             .fillMaxSize()
                                             .padding(horizontal = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(
-                                            text = stat.tag,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSelected) colors.accentPink else colors.text
-                                        )
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = TagTranslations.display(stat.tag),
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) colors.accentPink else colors.text,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false),
+                                            )
+                                            IconButton(
+                                                onClick = { copyTextToClipboard(stat.tag) },
+                                                modifier = Modifier
+                                                    .padding(start = 2.dp)
+                                                    .size(28.dp)
+                                                    .pointerHoverIcon(PointerIcon.Hand),
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.ContentCopy,
+                                                    contentDescription = "Copy English tag",
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = if (isSelected) colors.accentPink else colors.textDim,
+                                                )
+                                            }
+                                        }
                                         Text(
                                             text = "${stat.count} (%.1f%%)".format(stat.frequency),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = colors.text.copy(alpha = 0.7f)
+                                            color = colors.text.copy(alpha = 0.7f),
+                                            modifier = Modifier.padding(start = 8.dp),
                                         )
                                     }
                                 }

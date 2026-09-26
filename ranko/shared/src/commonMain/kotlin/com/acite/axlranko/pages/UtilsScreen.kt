@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.acite.axlranko.data.ConfigProfile
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
@@ -68,9 +70,13 @@ import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.checkpointSubtitle
+import com.acite.axlranko.util.formatBytes
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import java.awt.Cursor
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
 @Composable
@@ -380,6 +386,7 @@ private fun ConfigSection.icon(): ImageVector = when (this) {
     ConfigSection.Infrastructure -> Icons.Default.Settings
     ConfigSection.Validation -> Icons.Default.Photo
     ConfigSection.Appearance -> Icons.Default.Palette
+    ConfigSection.Profiles -> Icons.Default.Bookmarks
 }
 
 @Composable
@@ -403,6 +410,7 @@ private fun SectionFields(
             ConfigSection.Infrastructure -> InfrastructureFields(form, errors, viewModel)
             ConfigSection.Validation -> ValidationFields(uiState, form, errors, viewModel)
             ConfigSection.Appearance -> AppearanceFields(uiState, viewModel)
+            ConfigSection.Profiles -> ProfilesFields(uiState, viewModel)
         }
     }
 }
@@ -1697,6 +1705,206 @@ private fun sampleAspectHint(set: SampleSetForm): String? {
 }
 
 private tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) kotlin.math.abs(a) else gcd(b, a % b)
+
+private val PROFILE_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
+private fun profileSubtitle(profile: ConfigProfile): String {
+    val stamp = Instant.ofEpochMilli(profile.modified)
+        .atZone(ZoneId.systemDefault())
+        .format(PROFILE_TIMESTAMP)
+    return "$stamp · ${formatBytes(profile.size)}"
+}
+
+/**
+ * Named `config.toml` presets: the editor writes one into `configs/`, and applying one patches
+ * `config.toml` in place and reloads the editor from the result.
+ */
+@Composable
+private fun ProfilesFields(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel,
+) {
+    val colors = rankoColors
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "Save the current config as a profile",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "A profile is one TOML file in configs/, next to config.toml, and it holds " +
+                    "every value in the editor above — save the ones you want it to carry. The " +
+                    "folder is tracked by git, the .toml files in it are ignored.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConfigTextField(
+                    label = "Profile name",
+                    value = uiState.profileName,
+                    onValueChange = viewModel::updateProfileName,
+                    modifier = Modifier.weight(1f),
+                )
+                CapsuleButton(
+                    text = "Save as profile",
+                    onClick = { viewModel.requestSaveProfile() },
+                    enabled = uiState.profileName.isNotBlank() &&
+                        !uiState.isSaving &&
+                        !uiState.isTagging,
+                    compact = true,
+                    emphasized = true,
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Save as profile", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Saved profiles",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.text,
+                    modifier = Modifier.weight(1f),
+                )
+                CapsuleButton(
+                    text = "Reload list",
+                    onClick = { viewModel.refreshProfiles() },
+                    enabled = !uiState.isLoadingProfiles,
+                    compact = true,
+                )
+            }
+            when {
+                uiState.isLoadingProfiles -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Reading configs/…", style = MaterialTheme.typography.bodyMedium)
+                }
+                uiState.profiles.isEmpty() -> Text(
+                    text = "No profiles yet. Name one above and press Save as profile.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textDim,
+                )
+                else -> uiState.profiles.forEach { profile ->
+                    ProfileRow(
+                        profile = profile,
+                        enabled = !uiState.isSaving,
+                        onApply = { viewModel.requestApplyProfile(profile) },
+                        onDelete = { viewModel.requestDeleteProfile(profile) },
+                    )
+                }
+            }
+            Text(
+                text = "Click a profile to apply it: config.toml is patched in place, so comments and " +
+                    "every key the profile does not carry stay as they are, and the editor reloads " +
+                    "from the result. A run already in flight keeps the settings it started with.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+        }
+    }
+
+    uiState.pendingProfileOverwrite?.let { name ->
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelProfileDialog() },
+            title = { Text("Overwrite \"$name\"?") },
+            text = {
+                Text(
+                    "configs/$name.toml is replaced with the values in the editor. The file it holds " +
+                        "now is not kept anywhere."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmProfileOverwrite() }) { Text("Overwrite") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelProfileDialog() }) { Text("Cancel") }
+            },
+        )
+    }
+    uiState.pendingProfileApply?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelProfileDialog() },
+            title = { Text("Apply \"${profile.name}\"?") },
+            text = {
+                Text(
+                    "The editor has unsaved changes. Applying writes the profile into config.toml " +
+                        "and reloads the editor, so those changes are lost."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmApplyProfile() }) { Text("Apply") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelProfileDialog() }) { Text("Cancel") }
+            },
+        )
+    }
+    uiState.pendingProfileDelete?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelProfileDialog() },
+            title = { Text("Delete \"${profile.name}\"?") },
+            text = { Text("${profile.path} is deleted. config.toml is not touched.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmDeleteProfile() }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelProfileDialog() }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ProfileRow(
+    profile: ConfigProfile,
+    enabled: Boolean,
+    onApply: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    RankoChoiceRow(selected = false, onClick = onApply, enabled = enabled) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
+            Text(
+                text = profile.name,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = profileSubtitle(profile),
+                style = MaterialTheme.typography.bodySmall,
+                color = rankoColors.textDim,
+            )
+            Text(
+                text = profile.path,
+                style = MaterialTheme.typography.bodySmall,
+                color = rankoColors.textDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        CapsuleButton(
+            text = "Delete",
+            onClick = onDelete,
+            enabled = enabled,
+            compact = true,
+            danger = true,
+        )
+    }
+}
 
 @Composable
 private fun AppearanceFields(

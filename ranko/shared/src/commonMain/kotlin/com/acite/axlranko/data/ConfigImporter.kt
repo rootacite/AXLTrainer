@@ -1,5 +1,7 @@
 package com.acite.axlranko.data
 
+import com.akuleshov7.ktoml.Toml
+import com.akuleshov7.ktoml.TomlInputConfig
 import okio.Path
 import okio.Path.Companion.toPath
 expect fun getAppExecutionPath(): String
@@ -16,6 +18,22 @@ public object ConfigImporter {
             ?: error("Could not locate config.toml (searched upward from the executable and working directory)")
         return loadTrainerConfig(p.toPath())
             ?: error("Failed to parse config.toml at $p")
+    }
+
+    /**
+     * Decode a config document that is already in memory, with the same tolerance as the loader:
+     * unknown keys are ignored (a file may be newer than this model) and a bare integer literal
+     * stands in for a double. Null means "not a config".
+     */
+    fun parseConfig(text: String): AxlTrainerConfig? = try {
+        Toml(
+            inputConfig = TomlInputConfig(
+                ignoreUnknownNames = true,
+                allowEmptyValues = true
+            )
+        ).decodeFromString(AxlTrainerConfig.serializer(), TomlIntegerLiterals.normalize(text))
+    } catch (e: Exception) {
+        null
     }
 
     fun getConfigPath(): String? = TrainerRepo.configToml()?.absolutePath

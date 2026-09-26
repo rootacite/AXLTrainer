@@ -4,8 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.AppearanceRepository
 import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.ConfigProfile
+import com.acite.axlranko.data.ConfigProfileStore
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.ProfileApply
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
@@ -29,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private val IMAGE_EXTENSIONS = listOf("jpg", "jpeg", "png", "webp", "bmp")
 
@@ -47,6 +51,7 @@ class UtilsScreenViewModel(
 
     init {
         loadConfig()
+        refreshProfiles()
         viewModelScope.launch {
             appearanceRepo.settings.collect { value ->
                 _uiState.update { it.copy(appearance = value) }
@@ -113,7 +118,7 @@ class UtilsScreenViewModel(
         loadConfig()
     }
 
-    fun loadConfig() {
+    fun loadConfig(statusMessage: String? = null) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, statusMessage = null) }
             withContext(Dispatchers.IO) {
@@ -139,7 +144,7 @@ class UtilsScreenViewModel(
                             selectedSampleSet = it.selectedSampleSet.coerceIn(0, form.sampleSets.lastIndex),
                             fieldErrors = emptyMap(),
                             errorMessage = null,
-                            statusMessage = null
+                            statusMessage = statusMessage
                         )
                     }
                 } catch (e: Exception) {
@@ -167,6 +172,7 @@ class UtilsScreenViewModel(
 
     fun selectSection(section: ConfigSection) {
         _uiState.update { it.copy(selectedSection = section) }
+        if (section == ConfigSection.Profiles) refreshProfiles()
     }
 
     fun selectSampleSet(index: Int) {
@@ -360,27 +366,7 @@ class UtilsScreenViewModel(
         val form = _uiState.value.form
         val errors = form.validate()
         if (errors.isNotEmpty()) {
-            val firstSection = ConfigSection.entries.firstOrNull { section ->
-                errors.keys.any { section.owns(it) }
-            }
-            val failingSet = errors.keys
-                .firstOrNull { it.startsWith(SAMPLE_SET_ERROR_PREFIX) }
-                ?.removePrefix(SAMPLE_SET_ERROR_PREFIX)
-                ?.substringBefore('.')
-                ?.toIntOrNull()
-            _uiState.update {
-                it.copy(
-                    fieldErrors = errors,
-                    selectedSection = firstSection ?: it.selectedSection,
-                    selectedSampleSet = if (firstSection == ConfigSection.Validation && failingSet != null) {
-                        failingSet.coerceIn(0, form.sampleSets.lastIndex)
-                    } else {
-                        it.selectedSampleSet
-                    },
-                    statusMessage = null,
-                    errorMessage = "Fix ${errors.size} invalid field${if (errors.size == 1) "" else "s"} before saving"
-                )
-            }
+            showValidationErrors(form, errors, "saving")
             return
         }
 
@@ -409,6 +395,240 @@ class UtilsScreenViewModel(
                         )
                     }
                 }
+            )
+        }
+    }
+
+    /** Point the editor at the first invalid field, which is what a save or a profile write needs. */
+    private fun showValidationErrors(
+        form: TrainingConfigForm,
+        errors: Map<String, String>,
+        action: String,
+    ) {
+        val firstSection = ConfigSection.entries.firstOrNull { section ->
+            errors.keys.any { section.owns(it) }
+        }
+        val failingSet = errors.keys
+            .firstOrNull { it.startsWith(SAMPLE_SET_ERROR_PREFIX) }
+            ?.removePrefix(SAMPLE_SET_ERROR_PREFIX)
+            ?.substringBefore('.')
+            ?.toIntOrNull()
+        _uiState.update {
+            it.copy(
+                fieldErrors = errors,
+                selectedSection = firstSection ?: it.selectedSection,
+                selectedSampleSet = if (firstSection == ConfigSection.Validation && failingSet != null) {
+                    failingSet.coerceIn(0, form.sampleSets.lastIndex)
+                } else {
+                    it.selectedSampleSet
+                },
+                statusMessage = null,
+                errorMessage = "Fix ${errors.size} invalid field${if (errors.size == 1) "" else "s"} before $action"
+            )
+        }
+    }
+
+    fun refreshProfiles() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingProfiles = true) }
+            val profiles = withContext(Dispatchers.IO) {
+                ConfigProfileStore.resolveDir()?.let(ConfigProfileStore::list).orEmpty()
+            }
+            _uiState.update { it.copy(isLoadingProfiles = false, profiles = profiles) }
+        }
+    }
+
+    fun updateProfileName(name: String) {
+        _uiState.update { it.copy(profileName = name, errorMessage = null, statusMessage = null) }
+    }
+
+    /**
+     * "Save as profile": the form is validated the way a save is, and a name that is already taken
+     * asks for confirmation instead of overwriting.
+     */
+    fun requestSaveProfile() {
+        val state = _uiState.value
+        val name = state.profileName.trim()
+        ConfigProfileStore.validateName(name)?.let { message ->
+            _uiState.update { it.copy(errorMessage = message, statusMessage = null) }
+            return
+        }
+        val form = state.form
+        val errors = form.validate()
+        if (errors.isNotEmpty()) {
+            showValidationErrors(form, errors, "saving a profile")
+            return
+        }
+
+        viewModelScope.launch {
+            val dir = ConfigProfileStore.resolveDir()
+            if (dir == null) {
+                _uiState.update { it.copy(errorMessage = "Could not locate the repository root") }
+                return@launch
+            }
+            val existing = withContext(Dispatchers.IO) { ConfigProfileStore.findByName(dir, name) }
+            if (existing != null) {
+                _uiState.update { it.copy(pendingProfileOverwrite = name) }
+            } else {
+                writeProfile(dir, name, form, overwrite = false)
+            }
+        }
+    }
+
+    fun confirmProfileOverwrite() {
+        val name = _uiState.value.pendingProfileOverwrite ?: return
+        val dir = ConfigProfileStore.resolveDir()
+        if (dir == null) {
+            _uiState.update {
+                it.copy(pendingProfileOverwrite = null, errorMessage = "Could not locate the repository root")
+            }
+            return
+        }
+        val form = _uiState.value.form
+        viewModelScope.launch { writeProfile(dir, name, form, overwrite = true) }
+    }
+
+    private suspend fun writeProfile(
+        dir: File,
+        name: String,
+        form: TrainingConfigForm,
+        overwrite: Boolean,
+    ) {
+        _uiState.update {
+            it.copy(
+                isSaving = true,
+                errorMessage = null,
+                statusMessage = null,
+                pendingProfileOverwrite = null,
+            )
+        }
+        val result = withContext(Dispatchers.IO) {
+            val document = ConfigProfileStore.document(form.toTomlSections(), form.toTomlArrayBlocks())
+            ConfigProfileStore.save(dir, name, document, overwrite)
+        }
+        result.fold(
+            onSuccess = { file ->
+                val profiles = withContext(Dispatchers.IO) { ConfigProfileStore.list(dir) }
+                _uiState.update {
+                    it.copy(
+                        isSaving = false,
+                        profiles = profiles,
+                        profileName = "",
+                        errorMessage = null,
+                        statusMessage = "Saved profile ${file.name}",
+                    )
+                }
+            },
+            onFailure = { e ->
+                _uiState.update {
+                    it.copy(isSaving = false, errorMessage = e.message ?: "Could not save the profile")
+                }
+            },
+        )
+    }
+
+    /** Applying writes `config.toml` itself, so unsaved editor changes ask first. */
+    fun requestApplyProfile(profile: ConfigProfile) {
+        if (_uiState.value.isDirty) {
+            _uiState.update { it.copy(pendingProfileApply = profile) }
+            return
+        }
+        applyProfile(profile)
+    }
+
+    fun confirmApplyProfile() {
+        val profile = _uiState.value.pendingProfileApply ?: return
+        applyProfile(profile)
+    }
+
+    private fun applyProfile(profile: ConfigProfile) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSaving = true,
+                    pendingProfileApply = null,
+                    errorMessage = null,
+                    statusMessage = null,
+                )
+            }
+            val result = withContext(Dispatchers.IO) {
+                val configPath = ConfigImporter.getConfigPath()
+                    ?: return@withContext Result.failure<ProfileApply>(
+                        IllegalStateException("Could not locate config.toml")
+                    )
+                val configFile = File(configPath)
+                ConfigProfileStore
+                    .applyToConfig(configFile.readText(), File(profile.path).readText())
+                    .mapCatching { apply ->
+                        configFile.writeText(apply.text)
+                        apply
+                    }
+            }
+            result.fold(
+                onSuccess = { apply ->
+                    _uiState.update { it.copy(isSaving = false) }
+                    val skipped = if (apply.skippedSections.isEmpty()) {
+                        ""
+                    } else {
+                        " · skipped ${apply.skippedSections.joinToString(", ")}"
+                    }
+                    // The editor reloads from the patched file; the status has to be set with it.
+                    loadConfig("Applied ${profile.name} · ${apply.appliedKeys} keys$skipped")
+                },
+                onFailure = { e ->
+                    _uiState.update {
+                        it.copy(
+                            isSaving = false,
+                            errorMessage = e.message ?: "Could not apply the profile",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    fun requestDeleteProfile(profile: ConfigProfile) {
+        _uiState.update { it.copy(pendingProfileDelete = profile) }
+    }
+
+    fun confirmDeleteProfile() {
+        val profile = _uiState.value.pendingProfileDelete ?: return
+        val dir = ConfigProfileStore.resolveDir()
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(pendingProfileDelete = null, errorMessage = null, statusMessage = null)
+            }
+            val result = withContext(Dispatchers.IO) {
+                if (dir == null) {
+                    Result.failure<Unit>(IllegalStateException("Could not locate the repository root"))
+                } else {
+                    ConfigProfileStore.delete(dir, profile.path)
+                }
+            }
+            result.fold(
+                onSuccess = {
+                    val profiles = withContext(Dispatchers.IO) {
+                        dir?.let(ConfigProfileStore::list).orEmpty()
+                    }
+                    _uiState.update {
+                        it.copy(profiles = profiles, statusMessage = "Deleted profile ${profile.name}")
+                    }
+                },
+                onFailure = { e ->
+                    _uiState.update {
+                        it.copy(errorMessage = e.message ?: "Could not delete the profile")
+                    }
+                },
+            )
+        }
+    }
+
+    fun cancelProfileDialog() {
+        _uiState.update {
+            it.copy(
+                pendingProfileOverwrite = null,
+                pendingProfileApply = null,
+                pendingProfileDelete = null,
             )
         }
     }

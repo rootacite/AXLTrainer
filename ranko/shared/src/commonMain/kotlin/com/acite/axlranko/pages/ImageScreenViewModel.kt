@@ -60,7 +60,9 @@ class ImageScreenViewModel(
     init {
         loadData()
         viewModelScope.launch {
-            refreshHub.events.collect { reloadFromDisk(resetDrafts = true) }
+            // Another page changed the dataset (tagger, Statistics tag edits, drop, shuffle): rescan
+            // and let the merge drop only the drafts whose file no longer matches them.
+            refreshHub.events.collect { reloadFromDisk(resetDrafts = false) }
         }
     }
 
@@ -96,8 +98,13 @@ class ImageScreenViewModel(
                 val updatedItems = scanImageItems(folder).map { fresh ->
                     val existing = currentItemsMap[fresh.imagePath]
                     if (existing != null && !resetDrafts) {
+                        // An unsaved caption draft survives only while its file still holds what the
+                        // edit was based on: a caption another page rewrote (tagger, Statistics)
+                        // makes the draft stale, and dropping it there is what keeps the editor and
+                        // the disk from disagreeing.
                         existing.copy(
                             tags = fresh.tags,
+                            draftTags = existing.draftTags.takeIf { fresh.tags == existing.tags },
                             maskPath = fresh.maskPath,
                             hasSidecarMask = fresh.hasSidecarMask,
                             hasAlpha = fresh.hasAlpha,
@@ -154,26 +161,28 @@ class ImageScreenViewModel(
     /** The picker switched dataset folders: unsaved mask strokes belong to the folder left behind. */
     fun selectDatasetDir(index: Int) {
         if (index == _uiState.value.datasetDirIndex) return
+        flushPendingMask()
         switchDatasetDir(index)
     }
 
     /**
-     * Jump here from a Statistics thumbnail. That page can have another `[[environment.train_data]]`
-     * folder open than this one, so an image missing from the loaded list means "scan that folder
-     * first": the jump is remembered and completes once the rescan is done.
+     * Jump here from a Statistics thumbnail. That page can have rewritten captions or dropped
+     * samples since this list was scanned, so the jump always rescans: [pendingSelectTxtPath] opens
+     * the file once it lands, and one that was dropped resolves to nothing instead of a path that
+     * is already gone. `resetDrafts = false` keeps an unsaved caption draft and still refreshes
+     * the tags read from disk.
      */
     fun selectItemByTxtPath(txtPath: String, datasetDirIndex: Int) {
-        val current = findImageByTxtPath(_uiState.value.imageItems, txtPath)
-        if (current != null) {
-            selectItem(current)
-            return
-        }
+        flushPendingMask()
         pendingSelectTxtPath = txtPath
-        switchDatasetDir(datasetDirIndex)
+        if (datasetDirIndex != _uiState.value.datasetDirIndex) {
+            switchDatasetDir(datasetDirIndex)
+        } else {
+            reloadFromDisk(resetDrafts = false)
+        }
     }
 
     private fun switchDatasetDir(index: Int) {
-        flushPendingMask()
         datasetSelection.select(index)
         _uiState.update { it.copy(datasetDirIndex = index) }
         reloadFromDisk(resetDrafts = true)
@@ -267,6 +276,8 @@ class ImageScreenViewModel(
                         selectedItem = if (state.selectedItem?.imagePath == updatedItem.imagePath) updatedItem else state.selectedItem
                     )
                 }
+                // A saved caption changes the Statistics tag counts: tell the other pages.
+                refreshHub.notifyDatasetChanged()
             } catch (e: Exception) {
                 e.printStackTrace()
             }

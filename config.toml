@@ -5,8 +5,8 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/home/acite/LLM/Character/Koharu/3"
-output_name = "koharu"
+train_data_dir = "/home/acite/LLM/Character/Sena/st/"
+output_name = "sena"
 # Datasets trained together: one `[[environment.train_data]]` block per folder, `repeat` = how often
 # that folder's images are drawn inside a single epoch (1..512; 3 against 1 trains it three times as
 # often per epoch). With no block at all the list is empty and the `train_data_dir` line above is
@@ -54,16 +54,12 @@ amdfq_pool_mib = 0
 # output_name = "miyako"
 
 [[environment.train_data]]
-path = "/home/acite/LLM/Character/Koharu/3"
+path = "/home/acite/LLM/Character/Sena/st/"
 repeat = 1
 
 [[environment.train_data]]
-path = "/home/acite/LLM/Character/Koharu/2"
+path = "/home/acite/LLM/Character/Sena/cg/"
 repeat = 2
-
-[[environment.train_data]]
-path = "/home/acite/LLM/Character/Koharu/1"
-repeat = 1
 
 [model_spec]
 base_model_version = "sdxl_base_v1-0"
@@ -74,17 +70,17 @@ modelspec_sai_model_spec = "1.0.0"
 [training]
 is_vpred = false
 min_snr_gamma = 5.0
-seed = 721
+seed = 1145140721
 mixed_precision = "bf16"
-train_batch_size = 2
+train_batch_size = 3
 gradient_accumulation_steps = 1
 learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 24
+epoch = 22
 save_every_n_epochs = 1
-save_every_n_steps = 100
+save_every_n_steps = 50
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
 # training starts. Weights only: step/epoch counting still starts at 0, and this
 # run writes into its own timestamped run directory.
@@ -93,7 +89,7 @@ resume_lora_path = ""
 [network]
 network_dim = 32
 network_alpha = 16
-network_dropout = 0.1
+network_dropout = 0.08
 clip_skip = 1
 max_token_length = 225
 
@@ -122,7 +118,7 @@ noise_offset = 0.05
 flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 1.0E-4
+unet_learning_rate = 7.5E-5
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -130,7 +126,7 @@ unet_eps = 1.0E-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 1.0E-5
+te_learning_rate = 7.5E-6
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99
@@ -141,25 +137,36 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "yuzu_style, (koharu_character:1.1), 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.1), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+sample_prompts = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, morning, indoors, sitting, looking at viewer, smile, blush, open eyes,"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1152
 sample_height = 768
 sample_steps = 35
 sample_seed = 0
-sample_repeat = 3
+sample_repeat = 2
 guidance_scale = 6.0
 
 [[validation.samples]]
-name = "yuzu"
-prompt = "yuzu_style, (koharu_character:1.1), 1girl, solo, questionable, school uniform, full body, black thighhighs, hair ornament, (large breasts:1.1), cleavage, classroom, indoors, sitting, desk,  looking at viewer, smile, blush, open eyes, soft lighting, warm light, sunlight through window, masterpiece, best quality, amazing quality, newest"
+name = "sena_morning"
+prompt = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, morning, indoors, sitting, looking at viewer, smile, blush, open eyes,"
 negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 width = 1152
 height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 3
+repeat = 2
+
+[[validation.samples]]
+name = "sena_night"
+prompt = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, night, indoors, sitting, looking at viewer, smile, blush, open eyes,"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 2
 
 [bookkeeping]
 # TOML doesn't support Null directly in standard key-value pairs without specific schema handling,

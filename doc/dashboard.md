@@ -24,7 +24,7 @@ cd ranko
 
 ## The four tabs
 
-The app opens with a floating, draggable navigation rail (Images / Statistics / Utils / Dashboard). State is app-scoped, so switching tabs never loses your place.
+The app opens with a floating, draggable navigation rail (Images / Statistics / Utils / Dashboard). It snaps to the nearest window edge, collapses to a ball after a short idle (tap to expand), and stays inside the window when dragged or when the window is resized. State is app-scoped, so switching tabs never loses your place.
 
 ### Images — dataset caption editor
 
@@ -40,7 +40,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 ![Statistics tab](screenshots/statistics-tab.png)
 
-- Left: every tag with a **frequency bar** colored by occurrence rate (blue → green → red as frequency rises), plus count and percentage. Tags are searchable; selected tags slide right.
+- Left: every tag with a **frequency bar** colored by occurrence rate (blue → green → red as frequency rises), plus count and percentage. A tag that has a row in `tagger/selected_tags.csv` is shown as `english [chinese]`; search matches either side. Captions on disk stay English. A copy button after the label puts the English tag on the clipboard. Selected tags slide right.
 - Right top: a staggered grid of thumbnails matching the current filter. **Click a thumbnail to jump to the Images tab with that image preselected.**
 - Right bottom controls:
   - **Logic mode**: Intersection (AND) / Union (OR), plus a **Not** negation toggle.
@@ -62,6 +62,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 - Right: fields per section — path fields with a **Browse** button (OS file dialog), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio).
 - **Validation** is a tabbed editor over `[[validation.samples]]`: a horizontal strip of set chips (label, warning icon while the set has an invalid field), a `+` that clones the open set, and a small `×` that deletes a set after a confirmation dialog (never the last one). The open tab shows Label, Positive/Negative prompt, Width/Height/Steps, Guidance scale/Seed/Repeat. Saving writes the `[validation]` scalars from the first tab plus one explicit block per tab.
 - Header shows the config path, a summary line (`name · resolution · epochs · batch`), and an **Unsaved** indicator. **Save** validates the whole form (auto-jumping to the first invalid section), then patches the TOML in place, preserving comments and formatting. **Reload** is blocked while the form is dirty.
+- **Profiles** saves and applies named `config.toml` presets. A name in the **Profile name** field writes the editor's values to `configs/<name>.toml` next to `config.toml` — the folder is tracked by git, the presets in it are ignored — and a name already taken asks before it overwrites. Clicking a saved profile applies it: `config.toml` is patched in place (comments, blank lines, unknown tables and every key the profile does not carry stay as they are) and the editor reloads from the result, with a confirmation first when the editor has unsaved changes. A profile written here holds the whole config, so applying it replaces the environment paths too; a hand-trimmed file changes only the keys it lists, and a section `config.toml` has no table for is named in the status line instead of being dropped silently. **Delete** removes the preset file and leaves `config.toml` alone. A run already in flight keeps the settings it started with.
 
 See [Configuration](configuration.md) for the meaning of every field.
 

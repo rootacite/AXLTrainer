@@ -1,11 +1,88 @@
 package com.acite.axlranko.data
 
 /**
+ * What [TomlDocumentPatcher.parse] found in a document: the uncommented `key = value` pairs of
+ * every table, and the blocks of every `[[array of tables]]`, with the value text taken verbatim.
+ */
+data class ParsedToml(
+    val sections: Map<String, Map<String, String>>,
+    val arrayBlocks: Map<String, List<Map<String, String>>>,
+)
+
+/**
  * Updates uncommented `key = value` pairs inside named TOML tables
  * without rewriting the rest of the document (comments, blank lines,
  * unknown tables such as [bookkeeping] stay intact).
  */
 object TomlDocumentPatcher {
+
+    /**
+     * Write a standalone document from the same maps [apply] / [replaceArrayOfTables] consume: each
+     * table in map order, with every array block that belongs to it right after it
+     * (`[[environment.train_data]]` after `[environment]`). A profile is written this way, and the
+     * result has to decode as a whole config again.
+     */
+    fun render(
+        sections: Map<String, Map<String, String>>,
+        arrayBlocks: Map<String, List<Map<String, String>>> = emptyMap(),
+        header: String? = null,
+    ): String {
+        val lines = mutableListOf<String>()
+        if (header != null) lines.add("# $header")
+        for ((section, values) in sections) {
+            if (lines.isNotEmpty()) lines.add("")
+            lines.add("[$section]")
+            for ((key, value) in values) lines.add("$key = $value")
+            for ((arraySection, blocks) in arrayBlocks) {
+                if (arraySection.substringBeforeLast('.') != section) continue
+                for (block in blocks) {
+                    lines.add("")
+                    lines.add("[[$arraySection]]")
+                    for ((key, value) in block) lines.add("$key = $value")
+                }
+            }
+        }
+        return lines.joinToString("\n") + "\n"
+    }
+
+    /**
+     * [render]'s reverse: table headers, array headers, and the raw value text of their
+     * uncommented keys. Comments, blank lines and anything before the first header are skipped, and
+     * a value is never re-encoded - an apply hands these strings straight to [apply].
+     */
+    fun parse(text: String): ParsedToml {
+        val sections = linkedMapOf<String, MutableMap<String, String>>()
+        val arrayBlocks = linkedMapOf<String, MutableList<MutableMap<String, String>>>()
+        var openTable: MutableMap<String, String>? = null
+
+        for (rawLine in text.split("\r\n", "\n")) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            if (line.startsWith("[[") && line.endsWith("]]")) {
+                val block = linkedMapOf<String, String>()
+                arrayBlocks.getOrPut(line.substring(2, line.length - 2).trim()) { mutableListOf() }
+                    .add(block)
+                openTable = block
+                continue
+            }
+            if (line.startsWith("[") && line.endsWith("]")) {
+                openTable = sections.getOrPut(line.substring(1, line.length - 1).trim()) { linkedMapOf() }
+                continue
+            }
+            val equals = line.indexOf('=')
+            if (equals <= 0) continue
+            val value = line.substring(equals + 1).trim()
+            if (value.isEmpty()) continue
+            openTable?.put(line.substring(0, equals).trim(), value)
+        }
+        return ParsedToml(sections, arrayBlocks)
+    }
+
+    /** Whether the document carries a `[section]` header (a dotted name needs its full header). */
+    fun hasTable(text: String, section: String): Boolean {
+        val header = "[$section]"
+        return text.split("\r\n", "\n").any { it.trim() == header }
+    }
 
     fun apply(original: String, sectionValues: Map<String, Map<String, String>>): String {
         val newline = if (original.contains("\r\n")) "\r\n" else "\n"

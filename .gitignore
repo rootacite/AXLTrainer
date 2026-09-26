@@ -35,3 +35,9 @@ local.properties
 kotlin-js-store/
 
 output/
+
+# Named config.toml presets written by Ranko Utils -> Profiles. The folder is tracked, its
+# presets are local: `configs/*` (not `configs/*.toml`) so a preset is ignored whatever its
+# extension, with the placeholder re-included.
+configs/*
+!configs/.gitkeep

@@ -216,7 +216,9 @@ class StatisticsScreenViewModel(
                 val updatedTags = item.tags.filterNot { it in state.selectedTags }
                 writeTagsToFile(item.txtFile, updatedTags)
             }
-            scanDataset()   // isInitial 默认 false
+            // The captions changed on disk: every page holding dataset state reloads off the hub,
+            // this one included (its collector rescans).
+            refreshHub.notifyDatasetChanged()
         }
     }
 
@@ -265,7 +267,8 @@ class StatisticsScreenViewModel(
                     }
                 }
             }
-            scanDataset()
+            // Samples left the folder: Images has to drop them too, and the hub is what tells it.
+            refreshHub.notifyDatasetChanged()
         }
     }
 
@@ -292,7 +295,7 @@ class StatisticsScreenViewModel(
                     writeTagsToFile(item.txtFile, updatedTags)
                 }
             }
-            scanDataset()
+            refreshHub.notifyDatasetChanged()
         }
     }
 

@@ -20,14 +20,7 @@ actual fun getAppExecutionPath(): String {
 
 actual fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
     return try {
-        val mt = Toml(
-            inputConfig = TomlInputConfig(
-                ignoreUnknownNames = true,
-                allowEmptyValues = true
-            )
-        )
-        val tomlString = java.io.File(tomlPath.toString()).readText()
-        mt.decodeFromString(AxlTrainerConfig.serializer(), TomlIntegerLiterals.normalize(tomlString))
+        ConfigImporter.parseConfig(java.io.File(tomlPath.toString()).readText())
     } catch (e: Exception) {
         e.printStackTrace()
         null

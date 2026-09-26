@@ -1,5 +1,7 @@
 package com.acite.axlranko.model
 
+import com.acite.axlranko.data.ConfigProfile
+
 enum class ConfigSection(
     val title: String,
     val description: String,
@@ -144,6 +146,11 @@ enum class ConfigSection(
         description = "Background style, blur strength, and font/icon scale",
         fieldKeys = emptySet(),
     ),
+    Profiles(
+        title = "Profiles",
+        description = "Named config.toml presets in configs/ — applying one patches config.toml in place",
+        fieldKeys = emptySet(),
+    ),
     ;
 
     /**
@@ -177,6 +184,13 @@ data class UtilsUiState(
     val checkpoints: List<CheckpointItem> = emptyList(),
     val checkpointError: String? = null,
     val appearance: AppearanceSettings = AppearanceSettings(),
+    /** Saved `config.toml` presets under `configs/`, and the dialogs the Profiles section can raise. */
+    val profiles: List<ConfigProfile> = emptyList(),
+    val isLoadingProfiles: Boolean = false,
+    val profileName: String = "",
+    val pendingProfileOverwrite: String? = null,
+    val pendingProfileApply: ConfigProfile? = null,
+    val pendingProfileDelete: ConfigProfile? = null,
 ) {
     val isDirty: Boolean get() = form != savedForm
 
