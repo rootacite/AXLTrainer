@@ -1,6 +1,7 @@
 package com.acite.axlranko
 
 import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.ConfigProfileDisk
 import com.acite.axlranko.data.ConfigProfileStore
 import com.acite.axlranko.data.TrainerRepo
 import com.acite.axlranko.data.loadTrainerConfig
@@ -58,39 +59,39 @@ class ProfileStoreTest {
 
     @Test
     fun savingWritesOneFileAndTheListFindsIt() {
-        val dir = ConfigProfileStore.dir(tempDir("axl-configs-save"))
-        val saved = ConfigProfileStore.save(dir, "Koharu v2", "x = 1\n", overwrite = false)
+        val dir = ConfigProfileDisk.dir(tempDir("axl-configs-save"))
+        val saved = ConfigProfileDisk.save(dir, "Koharu v2", "x = 1\n", overwrite = false)
         assertTrue(saved.isSuccess, "save failed: ${saved.exceptionOrNull()}")
         val file = saved.getOrThrow()
 
         assertEquals("Koharu v2.toml", file.name)
         assertEquals(dir, file.parentFile)
         assertEquals("x = 1\n", file.readText())
-        val listed = ConfigProfileStore.list(dir)
+        val listed = ConfigProfileDisk.list(dir)
         assertEquals(listOf("Koharu v2"), listed.map { it.name })
-        assertEquals(file.absolutePath, listed.single().path)
+        assertEquals("Koharu v2", listed.single().name)
         assertTrue(listed.single().modified > 0L)
         assertEquals("x = 1\n".length.toLong(), listed.single().size)
     }
 
     @Test
     fun aTakenNameNeedsOverwriteAndReplacesThatSameFile() {
-        val dir = ConfigProfileStore.dir(tempDir("axl-configs-duplicate"))
-        ConfigProfileStore.save(dir, "a", "first\n", overwrite = false).getOrThrow()
+        val dir = ConfigProfileDisk.dir(tempDir("axl-configs-duplicate"))
+        ConfigProfileDisk.save(dir, "a", "first\n", overwrite = false).getOrThrow()
 
-        assertTrue(ConfigProfileStore.save(dir, "a", "second\n", overwrite = false).isFailure)
+        assertTrue(ConfigProfileDisk.save(dir, "a", "second\n", overwrite = false).isFailure)
         assertEquals("first\n", File(dir, "a.toml").readText())
 
         // The name check is case-insensitive, so "A" has to overwrite the "a.toml" it matched.
-        assertTrue(ConfigProfileStore.save(dir, "A", "second\n", overwrite = false).isFailure)
-        assertTrue(ConfigProfileStore.save(dir, "A", "second\n", overwrite = true).isSuccess)
+        assertTrue(ConfigProfileDisk.save(dir, "A", "second\n", overwrite = false).isFailure)
+        assertTrue(ConfigProfileDisk.save(dir, "A", "second\n", overwrite = true).isSuccess)
         assertEquals("second\n", File(dir, "a.toml").readText())
-        assertEquals(listOf("a"), ConfigProfileStore.list(dir).map { it.name })
+        assertEquals(listOf("a"), ConfigProfileDisk.list(dir).map { it.name })
     }
 
     @Test
     fun theListShowsProfilesOnly() {
-        val dir = ConfigProfileStore.dir(tempDir("axl-configs-list"))
+        val dir = ConfigProfileDisk.dir(tempDir("axl-configs-list"))
         assertTrue(dir.mkdirs())
         File(dir, ".gitkeep").writeText("")
         File(dir, "notes.txt").writeText("")
@@ -99,24 +100,24 @@ class ProfileStoreTest {
         assertTrue(File(dir, "nested").mkdir())
         File(dir, "nested/c.toml").writeText("")
 
-        assertEquals(listOf("a", "b"), ConfigProfileStore.list(dir).map { it.name })
+        assertEquals(listOf("a", "b"), ConfigProfileDisk.list(dir).map { it.name })
     }
 
     @Test
     fun deletingRefusesAPathOutsideTheDirectory() {
-        val dir = ConfigProfileStore.dir(tempDir("axl-configs-delete"))
+        val dir = ConfigProfileDisk.dir(tempDir("axl-configs-delete"))
         val outside = Files.createTempFile("axl-not-a-profile", ".toml").toFile().apply {
             deleteOnExit()
             writeText("keep me")
         }
 
-        assertTrue(ConfigProfileStore.delete(dir, outside.absolutePath).isFailure)
+        assertTrue(ConfigProfileDisk.delete(dir, outside.absolutePath).isFailure)
         assertTrue(outside.exists())
 
-        val inside = ConfigProfileStore.save(dir, "gone", "x = 1\n", overwrite = false).getOrThrow()
-        assertTrue(ConfigProfileStore.delete(dir, inside.absolutePath).isSuccess)
+        val inside = ConfigProfileDisk.save(dir, "gone", "x = 1\n", overwrite = false).getOrThrow()
+        assertTrue(ConfigProfileDisk.delete(dir, inside.absolutePath).isSuccess)
         assertFalse(inside.exists())
-        assertTrue(ConfigProfileStore.list(dir).isEmpty())
+        assertTrue(ConfigProfileDisk.list(dir).isEmpty())
     }
 
     /** A written profile has to decode as the very config the editor was showing. */

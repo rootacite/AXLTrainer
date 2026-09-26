@@ -44,7 +44,7 @@ What stands out when you use the stack, rather than a complete inventory of ever
 
 - **An SDXL LoRA engine that targets AMD.** Mixed precision defaults to bf16. Dual optimizers: Schedule-Free AdamW on the UNet (no LR scheduler) and AdamW on both text encoders with cosine warmup via Accelerator. Aspect-ratio bucketing is ROCm-safe by default (`bucket_reso_steps = 128`) and **letterboxes instead of cropping**: the whole image is fitted into its bucket and the leftover bars carry zero loss weight, so a tall full-body drawing keeps its head and feet. Optional pipelined latent caching (CPU decode → batched VAE encode → atomic `.pt`) runs before training; on-demand encode is the fallback.
 - **Long prompts, samples, and kohya metadata.** Prompts past 77 tokens are chunked with `clip_skip` up to `max_token_length`. Periodic sample generation takes a negative prompt, a repeat/seed, and can be interrupted. Checkpoints embed `modelspec.*` / `ss_*` and log a kohya-style `Train/Avg_Loss` window.
-- **A dashboard that is the control plane, not a spectator.** Ranko spawns `api.py` over NDJSON stdin/stdout, reads TensorBoard scalars and sample PNGs, and offers Start / Pause / Resume / Early Stop / Reset. Progress bars cover latent encoding, training steps, and sampling. Closing the window does not kill the run.
+- **A dashboard that is the control plane, not a spectator.** Ranko talks to `api.py` over a loopback WebSocket (JSON-RPC), reads TensorBoard scalars and sample PNGs, and offers Start / Pause / Resume / Early Stop / Reset. Progress bars cover latent encoding, training steps, and sampling. Closing the window does not kill the run.
 - **Dataset work in the same window.** The Images tab is a thumbnail browser and caption editor with unsaved-change tracking. Statistics scans tag frequency, filters with AND/OR, and bulk-removes tags, batch-adds tags, or probabilistically drops samples. Utils is a structured editor for `config.toml` with validation, path browsing, and saved config presets.
 - **CLIs for scripts and agents.** `tools/` covers caption cleaning, tag filtering/counting, sample dropping and shuffling. `tagger/` is an ONNX WD-style captioner. `ranko/tools/agent.py` mirrors the app's dataset features for non-interactive use.
 
@@ -68,7 +68,7 @@ What stands out when you use the stack, rather than a complete inventory of ever
 
 ## Design and architecture
 
-Four pieces cooperate. Ranko never talks to the GPU; it only spawns `api.py` and renders responses. `api.py` stdout is NDJSON only.
+Four pieces cooperate. Ranko never talks to the GPU; it only speaks JSON-RPC to `api.py` and renders responses.
 
 | Layer | Path | Role |
 | --- | --- | --- |
@@ -82,10 +82,10 @@ Four pieces cooperate. Ranko never talks to the GPU; it only spawns `api.py` and
 │  Ranko (desktop GUI)        │         │  bash start_train.sh         │
 │  ranko/  (Kotlin/JVM)       │         │  └─ python -u trainer/main.py│
 │                             │         │     (detached, setsid)       │
-│  ┌──────────────┐  NDJSON   │         │     │                        │
+│  ┌──────────────┐  WebSocket│         │     │                        │
 │  │ api.py       │◄──────────┤         │     ▼                        │
-│  │ (IPC helper) │  stdin/   │         │  trainer/control.py          │
-│  └──────┬───────┘  stdout   │         │  state.json / command.json / │
+│  │ (JSON-RPC)   │  loopback │         │  trainer/control.py          │
+│  └──────┬───────┘           │         │  state.json / command.json / │
 │         │                   │         │  train.lock  (runtime dir)   │
 │         └── reads ── TensorBoard logs (logging_dir/{run_id})         │
 │         └── reads ── sample PNGs (output_dir/{run_id}/*_samples)     │
@@ -99,7 +99,7 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 | Path | What it is |
 | --- | --- |
 | `trainer/` | Training engine (config, dataset, latent cache, loop, sampling, GPU offload, control plane). |
-| `api.py` | NDJSON helper; metrics, samples, state, and start/pause/resume/stop/reset. |
+| `api.py` | JSON-RPC helper (WebSocket); metrics, samples, dataset/config IO, start/pause/resume/stop/reset. |
 | `ranko/` | Compose Multiplatform desktop app. |
 | `clean.py` | Interactive cleanup of samples, TensorBoard logs, and optional LoRA checkpoints. |
 | `ui.py` | **Deprecated** Streamlit viewer — use Ranko. |
@@ -107,7 +107,7 @@ Full data flow, lifecycle diagrams, and per-module detail: [Overview](doc/overvi
 | `tagger/` | ONNX (WD-tagger style) caption generator for a folder of images. |
 | `text_processing.py` | Long-prompt chunking and dual-encoder (SDXL) prompt encoding. |
 | `start_train.sh` | Training launcher; AMD/ROCm env and driver-log filters. |
-| `start_api.sh` | Debug launcher for `api.py` on stdin/stdout. |
+| `start_api.sh` | Debug launcher for `api.py` on a loopback WebSocket. |
 | `API.md` | IPC protocol (framing, methods, request/response shapes). |
 | `archive/` | Sealed research and field-report bundles (gpg-encrypted). 涉及负责任披露流程，暂不公开 |
 | `environment.yml` | Conda manifest — the only Python dependency file in the repo. |

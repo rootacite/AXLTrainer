@@ -89,7 +89,8 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import java.awt.Cursor
+import com.acite.axlranko.ui.pointerIconHand
+import com.acite.axlranko.ui.pointerIconNwseResize
 import coil3.compose.AsyncImage
 import com.acite.axlranko.model.ChartPickState
 import com.acite.axlranko.model.CheckpointItem
@@ -142,7 +143,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import java.io.File
+import com.acite.axlranko.data.BlobRef
+import com.acite.axlranko.data.LocalThumbnailQuality
 import kotlin.math.roundToInt
 
 @Composable
@@ -624,13 +626,13 @@ private fun SampleGroup(
                     modifier = Modifier
                         .clip(rankoTokens.card)
                         .background(rankoColors.bgCard.copy(alpha = 0.72f))
-                        .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+                        .pointerHoverIcon(pointerIconHand)
                         .clickable { onOpen(sample) }
                         .padding(bottom = 8.dp)
                 ) {
                     Box(modifier = Modifier.height(thumbSize.dp)) {
                         AsyncImage(
-                            model = File(sample.path),
+                            model = BlobRef(sample.path, maxEdge = 256, quality = LocalThumbnailQuality.current),
                             contentDescription = sample.filename,
                             contentScale = ContentScale.FillHeight,
                             filterQuality = FilterQuality.Low,
@@ -850,7 +852,7 @@ private fun ResizeGrip(
     Box(
         modifier = modifier
             .size(22.dp)
-            .pointerHoverIcon(PointerIcon(Cursor(Cursor.SE_RESIZE_CURSOR)))
+            .pointerHoverIcon(pointerIconNwseResize)
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
@@ -1357,13 +1359,13 @@ private fun SampleSlotCard(
                     Modifier
                 },
             )
-            .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+            .pointerHoverIcon(pointerIconHand)
             .clickable(onClick = onOpen)
             .padding(bottom = 6.dp),
     ) {
         Box(modifier = Modifier.width(width).height(height)) {
             AsyncImage(
-                model = File(slot.item.path),
+                model = BlobRef(slot.item.path, maxEdge = 512, quality = LocalThumbnailQuality.current),
                 contentDescription = slot.item.filename,
                 contentScale = ContentScale.Fit,
                 filterQuality = FilterQuality.Low,
@@ -1526,7 +1528,7 @@ private fun SamplePreviewOverlay(
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = File(sample.path),
+                    model = BlobRef(sample.path, maxEdge = 1024, quality = LocalThumbnailQuality.current),
                     contentDescription = sample.filename,
                     contentScale = ContentScale.Fit,
                     filterQuality = FilterQuality.High,
@@ -1563,7 +1565,7 @@ private fun PreviewNavButton(
             .size(48.dp)
             .clip(CircleShape)
             .background(rankoColors.bgCard.copy(alpha = 0.72f))
-            .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+            .pointerHoverIcon(pointerIconHand)
     ) {
         Icon(icon, contentDescription = description, tint = rankoColors.text, modifier = Modifier.size(32.dp))
     }

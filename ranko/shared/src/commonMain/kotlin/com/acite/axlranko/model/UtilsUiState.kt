@@ -9,6 +9,11 @@ enum class ConfigSection(
     /** Prefixes of the per-entry errors this section renders (`samples.1.steps`, `train_data.0.repeat`). */
     val errorPrefixes: Set<String> = emptySet()
 ) {
+    Helper(
+        title = "Helper",
+        description = "Dashboard helper WebSocket host and port",
+        fieldKeys = emptySet(),
+    ),
     Environment(
         title = "Environment",
         description = "Base model, dataset folders, and output paths",
@@ -184,6 +189,11 @@ data class UtilsUiState(
     val checkpoints: List<CheckpointItem> = emptyList(),
     val checkpointError: String? = null,
     val appearance: AppearanceSettings = AppearanceSettings(),
+    val helperHost: String = "127.0.0.1",
+    val helperPort: String = "18765",
+    val helperStatus: String = "disconnected",
+    val helperError: String? = null,
+    val helperBusy: Boolean = false,
     /** Saved `config.toml` presets under `configs/`, and the dialogs the Profiles section can raise. */
     val profiles: List<ConfigProfile> = emptyList(),
     val isLoadingProfiles: Boolean = false,

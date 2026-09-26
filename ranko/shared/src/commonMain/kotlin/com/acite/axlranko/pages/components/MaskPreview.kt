@@ -24,8 +24,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.util.brushRadii
 import kotlin.math.min
-
-private const val CURSOR_UPDATE_NS = 16_000_000L
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 @Composable
 fun MaskPreview(
@@ -44,7 +44,7 @@ fun MaskPreview(
 ) {
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var cursor by remember { mutableStateOf<Offset?>(null) }
-    val lastCursorNs = remember { longArrayOf(0L) }
+    val lastCursor = remember { arrayOf(TimeSource.Monotonic.markNow()) }
 
     Box(
         modifier = modifier
@@ -83,11 +83,10 @@ fun MaskPreview(
                         sourceWidth,
                         sourceHeight,
                     ) != null
-                    val now = System.nanoTime()
                     when {
                         !inside -> if (cursor != null) cursor = null
-                        now - lastCursorNs[0] >= CURSOR_UPDATE_NS -> {
-                            lastCursorNs[0] = now
+                        lastCursor[0].elapsedNow() >= 16.milliseconds -> {
+                            lastCursor[0] = TimeSource.Monotonic.markNow()
                             cursor = Offset(x, y)
                         }
                     }

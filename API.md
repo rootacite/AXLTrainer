@@ -1,29 +1,39 @@
 # Training Dashboard IPC
 
-`api.py` is a local helper process. Ranko starts it and talks over **newline-delimited JSON** on stdin/stdout. There is no HTTP server and no generation pipeline.
+`api.py` is a local helper process. Ranko talks to it over a WebSocket using JSON-RPC (`{id, method, params}` → `{id, ok, result|error}`). There is no HTTP API, no stdin/stdout control channel, and no generation pipeline. Default bind is loopback; LAN is an IP allowlist, not a token.
 
-Logs (TensorBoard, traceback, warnings) go to **stderr**. stdout is only NDJSON.
+Logs (TensorBoard, traceback, warnings) go to **stderr**.
 
 ## Launch
 
 ```bash
-# From the trainer repo root (directory that contains api.py and trainer/)
-python -u api.py
+python -u api.py --host 127.0.0.1 --port 18765
+# LAN:
+python -u api.py --host 0.0.0.0 --port 18765 --allow-ip 192.168.1.20 --allow-ip 192.168.1.0/24
 ```
+
+`--host` defaults to `127.0.0.1`. A non-loopback bind is allowed; clients are gated by `--allow-ip` / `AXL_WS_ALLOW` (IPv4/IPv6 or CIDR). Loopback (`127.0.0.1`, `::1`) is always admitted. An empty allowlist never means "allow the world".
 
 Environment:
 
 | Variable | Meaning |
 |---|---|
 | `AXL_PYTHON` | Optional. Ranko uses this interpreter instead of `python3`. |
+| `AXL_WS_HOST` | WebSocket bind (default `127.0.0.1`). |
+| `AXL_WS_PORT` | WebSocket port (default `18765`). |
+| `AXL_WS_ALLOW` | Comma-separated client IPs/CIDRs. Loopback is always allowed. |
+| `AXL_BLOB_WORKERS` | Encode process-pool size. Default `nproc`. `0` encodes in-process. |
+| `AXL_BLOB_CACHE_DIR` | Processed-image cache (default `/tmp/axlranko/blob-cache`). |
+| `AXL_BLOB_CACHE_BYTES` | Cache cap in bytes (default 1/4 of `MemTotal`). |
+| `AXL_TRASH_DIR` | Drop destination (default `/tmp/axlranko/trash`). |
 
-Working directory must be the repo root so `config.toml` resolves. Ranko locates `api.py` by walking up from the executable / `user.dir`.
+Working directory must be the repo root so `config.toml` resolves. Desktop Ranko locates `api.py` by walking up from the executable / `user.dir`, then connects to `ws://127.0.0.1:18765` (spawning the helper if nothing is listening). The Java client disables HTTP proxies so `http_proxy` cannot intercept localhost. The wasm UI does not spawn the helper; host/port live in Utils → Helper (`localStorage` + `?host=` / `?port=`).
 
-`start_api.sh` is a debug wrapper. The desktop app owns the process in normal use.
+`start_api.sh` is a debug wrapper that starts the same WebSocket helper.
 
 ## Framing
 
-One JSON object per line, UTF-8.
+One JSON object per WebSocket text frame. UTF-8.
 
 Request:
 
@@ -43,7 +53,7 @@ Failure:
 {"id": 1, "ok": false, "error": "unknown method: foo"}
 ```
 
-`id` is echoed back. Clients should send one request at a time (or match on `id`). Blank lines are ignored.
+`id` is echoed back. Match replies on `id`. Control methods (`train_*`, dataset mutations, config/profile writes) are serialized on the server. `blob_stat` / `blob_batch` do not hold that lock while encoding. Blank frames/lines are ignored.
 
 ## Methods
 
@@ -404,10 +414,27 @@ Result:
 
 `available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Ranko keeps the training UI up if hardware collection fails.
 
+### Config, dataset, masks, blobs
+
+After connect Ranko does not open trainer files. Paths in these methods are allowlisted (`config.toml`, `<repo>/configs/`, `[[environment.train_data]]` folders, `output_dir`).
+
+- `config_get` `{}` → `{path, text}`. `config_save` `{text}` parse-checks then atomic-writes.
+- `profile_list` / `profile_get` `{name}` / `profile_save` `{name, text, overwrite}` / `profile_delete` `{name}`.
+- `dataset_list` `{directory}` → `{items: [{stem, image, txt, mask, width, height, tags, has_sidecar_mask, has_alpha}], orphans}`. Non-recursive. Orphan `.txt` names are listed; Statistics aborts when `orphans` is non-empty.
+- `caption_write` `{directory, stem, text}`.
+- `dataset_drop` `{directory, rate, seed?, stems?}`. Moves image+txt+mask to `/tmp/axlranko/trash`. `stems` limits the pool (the GUI passes the filtered set).
+- `dataset_shuffle` `{directory, seed?}` → `{groups, renamed_files, first_stem, last_stem}`.
+- `mask_get` / `mask_write` / `mask_delete` `{directory, stem, png_base64?}`. Lossless PNG only.
+- `blob_stat` / `blob_batch` `{paths, max_edge, quality?, format?}`. `max_edge` is required (32–4096, contain, never upscale). Default `quality=80`, `format=jpeg`. JPEG/WebP flatten transparency onto black before encoding (dropping the alpha channel would leak leftover RGB in transparent pixels). Result items carry `hash` (SHA-256 of the processed bytes), `width`/`height`, `cache` (`hit`/`miss`), and for `blob_batch` `base64`. A bad path is a per-item `error`, not a failed RPC. Encode fans out across `AXL_BLOB_WORKERS` spawn processes (`trainer/blobcodec.py`, torch-free). Hits live under `/tmp/axlranko/blob-cache/` capped at 1/4 of host RAM. The cache key includes a codec version, so a flatten/resize change does not reuse bytes from an older encoder.
+- `tag_lexicon` `{}` → `{text}` of `tagger/selected_tags.csv`.
+- `checkpoint_export` `{source, dest}` server-local copy. `dest` must end `.safetensors`; refuse `source == dest`.
+- `fs_listdir` `{path}` → `{path, parent, entries: [{name, path, is_dir, size, mtime_ms}]}`. Lists one directory after `Path.resolve()` (so `..` cannot escape). A file path errors. Unreadable children are skipped. No file bytes.
+- `fs_roots` `{}` → `{roots: [{name, path}]}` with Home, Repo, each train-data folder, Output, Logs.
+
 `vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook holds — what it has mapped right now, or, with `never_reuse`, everything it has ever mapped — read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `never_reuse` is that file's mode when it is there (the running hook's own mode) and `[environment].amdfq_va_never_reuse` otherwise; Ranko titles the bar `GPU VA (live)` / `GPU VA (not returned)` from it. `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
 
 ## Example
 
-```bash
-printf '%s\n' '{"id":1,"method":"ping","params":{}}' | python -u api.py
+```python
+python -c "import api; print(api.dispatch('ping'))"
 ```

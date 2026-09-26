@@ -527,7 +527,7 @@ private fun samplingDetail(status: TrainStatus): String {
 private fun formatElapsed(startedAt: Double?, status: String): String {
     if (startedAt == null || startedAt <= 0.0) return "—"
     if (status == "idle") return "—"
-    val now = System.currentTimeMillis() / 1000.0
+    val now = kotlin.time.Clock.System.now().toEpochMilliseconds() / 1000.0
     val seconds = (now - startedAt).coerceAtLeast(0.0).roundToInt()
     val h = seconds / 3600
     val m = (seconds % 3600) / 60

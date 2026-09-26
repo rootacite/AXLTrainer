@@ -79,7 +79,7 @@ class TagTranslationsTest {
         val root = TrainerRepo.findRoot() ?: return
         val csv = File(root, "tagger/selected_tags.csv")
         if (!csv.isFile) return
-        val lex = TagLexicon.load(csv)
+        val lex = TagLexicon.parse(csv.readText())
         assertEquals("1女", lex.chinese("1girl"))
         assertEquals("1girl [1女]", lex.display("1girl"))
         assertEquals("solo [单人]", lex.display("solo"))

@@ -1,5 +1,6 @@
 package com.acite.axlranko.pages
 
+import com.acite.axlranko.IoDispatcher
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.geometry.Offset
@@ -22,13 +23,10 @@ import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
 import com.acite.axlranko.pages.components.generatedSampleItem
 import com.acite.axlranko.pages.components.nearestCheckpoint
+import com.acite.axlranko.util.PathPicker
 import com.acite.axlranko.util.checkpointSaveName
-import com.acite.axlranko.util.copyFileWithProgress
-import com.acite.axlranko.util.deleteEmptyPlaceholder
 import com.acite.axlranko.util.ensureSafetensorsExtension
 import com.acite.axlranko.util.formatBytes
-import com.acite.axlranko.util.saveFileDialog
-import java.io.File
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -50,6 +48,7 @@ import kotlin.time.Duration.Companion.milliseconds
 @ContributesIntoMap(AppScope::class)
 class DashboardScreenViewModel(
     private val ipc: TrainerIpcClient,
+    private val pathPicker: PathPicker,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DashboardUiState())
@@ -148,7 +147,7 @@ class DashboardScreenViewModel(
         checkpointScanInFlight = true
         viewModelScope.launch {
             try {
-                val response = withContext(Dispatchers.IO) { ipc.listCheckpoints() }
+                val response = withContext(IoDispatcher) { ipc.listCheckpoints() }
                 checkpointCache = response.checkpoints
                 _uiState.update { state ->
                     val pick = state.chartPick ?: return@update state
@@ -235,7 +234,7 @@ class DashboardScreenViewModel(
         updateChartPickForm { copy(isGenerating = true, generatedError = null) }
         viewModelScope.launch {
             try {
-                val response = withContext(Dispatchers.IO) {
+                val response = withContext(IoDispatcher) {
                     ipc.generateSample(
                         checkpoint = checkpoint.path,
                         prompt = pick.prompt,
@@ -276,7 +275,7 @@ class DashboardScreenViewModel(
 
     private suspend fun fetchGeneratedJobs(runId: String): List<GeneratedSampleJob> =
         try {
-            withContext(Dispatchers.IO) { ipc.listGeneratedSamples(runId = runId) }.jobs
+            withContext(IoDispatcher) { ipc.listGeneratedSamples(runId = runId) }.jobs
         } catch (_: Exception) {
             emptyList()
         }
@@ -315,19 +314,14 @@ class DashboardScreenViewModel(
         val checkpoint = pick.checkpoint ?: return
         if (pick.isSaving) return
 
-        val source = File(checkpoint.path)
-        if (!source.isFile) {
-            _uiState.update { state ->
-                state.copy(chartPick = state.chartPick?.copy(saveError = "checkpoint file not found: ${checkpoint.path}"))
-            }
-            return
-        }
-
+        val source = checkpoint.path
         viewModelScope.launch {
-            val chosen = saveFileDialog(checkpointSaveName(checkpoint), source.parent.orEmpty()) ?: return@launch
-            val selected = File(chosen)
-            val target = File(selected.parentFile, ensureSafetensorsExtension(selected.name))
-            if (target != selected) deleteEmptyPlaceholder(selected)
+            val parent = source.substringBeforeLast('/', missingDelimiterValue = "")
+            val chosen = pathPicker.saveFile(checkpointSaveName(checkpoint), parent) ?: return@launch
+            val destName = ensureSafetensorsExtension(chosen.substringAfterLast('/'))
+            val destParent = chosen.substringBeforeLast('/', missingDelimiterValue = "")
+            val target = if (destParent.isEmpty()) destName else "$destParent/$destName"
+            if (target != chosen) pathPicker.deleteEmptyPlaceholder(chosen)
 
             _uiState.update { state ->
                 state.copy(
@@ -340,19 +334,15 @@ class DashboardScreenViewModel(
                 )
             }
             try {
-                val bytes = withContext(Dispatchers.IO) {
-                    copyFileWithProgress(source, target) { fraction ->
-                        _uiState.update { state ->
-                            state.copy(chartPick = state.chartPick?.copy(saveProgress = fraction))
-                        }
-                    }
+                val exported = withContext(IoDispatcher) {
+                    ipc.checkpointExport(source, target)
                 }
                 _uiState.update { state ->
                     state.copy(
                         chartPick = state.chartPick?.copy(
                             isSaving = false,
                             saveProgress = null,
-                            savedPath = "${target.absolutePath} (${formatBytes(bytes)})",
+                            savedPath = "$target (${formatBytes(exported.bytes)})",
                         ),
                     )
                 }
@@ -399,7 +389,7 @@ class DashboardScreenViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(commandInFlight = true, pendingCommand = pending ?: it.pendingCommand) }
             try {
-                val status = withContext(Dispatchers.IO) { block() }
+                val status = withContext(IoDispatcher) { block() }
                 _uiState.update {
                     it.copy(
                         commandInFlight = false,
@@ -473,7 +463,7 @@ class DashboardScreenViewModel(
 
     private suspend fun fetchHardwareOnce() {
         try {
-            val snapshot = withContext(Dispatchers.IO) { ipc.hardwareStatus() }
+            val snapshot = withContext(IoDispatcher) { ipc.hardwareStatus() }
             _uiState.update { state ->
                 val step = hardwareStep
                 hardwareStep += 1
@@ -500,9 +490,9 @@ class DashboardScreenViewModel(
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         }
         try {
-            val dashboard = withContext(Dispatchers.IO) { ipc.getDashboard() }
-            val samples = withContext(Dispatchers.IO) { ipc.listSamples() }
-            val trainStatus = withContext(Dispatchers.IO) { ipc.trainStatus() }
+            val dashboard = withContext(IoDispatcher) { ipc.getDashboard() }
+            val samples = withContext(IoDispatcher) { ipc.listSamples() }
+            val trainStatus = withContext(IoDispatcher) { ipc.trainStatus() }
             _uiState.update { state ->
                 val generated = state.chartPick?.generatedJobs.orEmpty()
                 val previewPath = state.previewIndex

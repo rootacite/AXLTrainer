@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.util.TagTranslations
 import com.acite.axlranko.util.copyTextToClipboard
+import com.acite.axlranko.util.formatFixed
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
 import com.acite.axlranko.pages.components.DatasetDirBar
 import com.acite.axlranko.pages.components.datasetDirLabel
@@ -49,10 +50,13 @@ import com.acite.axlranko.ui.theme.RankoPalette
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
-import java.awt.Cursor
+import com.acite.axlranko.ui.pointerIconHorizontalResize
+import com.acite.axlranko.ui.pointerIconVerticalResize
 
 import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.lerp
 import com.acite.axlranko.Screen
 import com.acite.axlranko.StageViewModel
@@ -231,7 +235,7 @@ fun StatisticsScreen(
                                             }
                                         }
                                         Text(
-                                            text = "${stat.count} (%.1f%%)".format(stat.frequency),
+                                            text = "${stat.count} (${formatFixed(stat.frequency, 1)}%)",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colors.text.copy(alpha = 0.7f),
                                             modifier = Modifier.padding(start = 8.dp),
@@ -268,7 +272,7 @@ fun StatisticsScreen(
                 modifier = Modifier
                     .fillMaxHeight()
                     .width(8.dp)
-                    .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR)))
+                    .pointerHoverIcon(pointerIconHorizontalResize)
                     .pointerInput(totalWidthPx) {
                         detectHorizontalDragGestures { _, dragAmount ->
                             if (totalWidthPx > 0) {
@@ -306,7 +310,7 @@ fun StatisticsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalItemSpacing = 8.dp
                             ) {
-                                items(filteredItems, key = { it.txtFile.absolutePath }) { item ->
+                                items(filteredItems, key = { it.txtPath }) { item ->
                                     Card(
                                         modifier = Modifier.fillMaxWidth().wrapContentHeight(),
                                         shape = tokens.panel,
@@ -318,13 +322,15 @@ fun StatisticsScreen(
                                             // Images may have another dataset folder open; the
                                             // jump follows the folder this thumbnail came from.
                                             iviewModel.selectItemByTxtPath(
-                                                item.txtFile.absolutePath,
+                                                item.txtPath,
                                                 uiState.datasetDirIndex,
                                             )
                                         }
                                     ) {
                                         AspectLockedAsyncImage(
-                                            file = item.imageFile,
+                                            path = item.imagePath,
+                                            width = item.width,
+                                            height = item.height,
                                             contentScale = ContentScale.FillWidth,
                                             filterQuality = FilterQuality.High,
                                             modifier = Modifier.fillMaxWidth(),
@@ -340,7 +346,7 @@ fun StatisticsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp)
-                            .pointerHoverIcon(PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR)))
+                            .pointerHoverIcon(pointerIconVerticalResize)
                             .pointerInput(totalHeightPx) {
                                 detectVerticalDragGestures { _, dragAmount ->
                                     if (totalHeightPx > 0) {
@@ -384,7 +390,10 @@ fun ControlPanel(
     val tokens = rankoTokens
     var confirmShuffle by remember { mutableStateOf(false) }
     Column(
-        modifier = modifier.padding(16.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Control Panel", style = MaterialTheme.typography.titleMedium, color = colors.text)

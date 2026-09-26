@@ -1,7 +1,5 @@
 package com.acite.axlranko.util
 
-import java.awt.Color
-import java.awt.image.BufferedImage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -20,7 +18,6 @@ class MaskCanvasTest {
     @Test
     fun fastStrokeLeavesNoGaps() {
         val mask = canvas(128)
-        // One pointer jump: the old per-event stamping left isolated dots here.
         mask.stroke(10f, 64f, 118f, 64f, radius = 6f, feather = 0.2f, strength = 1f, erase = true)
         for (x in 10..118) {
             val v = mask.pixel(x, 64)
@@ -76,15 +73,14 @@ class MaskCanvasTest {
 
     @Test
     fun alphaBecomesTheMask() {
-        val rgba = BufferedImage(32, 32, BufferedImage.TYPE_INT_ARGB)
-        val g = rgba.createGraphics()
-        g.color = Color(0, 0, 0, 0)
-        g.fillRect(0, 0, 32, 32)
-        g.color = Color(255, 255, 255, 255)
-        g.fillRect(0, 0, 16, 32)
-        g.dispose()
-
-        val mask = MaskCanvas.fromAlpha(rgba, 32, 32)
+        val argb = IntArray(32 * 32)
+        for (y in 0 until 32) {
+            for (x in 0 until 32) {
+                val a = if (x < 16) 255 else 0
+                argb[y * 32 + x] = (a shl 24)
+            }
+        }
+        val mask = MaskCanvas.fromAlphaRgba(argb, 32, 32, 32, 32)
         assertEquals(255, mask.pixel(4, 16))
         assertEquals(0, mask.pixel(28, 16))
     }
@@ -96,5 +92,13 @@ class MaskCanvasTest {
         assertEquals(0, mask.pixel(8, 8))
         mask.invert()
         assertEquals(255, mask.pixel(8, 8))
+    }
+
+    @Test
+    fun copyBytesRoundTrips() {
+        val mask = canvas(8)
+        mask.fill(40)
+        val copy = MaskCanvas.fromBytes(mask.copyBytes(), 8, 8)
+        assertEquals(40, copy.pixel(3, 3))
     }
 }

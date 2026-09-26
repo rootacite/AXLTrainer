@@ -75,10 +75,10 @@ No caption files yet? Run the ONNX tagger to generate them (see [Dataset tools](
 ## 4. Verify the install
 
 ```bash
-# The IPC helper should answer a ping and exit cleanly
-printf '%s\n' '{"id":1,"method":"ping","params":{}}' | python -u api.py
+# The helper's dispatch table should answer a ping without opening a socket
+python -c "import api; print(api.dispatch('ping'))"
 # expected output:
-# {"id": 1, "ok": true, "result": {"status": "ok"}}
+# {'status': 'ok'}
 ```
 
 ## Running the tests

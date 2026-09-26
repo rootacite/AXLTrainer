@@ -1,9 +1,11 @@
 package com.acite.axlranko.model
 
-import java.io.File
-
 data class DatasetItem(
-    val txtFile: File,
-    val imageFile: File,
-    val tags: List<String>
+    val stem: String,
+    val imagePath: String,
+    val txtPath: String,
+    val maskPath: String,
+    val tags: List<String>,
+    val width: Int = 0,
+    val height: Int = 0,
 )

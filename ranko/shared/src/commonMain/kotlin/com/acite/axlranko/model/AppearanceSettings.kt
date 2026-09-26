@@ -9,6 +9,7 @@ data class AppearanceSettings(
     val fontScale: Float = 1.0f,
     val iconScale: Float = 1.0f,
     val backgroundImagePath: String = "",
+    val thumbnailQuality: Int = 80,
 ) {
     /**
      * Compose `Density.density`. Icon scale multiplies dp (icons, padding, component size).
@@ -31,6 +32,8 @@ data class AppearanceSettings(
         const val MAX_FONT_SCALE = 2.50f
         const val MIN_ICON_SCALE = 0.50f
         const val MAX_ICON_SCALE = 2.50f
+        const val MIN_THUMBNAIL_QUALITY = 1
+        const val MAX_THUMBNAIL_QUALITY = 100
 
         fun coerce(value: AppearanceSettings): AppearanceSettings = value.copy(
             cardBlurRadiusDp = value.cardBlurRadiusDp.coerceIn(MIN_BLUR, MAX_BLUR),
@@ -38,6 +41,7 @@ data class AppearanceSettings(
             fontScale = value.fontScale.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE),
             iconScale = value.iconScale.coerceIn(MIN_ICON_SCALE, MAX_ICON_SCALE),
             backgroundImagePath = value.backgroundImagePath.trim(),
+            thumbnailQuality = value.thumbnailQuality.coerceIn(MIN_THUMBNAIL_QUALITY, MAX_THUMBNAIL_QUALITY),
         )
     }
 }

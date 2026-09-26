@@ -36,8 +36,10 @@ import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import com.acite.axlranko.pages.components.DatasetDirBar
 import com.acite.axlranko.pages.components.datasetDirLabel
-import java.awt.Cursor
-import java.io.File
+import com.acite.axlranko.data.BlobRef
+import com.acite.axlranko.data.LocalThumbnailQuality
+import com.acite.axlranko.ui.pointerIconHorizontalResize
+import com.acite.axlranko.ui.pointerIconVerticalResize
 
 @Composable
 public fun ImagesScreen(
@@ -89,7 +91,9 @@ public fun ImagesScreen(
                                 .clickable { viewModel.selectItem(item) }
                         ) {
                             AspectLockedAsyncImage(
-                                file = File(item.imagePath),
+                                path = item.imagePath,
+                                width = item.width,
+                                height = item.height,
                                 contentScale = ContentScale.FillWidth,
                                 filterQuality = FilterQuality.High,
                                 modifier = Modifier.fillMaxWidth()
@@ -117,7 +121,7 @@ public fun ImagesScreen(
                 modifier = Modifier
                     .fillMaxHeight()
                     .width(8.dp)
-                    .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR)))
+                    .pointerHoverIcon(pointerIconHorizontalResize)
                     .pointerInput(totalWidthPx) {
                         detectHorizontalDragGestures { _, dragAmount ->
                             if (totalWidthPx > 0) {
@@ -227,6 +231,12 @@ public fun ImagesScreen(
                             danger = true,
                         )
                         CapsuleButton(
+                            text = "Reset mask",
+                            onClick = { viewModel.resetMask() },
+                            enabled = hasSelection && uiState.maskDirty,
+                            compact = true,
+                        )
+                        CapsuleButton(
                             text = "Save mask",
                             onClick = { viewModel.saveMask() },
                             enabled = hasSelection && uiState.maskDirty,
@@ -261,7 +271,11 @@ public fun ImagesScreen(
                             )
                         } else if (uiState.selectedItem != null) {
                             AsyncImage(
-                                model = File(uiState.selectedItem!!.imagePath),
+                                model = BlobRef(
+                                    uiState.selectedItem!!.imagePath,
+                                    maxEdge = maxOf(uiState.sourceWidth, uiState.sourceHeight, 256).coerceIn(32, 4096),
+                                    quality = LocalThumbnailQuality.current,
+                                ),
                                 contentDescription = null,
                                 contentScale = ContentScale.Fit,
                                 filterQuality = FilterQuality.High,
@@ -279,7 +293,7 @@ public fun ImagesScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp)
-                            .pointerHoverIcon(PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR)))
+                            .pointerHoverIcon(pointerIconVerticalResize)
                             .pointerInput(totalHeightPx) {
                                 detectVerticalDragGestures { _, dragAmount ->
                                     if (totalHeightPx > 0) {

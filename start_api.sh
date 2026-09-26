@@ -1,8 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Debug helper: run the dashboard IPC process on stdin/stdout.
-# Ranko starts this itself during normal use (python -u api.py).
+# Debug helper: run the dashboard JSON-RPC helper on a loopback WebSocket.
 
 export AMD_LOG_LEVEL=0
 export CK_LOG_LEVEL=0
@@ -21,4 +20,4 @@ export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
 export PYTHONUNBUFFERED=1
 
-python -u api.py
+python -u api.py --host 127.0.0.1 --port 18765

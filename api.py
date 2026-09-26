@@ -1,8 +1,12 @@
+import argparse
+import ipaddress
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import threading
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
@@ -27,7 +31,7 @@ from trainer.control import (
 )
 from trainer.hardware import collect_hardware_status
 from trainer.runs import find_latest_run
-from trainer import genjob
+from trainer import blobcodec, fsrpc, genjob
 
 _TAG_BLOCKED = frozenset(
     {
@@ -41,13 +45,6 @@ _TAG_BLOCKED = frozenset(
     }
 )
 from trainer.loss_log import synthesize_avg_loss
-
-_IPC_STDOUT = sys.stdout
-
-
-def _write(payload: dict[str, Any]) -> None:
-    _IPC_STDOUT.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
-    _IPC_STDOUT.flush()
 
 
 def _json_safe(value: Any) -> Any:
@@ -570,6 +567,182 @@ def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
     return run_tagger_process(str(directory_path), threshold, batch_size=batch_size)
 
 
+def handle_config_get(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.config_get()
+
+
+def handle_config_save(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.config_save(str(params.get("text") or ""))
+
+
+def handle_profile_list(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.profile_list()
+
+
+def handle_profile_get(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.profile_get(str(params.get("name") or ""))
+
+
+def handle_profile_save(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.profile_save(
+        str(params.get("name") or ""),
+        str(params.get("text") or ""),
+        bool(params.get("overwrite")),
+    )
+
+
+def handle_profile_delete(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.profile_delete(str(params.get("name") or ""))
+
+
+def handle_tag_lexicon(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.tag_lexicon()
+
+
+def handle_dataset_list(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    return fsrpc.dataset_list(directory)
+
+
+def handle_caption_write(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    stem = fsrpc.require_stem(params.get("stem"))
+    text = params.get("text")
+    if text is None:
+        raise ValueError("missing text")
+    return fsrpc.caption_write(directory, stem, str(text))
+
+
+def handle_dataset_drop(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    try:
+        rate = float(params.get("rate"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("rate must be a number") from exc
+    seed = params.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("seed must be an integer") from exc
+    stems = params.get("stems")
+    if stems is not None:
+        if not isinstance(stems, list):
+            raise ValueError("stems must be an array")
+        stems = [str(s) for s in stems]
+    return fsrpc.dataset_drop(directory, rate, seed, stems)
+
+
+def handle_dataset_shuffle(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    seed = params.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("seed must be an integer") from exc
+    return fsrpc.dataset_shuffle(directory, seed)
+
+
+def handle_mask_get(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    stem = fsrpc.require_stem(params.get("stem"))
+    return fsrpc.mask_get(directory, stem)
+
+
+def handle_mask_write(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    stem = fsrpc.require_stem(params.get("stem"))
+    return fsrpc.mask_write(directory, stem, str(params.get("png_base64") or ""))
+
+
+def handle_mask_delete(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    directory = fsrpc.require_dataset_dir(params.get("directory"), cfg)
+    stem = fsrpc.require_stem(params.get("stem"))
+    return fsrpc.mask_delete(directory, stem)
+
+
+def _blob_request(params: dict[str, Any]) -> tuple[list[str], int, int, str]:
+    raw = params.get("paths")
+    if not isinstance(raw, list):
+        raise ValueError("paths must be an array")
+    paths = [str(item) for item in raw]
+    max_edge, quality, fmt = blobcodec.parse_encode_params(params)
+    return paths, max_edge, quality, fmt
+
+
+def _filter_blob_paths(paths: list[str], cfg: dict[str, Any]) -> list[dict[str, Any] | None]:
+    """None means allowed; a dict is the per-item error placeholder."""
+    marks: list[dict[str, Any] | None] = []
+    for raw in paths:
+        path = Path(raw)
+        if not fsrpc.blob_path_allowed(path, cfg):
+            marks.append({"path": raw, "error": "path is not an allowed image"})
+        else:
+            marks.append(None)
+    return marks
+
+
+def handle_blob_stat(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    paths, max_edge, quality, fmt = _blob_request(params)
+    marks = _filter_blob_paths(paths, cfg)
+    allowed = [p for p, mark in zip(paths, marks) if mark is None]
+    resolved = blobcodec.resolve_blobs(allowed, max_edge, quality, fmt, include_payload=False)
+    items: list[dict[str, Any]] = []
+    cursor = 0
+    for mark in marks:
+        if mark is not None:
+            items.append(mark)
+        else:
+            items.append(resolved[cursor])
+            cursor += 1
+    return {"items": items}
+
+
+def handle_blob_batch(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    paths, max_edge, quality, fmt = _blob_request(params)
+    marks = _filter_blob_paths(paths, cfg)
+    allowed = [p for p, mark in zip(paths, marks) if mark is None]
+    resolved = blobcodec.resolve_blobs(allowed, max_edge, quality, fmt, include_payload=True)
+    items: list[dict[str, Any]] = []
+    cursor = 0
+    for mark in marks:
+        if mark is not None:
+            items.append(mark)
+        else:
+            items.append(resolved[cursor])
+            cursor += 1
+    return {"items": items}
+
+
+def handle_checkpoint_export(params: dict[str, Any]) -> dict[str, Any]:
+    cfg = _train_config_dict()
+    source = Path(str(params.get("source") or ""))
+    dest = Path(str(params.get("dest") or ""))
+    if not source.as_posix() or not dest.as_posix():
+        raise ValueError("source and dest are required")
+    if not fsrpc.checkpoint_source_allowed(source, cfg):
+        raise ValueError(f"not an allowed checkpoint: {source}")
+    return fsrpc.checkpoint_export(source, dest)
+
+
+def handle_fs_listdir(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.fs_listdir(params.get("path"))
+
+
+def handle_fs_roots(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.fs_roots(_train_config_dict())
+
+
 _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
@@ -585,39 +758,218 @@ _HANDLERS = {
     "hardware_status": handle_hardware_status,
     "generate_sample": handle_generate_sample,
     "list_generated_samples": handle_list_generated_samples,
+    "config_get": handle_config_get,
+    "config_save": handle_config_save,
+    "profile_list": handle_profile_list,
+    "profile_get": handle_profile_get,
+    "profile_save": handle_profile_save,
+    "profile_delete": handle_profile_delete,
+    "tag_lexicon": handle_tag_lexicon,
+    "dataset_list": handle_dataset_list,
+    "caption_write": handle_caption_write,
+    "dataset_drop": handle_dataset_drop,
+    "dataset_shuffle": handle_dataset_shuffle,
+    "mask_get": handle_mask_get,
+    "mask_write": handle_mask_write,
+    "mask_delete": handle_mask_delete,
+    "blob_stat": handle_blob_stat,
+    "blob_batch": handle_blob_batch,
+    "checkpoint_export": handle_checkpoint_export,
+    "fs_listdir": handle_fs_listdir,
+    "fs_roots": handle_fs_roots,
 }
+
+_CONTROL_METHODS = frozenset(
+    {
+        "train_start",
+        "train_pause",
+        "train_resume",
+        "train_stop",
+        "train_reset",
+        "dataset_tag",
+        "generate_sample",
+        "config_save",
+        "profile_save",
+        "profile_delete",
+        "caption_write",
+        "dataset_drop",
+        "dataset_shuffle",
+        "mask_write",
+        "mask_delete",
+        "checkpoint_export",
+    }
+)
+_CONTROL_LOCK = threading.Lock()
+_WS_MAX_SIZE = 32 * 1024 * 1024
+_WS_DEFAULT_PORT = 18765
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 
 
 def dispatch(method: str, params: Optional[dict[str, Any]] = None) -> Any:
     handler = _HANDLERS.get(method)
     if handler is None:
         raise ValueError(f"unknown method: {method}")
-    return handler(params or {})
+    payload = params or {}
+    if method in _CONTROL_METHODS:
+        with _CONTROL_LOCK:
+            return handler(payload)
+    return handler(payload)
 
 
-def run_ipc_loop() -> None:
-    # Keep stdout exclusive for NDJSON IPC. All logs go to stderr.
-    sys.stdout = sys.stderr
-    for raw in sys.stdin:
-        line = raw.strip()
-        if not line:
+def _reply_for(req: dict[str, Any]) -> dict[str, Any]:
+    req_id = req.get("id")
+    try:
+        method = req.get("method")
+        if not isinstance(method, str) or not method:
+            raise ValueError("missing method")
+        params = req.get("params") or {}
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object")
+        result = dispatch(method, params)
+        return {"id": req_id, "ok": True, "result": _json_safe(result)}
+    except Exception as exc:
+        traceback.print_exc()
+        return {"id": req_id, "ok": False, "error": str(exc)}
+
+
+def parse_allow_networks(entries: list[str]) -> list[ipaddress._BaseNetwork]:
+    networks: list[ipaddress._BaseNetwork] = []
+    for raw in entries:
+        text = raw.strip()
+        if not text:
             continue
-        req_id: Any = None
         try:
-            req = json.loads(line)
-            req_id = req.get("id")
-            method = req.get("method")
-            if not isinstance(method, str) or not method:
-                raise ValueError("missing method")
-            params = req.get("params") or {}
-            if not isinstance(params, dict):
-                raise ValueError("params must be an object")
-            result = dispatch(method, params)
-            _write({"id": req_id, "ok": True, "result": _json_safe(result)})
-        except Exception as exc:
-            traceback.print_exc()
-            _write({"id": req_id, "ok": False, "error": str(exc)})
+            if "/" in text:
+                networks.append(ipaddress.ip_network(text, strict=False))
+            else:
+                ip = ipaddress.ip_address(text)
+                networks.append(ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}"))
+        except ValueError as exc:
+            raise SystemExit(f"invalid --allow-ip {raw!r}: {exc}") from exc
+    return networks
+
+
+def client_ip_allowed(remote: str, networks: list[ipaddress._BaseNetwork]) -> bool:
+    host = remote.split("%")[0]
+    if host.startswith("::ffff:"):
+        host = host[7:]
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_loopback:
+        return True
+    return any(ip in net for net in networks)
+
+
+def _peer_host(connection: Any) -> str:
+    addr = getattr(connection, "remote_address", None)
+    if isinstance(addr, tuple) and addr:
+        return str(addr[0])
+    return str(addr or "")
+
+
+class _QuietWsClose(logging.Filter):
+    """Browsers drop sockets without a close frame; handshake probes die mid-request."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is not None:
+            from websockets.exceptions import ConnectionClosed, InvalidMessage
+
+            if isinstance(exc, (ConnectionClosed, InvalidMessage, EOFError)):
+                return False
+        msg = record.getMessage()
+        return "opening handshake failed" not in msg and "connection handler failed" not in msg
+
+
+def _quiet_websockets_log() -> None:
+    filt = _QuietWsClose()
+    # Filters on a parent logger are not applied to child loggers; the handshake
+    # traceback is emitted on websockets.server.
+    for name in ("websockets", "websockets.server", "websockets.client"):
+        log = logging.getLogger(name)
+        if not any(isinstance(item, _QuietWsClose) for item in log.filters):
+            log.addFilter(filt)
+
+
+def run_ws_loop(host: str, port: int, allow_networks: Optional[list[ipaddress._BaseNetwork]] = None) -> None:
+    # Keep stdout unused for JSON: Ranko talks over the socket. Logs go to stderr.
+    sys.stdout = sys.stderr
+    _quiet_websockets_log()
+    networks = list(allow_networks or [])
+    from websockets.exceptions import ConnectionClosed
+    from websockets.sync.server import serve
+
+    def handler(connection) -> None:
+        try:
+            peer = _peer_host(connection)
+            if not client_ip_allowed(peer, networks):
+                print(f"api.py rejected {peer}", file=sys.stderr)
+                connection.close()
+                return
+            for raw in connection:
+                if not raw or (isinstance(raw, str) and not raw.strip()):
+                    continue
+                req_id: Any = None
+                try:
+                    req = json.loads(raw)
+                    if not isinstance(req, dict):
+                        raise ValueError("request must be an object")
+                    req_id = req.get("id")
+                    connection.send(json.dumps(_reply_for(req), ensure_ascii=False, allow_nan=False))
+                except ConnectionClosed:
+                    return
+                except Exception as exc:
+                    traceback.print_exc()
+                    try:
+                        connection.send(
+                            json.dumps(
+                                {"id": req_id, "ok": False, "error": str(exc)},
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            )
+                        )
+                    except Exception:
+                        return
+        except ConnectionClosed:
+            return
+
+    with serve(handler, host, port, max_size=_WS_MAX_SIZE, origins=None) as server:
+        print(f"api.py websocket on ws://{host}:{port}", file=sys.stderr)
+        server.serve_forever()
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="AXLTrainer dashboard helper")
+    parser.add_argument(
+        "--websocket",
+        action="store_true",
+        help="accepted and ignored: WebSocket is the only transport",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("AXL_WS_HOST", "127.0.0.1"),
+        help="WebSocket bind address (default 127.0.0.1; 0.0.0.0 for LAN)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("AXL_WS_PORT", str(_WS_DEFAULT_PORT))),
+        help="WebSocket bind port",
+    )
+    parser.add_argument(
+        "--allow-ip",
+        action="append",
+        default=[],
+        help="Client IP or CIDR allowed to connect (repeatable). Loopback is always allowed.",
+    )
+    args = parser.parse_args(argv)
+    from_env = [part.strip() for part in os.environ.get("AXL_WS_ALLOW", "").split(",") if part.strip()]
+    networks = parse_allow_networks(list(args.allow_ip) + from_env)
+    run_ws_loop(args.host, args.port, networks)
 
 
 if __name__ == "__main__":
-    run_ipc_loop()
+    main()
+

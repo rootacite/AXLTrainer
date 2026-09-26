@@ -2,20 +2,23 @@
 package com.acite.axlranko.pages
 
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.toComposeImageBitmap
+import com.acite.axlranko.IoDispatcher
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.acite.axlranko.data.ConfigImporter
+import com.acite.axlranko.data.BlobRef
+import com.acite.axlranko.data.BlobStore
+import com.acite.axlranko.data.DatasetRecord
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.TrainerIpcClient
+import com.acite.axlranko.data.encodeBase64
 import com.acite.axlranko.data.trainDataEntries
+import com.acite.axlranko.data.decodeBase64
 import com.acite.axlranko.model.ImageItem
 import com.acite.axlranko.model.ImageScreenState
+import com.acite.axlranko.util.ImageCodecs
 import com.acite.axlranko.util.MaskCanvas
 import com.acite.axlranko.util.MaskDirtyRect
-import com.acite.axlranko.util.fileHasAlphaChannel
-import com.acite.axlranko.util.isMaskSidecar
-import com.acite.axlranko.util.maskFileFor
 import com.acite.axlranko.util.nudgeBrushRadius
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
@@ -28,10 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.image.BufferedImage
-import java.io.File
-import javax.imageio.ImageIO
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 @Inject
 @ViewModelKey
@@ -39,20 +41,38 @@ import kotlin.math.roundToInt
 class ImageScreenViewModel(
     private val refreshHub: DatasetRefreshHub,
     private val datasetSelection: DatasetSelection,
+    private val ipc: TrainerIpcClient,
+    private val blobStore: BlobStore,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ImageScreenState())
     val uiState: StateFlow<ImageScreenState> = _uiState.asStateFlow()
 
-    private var photoImage: BufferedImage? = null
+    private var photoArgb: IntArray? = null
+    private var photoWidth: Int = 0
+    private var photoHeight: Int = 0
     private var mask: MaskCanvas? = null
-    private var previewImage: BufferedImage? = null
+    private var previewArgb: IntArray? = null
     private var cachedPreview: ImageBitmap? = null
     private var maskRevision = 0
     private var strokeX: Float? = null
     private var strokeY: Float? = null
     private var strokeErase: Boolean = false
-    private var lastPublishNs: Long = 0L
+    private var lastPublish = TimeSource.Monotonic.markNow()
+    private var snapshotPixels: ByteArray? = null
+    private var snapshotHasSidecar: Boolean = false
+    private var pendingDelete: Boolean = false
+    private val drafts = mutableMapOf<String, MaskDraft>()
+
+    private data class MaskDraft(
+        val pixels: ByteArray,
+        val width: Int,
+        val height: Int,
+        val pendingDelete: Boolean,
+        val photoArgb: IntArray,
+        val snapshotPixels: ByteArray?,
+        val snapshotHasSidecar: Boolean,
+    )
 
     /** File a Statistics jump asked for, opened once the rescan of its folder finishes. */
     private var pendingSelectTxtPath: String? = null
@@ -77,7 +97,7 @@ class ImageScreenViewModel(
             val pendingTxtPath = pendingSelectTxtPath
             pendingSelectTxtPath = null
             val entries = try {
-                ConfigImporter.getConfig().environment.trainDataEntries()
+                ipc.parsedConfig().second.environment.trainDataEntries()
             } catch (_: Exception) {
                 emptyList()
             }
@@ -88,14 +108,11 @@ class ImageScreenViewModel(
                 it.copy(dataDir = currentDir, datasetDirs = entries, datasetDirIndex = selected)
             }
 
-            withContext(Dispatchers.IO) {
-                val folder = File(currentDir)
-                if (!folder.exists() || !folder.isDirectory) return@withContext
-
+            withContext(IoDispatcher) {
                 val currentItemsMap = _uiState.value.imageItems.associateBy { it.imagePath }
                 val currentSelectedPath = _uiState.value.selectedItem?.imagePath
 
-                val updatedItems = scanImageItems(folder).map { fresh ->
+                val updatedItems = scanImageItems(currentDir).map { fresh ->
                     val existing = currentItemsMap[fresh.imagePath]
                     if (existing != null && !resetDrafts) {
                         // An unsaved caption draft survives only while its file still holds what the
@@ -134,7 +151,7 @@ class ImageScreenViewModel(
     private fun loadData() {
         viewModelScope.launch {
             try {
-                val entries = ConfigImporter.getConfig().environment.trainDataEntries()
+                val entries = ipc.parsedConfig().second.environment.trainDataEntries()
                 val selected = datasetSelection.index.value.coerceIn(0, entries.lastIndex.coerceAtLeast(0))
                 val dir = entries.getOrNull(selected)?.path.orEmpty()
                 _uiState.update {
@@ -150,18 +167,15 @@ class ImageScreenViewModel(
     private suspend fun loadImages(dataDir: String) {
         if (dataDir.isEmpty()) return
 
-        withContext(Dispatchers.IO) {
-            val folder = File(dataDir)
-            if (folder.exists() && folder.isDirectory) {
-                _uiState.update { it.copy(imageItems = scanImageItems(folder)) }
-            }
+        withContext(IoDispatcher) {
+            _uiState.update { it.copy(imageItems = scanImageItems(dataDir)) }
         }
     }
 
     /** The picker switched dataset folders: unsaved mask strokes belong to the folder left behind. */
     fun selectDatasetDir(index: Int) {
         if (index == _uiState.value.datasetDirIndex) return
-        flushPendingMask()
+        stashCurrentMask()
         switchDatasetDir(index)
     }
 
@@ -173,7 +187,7 @@ class ImageScreenViewModel(
      * the tags read from disk.
      */
     fun selectItemByTxtPath(txtPath: String, datasetDirIndex: Int) {
-        flushPendingMask()
+        stashCurrentMask()
         pendingSelectTxtPath = txtPath
         if (datasetDirIndex != _uiState.value.datasetDirIndex) {
             switchDatasetDir(datasetDirIndex)
@@ -190,33 +204,34 @@ class ImageScreenViewModel(
 
     fun selectItem(item: ImageItem) {
         val previous = _uiState.value.selectedItem
-        if (previous != null && previous.imagePath != item.imagePath) flushPendingMask()
+        if (previous != null && previous.imagePath != item.imagePath) stashCurrentMask()
         _uiState.update { state ->
             state.copy(
                 selectedItem = item,
                 editorText = item.currentTags,
-                maskDirty = false,
+                maskDirty = drafts[item.imagePath] != null,
             )
         }
-        viewModelScope.launch(Dispatchers.IO) { loadMaskBuffers(item) }
+        viewModelScope.launch(IoDispatcher) { loadMaskBuffers(item) }
     }
 
-    /** Writes the pending mask for the open image before the selection moves off it. */
-    private fun flushPendingMask() {
-        val state = _uiState.value
-        if (!state.maskDirty) return
-        val item = state.selectedItem ?: return
-        val copy = (mask ?: return).copyImage()
-        val path = item.maskPath
-        val imagePath = item.imagePath
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                ImageIO.write(copy, "png", File(path))
-                updateHasSidecarMask(imagePath, true)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+    private fun stashCurrentMask() {
+        val item = _uiState.value.selectedItem ?: return
+        val canvas = mask ?: return
+        val photo = photoArgb ?: return
+        if (!_uiState.value.maskDirty) {
+            drafts.remove(item.imagePath)
+            return
         }
+        drafts[item.imagePath] = MaskDraft(
+            pixels = canvas.copyBytes(),
+            width = canvas.width,
+            height = canvas.height,
+            pendingDelete = pendingDelete,
+            photoArgb = photo,
+            snapshotPixels = snapshotPixels,
+            snapshotHasSidecar = snapshotHasSidecar,
+        )
     }
 
     fun updateEditorText(text: String) {
@@ -257,9 +272,9 @@ class ImageScreenViewModel(
         val currentState = _uiState.value
         val itemToSave = currentState.selectedItem ?: return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(IoDispatcher) {
             try {
-                File(itemToSave.txtPath).writeText(itemToSave.currentTags)
+                ipc.captionWrite(itemToSave.directory, itemToSave.stem, itemToSave.currentTags)
 
                 _uiState.update { state ->
                     val currentList = state.imageItems
@@ -379,88 +394,146 @@ class ImageScreenViewModel(
     fun saveMask(item: ImageItem? = _uiState.value.selectedItem) {
         val target = item ?: return
         val canvas = mask ?: return
-        val copy = canvas.copyImage()
-        viewModelScope.launch(Dispatchers.IO) {
+        val deleteSidecar = pendingDelete
+        val png = if (deleteSidecar) null else ImageCodecs.encodeGrayPng(canvas.width, canvas.height, canvas.copyBytes())
+        viewModelScope.launch(IoDispatcher) {
             try {
-                ImageIO.write(copy, "png", File(target.maskPath))
-                updateHasSidecarMask(target.imagePath, true)
+                if (deleteSidecar) {
+                    ipc.maskDelete(target.directory, target.stem)
+                    updateHasSidecarMask(target.imagePath, false)
+                    snapshotHasSidecar = false
+                    snapshotPixels = canvas.copyBytes()
+                } else {
+                    ipc.maskWrite(target.directory, target.stem, encodeBase64(png!!))
+                    updateHasSidecarMask(target.imagePath, true)
+                    snapshotHasSidecar = true
+                    snapshotPixels = canvas.copyBytes()
+                }
+                pendingDelete = false
+                drafts.remove(target.imagePath)
                 _uiState.update { it.copy(maskDirty = false) }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
+    }
+
+    fun resetMask() {
+        val canvas = mask ?: return
+        val snap = snapshotPixels
+        if (snap != null && snap.size == canvas.width * canvas.height) {
+            mask = MaskCanvas.fromBytes(snap, canvas.width, canvas.height)
+        } else {
+            mask = MaskCanvas.white(canvas.width, canvas.height)
+        }
+        pendingDelete = false
+        _uiState.value.selectedItem?.imagePath?.let { drafts.remove(it) }
+        _uiState.update { it.copy(maskDirty = false) }
+        rebuildPreview()
     }
 
     fun clearMask() {
-        val item = _uiState.value.selectedItem ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                File(item.maskPath).delete()
-                updateHasSidecarMask(item.imagePath, false)
-                loadMaskBuffers(item.copy(hasSidecarMask = false))
-                _uiState.update { it.copy(maskDirty = false) }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        val canvas = mask ?: return
+        canvas.fill(255)
+        pendingDelete = true
+        markMaskChanged()
+        rebuildPreview()
     }
 
-    private fun scanImageItems(folder: File): List<ImageItem> {
-        val validExtensions = listOf("jpg", "jpeg", "png", "webp", "bmp")
-        return folder.listFiles()
-            ?.filter {
-                it.isFile &&
-                    validExtensions.contains(it.extension.lowercase()) &&
-                    !isMaskSidecar(it)
-            }
-            ?.sortedBy { it.name.lowercase() }
-            ?.map { imgFile ->
-                val txtFile = File(folder, "${imgFile.nameWithoutExtension}.txt")
-                val maskFile = maskFileFor(imgFile)
-                val tags = if (txtFile.exists()) txtFile.readText() else ""
-                ImageItem(
-                    imagePath = imgFile.absolutePath,
-                    txtPath = txtFile.absolutePath,
-                    tags = tags,
-                    draftTags = null,
-                    maskPath = maskFile.absolutePath,
-                    hasSidecarMask = maskFile.exists(),
-                    hasAlpha = fileHasAlphaChannel(imgFile),
+    private suspend fun scanImageItems(directory: String): List<ImageItem> {
+        if (directory.isEmpty()) return emptyList()
+        return ipc.datasetList(directory).items.map { it.toImageItem() }
+    }
+
+    private fun DatasetRecord.toImageItem(): ImageItem {
+        val parent = image.substringBeforeLast('/', missingDelimiterValue = ".")
+        return ImageItem(
+            directory = parent,
+            stem = stem,
+            imagePath = image,
+            txtPath = txt,
+            tags = tags.joinToString(", "),
+            draftTags = null,
+            maskPath = mask,
+            hasSidecarMask = hasSidecarMask,
+            hasAlpha = hasAlpha,
+            width = width,
+            height = height,
+        )
+    }
+
+    private suspend fun loadMaskBuffers(item: ImageItem) {
+        val draft = drafts[item.imagePath]
+        if (draft != null) {
+            photoArgb = draft.photoArgb
+            photoWidth = draft.width
+            photoHeight = draft.height
+            mask = MaskCanvas.fromBytes(draft.pixels, draft.width, draft.height)
+            pendingDelete = draft.pendingDelete
+            snapshotPixels = draft.snapshotPixels
+            snapshotHasSidecar = draft.snapshotHasSidecar
+            previewArgb = IntArray(draft.width * draft.height)
+            rebuildPreview()
+            _uiState.update {
+                it.copy(
+                    sourceWidth = draft.width,
+                    sourceHeight = draft.height,
+                    maskDirty = true,
                 )
             }
-            ?: emptyList()
-    }
-
-    private fun loadMaskBuffers(item: ImageItem) {
-        val photo = ImageIO.read(File(item.imagePath)) ?: return
-        val rgb = toRgb(photo)
-        val maskFile = File(item.maskPath)
-        val canvas = when {
-            maskFile.exists() -> {
-                val loaded = ImageIO.read(maskFile)
-                if (loaded != null) MaskCanvas.fromGrayImage(loaded, rgb.width, rgb.height)
-                else MaskCanvas.white(rgb.width, rgb.height)
-            }
-            photo.colorModel.hasAlpha() -> MaskCanvas.fromAlpha(photo, rgb.width, rgb.height)
-            else -> MaskCanvas.white(rgb.width, rgb.height)
+            return
         }
-        photoImage = rgb
+        val maxEdge = maxOf(item.width, item.height, 32).coerceIn(32, 4096)
+        val photoBytes = try {
+            blobStore.get(BlobRef(item.imagePath, maxEdge = maxEdge, quality = 90, format = "jpeg"))
+        } catch (_: Exception) {
+            return
+        }
+        val rgba = ImageCodecs.decodeRgba(photoBytes) ?: return
+        val maskBytes = try {
+            val b64 = ipc.maskGet(item.directory, item.stem).pngBase64
+            if (b64.isNotEmpty()) decodeBase64(b64) else null
+        } catch (_: Exception) {
+            null
+        }
+        val canvas = when {
+            maskBytes != null -> {
+                val loaded = ImageCodecs.decodeRgba(maskBytes)
+                if (loaded != null) {
+                    MaskCanvas.fromGrayBytes(luminance(loaded), loaded.width, loaded.height, rgba.width, rgba.height)
+                } else {
+                    MaskCanvas.white(rgba.width, rgba.height)
+                }
+            }
+            else -> MaskCanvas.white(rgba.width, rgba.height)
+        }
+        photoArgb = rgba.argb
+        photoWidth = rgba.width
+        photoHeight = rgba.height
         mask = canvas
+        pendingDelete = false
+        snapshotPixels = canvas.copyBytes()
+        snapshotHasSidecar = maskBytes != null
+        previewArgb = IntArray(rgba.width * rgba.height)
         rebuildPreview()
         _uiState.update {
             it.copy(
-                sourceWidth = rgb.width,
-                sourceHeight = rgb.height,
+                sourceWidth = rgba.width,
+                sourceHeight = rgba.height,
                 maskDirty = false,
             )
         }
     }
 
     private fun clearMaskBuffers() {
-        photoImage = null
+        photoArgb = null
+        photoWidth = 0
+        photoHeight = 0
         mask = null
-        previewImage = null
+        previewArgb = null
         cachedPreview = null
+        snapshotPixels = null
+        pendingDelete = false
         _uiState.update {
             it.copy(sourceWidth = 0, sourceHeight = 0, maskPreviewRevision = maskRevision + 1)
         }
@@ -473,41 +546,44 @@ class ImageScreenViewModel(
     }
 
     private fun rebuildPreview() {
-        val photo = photoImage ?: return
+        val photo = photoArgb ?: return
         val canvas = mask ?: return
+        val out = previewArgb ?: IntArray(photoWidth * photoHeight).also { previewArgb = it }
         val maskOnly = _uiState.value.maskOnly
-        val out = BufferedImage(photo.width, photo.height, BufferedImage.TYPE_INT_RGB)
-        for (y in 0 until photo.height) {
-            for (x in 0 until photo.width) {
-                out.setRGB(x, y, previewPixel(photo.getRGB(x, y), canvas.pixel(x, y), maskOnly))
+        val w = photoWidth
+        for (y in 0 until photoHeight) {
+            val row = y * w
+            for (x in 0 until w) {
+                out[row + x] = previewPixel(photo[row + x], canvas.pixel(x, y), maskOnly)
             }
         }
-        previewImage = out
-        cachedPreview = out.toComposeImageBitmap()
+        cachedPreview = ImageCodecs.argbToImageBitmap(photoWidth, photoHeight, out)
         maskRevision += 1
         _uiState.update { it.copy(maskPreviewRevision = maskRevision) }
     }
 
     private fun publishPreview(force: Boolean) {
-        val now = System.nanoTime()
-        if (!force && now - lastPublishNs < 16_000_000L) return
-        lastPublishNs = now
-        cachedPreview = previewImage?.toComposeImageBitmap()
+        if (!force && lastPublish.elapsedNow() < 16.milliseconds) return
+        lastPublish = TimeSource.Monotonic.markNow()
+        val out = previewArgb ?: return
+        cachedPreview = ImageCodecs.argbToImageBitmap(photoWidth, photoHeight, out)
         maskRevision += 1
         _uiState.update { it.copy(maskDirty = true, maskPreviewRevision = maskRevision) }
     }
 
     private fun patchPreview(dirty: MaskDirtyRect) {
         if (dirty.isEmpty) return
-        val photo = photoImage ?: return
+        val photo = photoArgb ?: return
         val canvas = mask ?: return
-        val preview = previewImage ?: return
+        val preview = previewArgb ?: return
         val maskOnly = _uiState.value.maskOnly
-        val x1 = dirty.right.coerceAtMost(photo.width - 1)
-        val y1 = dirty.bottom.coerceAtMost(photo.height - 1)
+        val w = photoWidth
+        val x1 = dirty.right.coerceAtMost(w - 1)
+        val y1 = dirty.bottom.coerceAtMost(photoHeight - 1)
         for (y in dirty.top..y1) {
+            val row = y * w
             for (x in dirty.left..x1) {
-                preview.setRGB(x, y, previewPixel(photo.getRGB(x, y), canvas.pixel(x, y), maskOnly))
+                preview[row + x] = previewPixel(photo[row + x], canvas.pixel(x, y), maskOnly)
             }
         }
     }
@@ -539,12 +615,15 @@ class ImageScreenViewModel(
             return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
 
-        private fun toRgb(src: BufferedImage): BufferedImage {
-            if (src.type == BufferedImage.TYPE_INT_RGB) return src
-            val out = BufferedImage(src.width, src.height, BufferedImage.TYPE_INT_RGB)
-            val g = out.createGraphics()
-            g.drawImage(src, 0, 0, null)
-            g.dispose()
+        private fun luminance(image: com.acite.axlranko.util.RgbaImage): ByteArray {
+            val out = ByteArray(image.width * image.height)
+            for (i in out.indices) {
+                val c = image.argb[i]
+                val r = (c shr 16) and 0xFF
+                val g = (c shr 8) and 0xFF
+                val b = c and 0xFF
+                out[i] = ((r + g + b) / 3).toByte()
+            }
             return out
         }
     }

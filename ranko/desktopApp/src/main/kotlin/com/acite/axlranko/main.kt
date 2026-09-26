@@ -32,7 +32,12 @@ fun main() {
         ) {
             window.minimumSize = Dimension(350, 600)
 
-            App(appGraph.metroViewModelFactory, appGraph.appearanceRepository)
+            App(
+                metroVmf = appGraph.metroViewModelFactory,
+                appearanceRepo = appGraph.appearanceRepository,
+                blobStore = appGraph.blobStore,
+                pathPicker = appGraph.pathPicker,
+            )
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.acite.axlranko.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,7 +40,8 @@ import dev.chrisbanes.haze.blur.HazeColorEffect
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import java.io.File
+import com.acite.axlranko.data.imageBackgroundUsesHaze
+import com.acite.axlranko.localWallpaperModel
 
 data class HazeContext(
     val state: HazeState?,
@@ -98,14 +101,15 @@ fun RankoBackdrop(
 ) {
     val colors = rankoColors
     val imageFile = remember(settings.background, settings.backgroundImagePath) {
-        settings.backgroundImageFile()
+        if (settings.background != BackgroundStyle.Image) null
+        else localWallpaperModel(settings.backgroundImagePath)
     }
     val showOrbs = settings.background == BackgroundStyle.Glow
     val showImage = imageFile != null
-    val hasArtwork = showOrbs || showImage
+    val useHaze = showOrbs || (showImage && imageBackgroundUsesHaze)
     val hazeState = rememberHazeState()
     val hazeContext = HazeContext(
-        state = if (hasArtwork) hazeState else null,
+        state = if (useHaze) hazeState else null,
         cardBlurRadiusDp = settings.cardBlurRadiusDp,
     )
     CompositionLocalProvider(LocalRankoHaze provides hazeContext) {
@@ -114,27 +118,37 @@ fun RankoBackdrop(
                 .fillMaxSize()
                 .background(colors.bgApp),
         ) {
-            if (hasArtwork) {
+            if (showImage || showOrbs) {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .hazeSource(hazeState),
+                        .then(if (useHaze) Modifier.hazeSource(hazeState) else Modifier),
                 ) {
-                    if (showImage && imageFile != null) {
-                        AsyncImage(
-                            model = imageFile,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            filterQuality = FilterQuality.Medium,
-                            modifier = Modifier.fillMaxSize(),
-                        )
+                    if (imageFile != null) {
+                        if (imageFile is ImageBitmap) {
+                            Image(
+                                bitmap = imageFile,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                filterQuality = FilterQuality.Low,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            AsyncImage(
+                                model = imageFile,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                filterQuality = FilterQuality.Low,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                         Box(Modifier.fillMaxSize().background(colors.bgApp.copy(alpha = 0.48f)))
                     }
                     if (showOrbs) {
                         GlowOrbs()
                     }
                 }
-                if (settings.backgroundBlurRadiusDp > 0f) {
+                if (useHaze && settings.backgroundBlurRadiusDp > 0f) {
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -158,13 +172,7 @@ fun RankoBackdrop(
     }
 }
 
-private fun AppearanceSettings.backgroundImageFile(): File? {
-    if (background != BackgroundStyle.Image) return null
-    val path = backgroundImagePath
-    if (path.isEmpty()) return null
-    val file = File(path)
-    return file.takeIf { it.isFile }
-}
+
 
 @Composable
 fun PorcelainCard(

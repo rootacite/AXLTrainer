@@ -10,4 +10,6 @@ import dev.zacsweers.metrox.viewmodel.ViewModelGraph
 @DependencyGraph(AppScope::class) interface AppGraph : ViewModelGraph
 {
     val appearanceRepository: com.acite.axlranko.data.AppearanceRepository
+    val blobStore: com.acite.axlranko.data.BlobStore
+    val pathPicker: com.acite.axlranko.util.PathPicker
 }

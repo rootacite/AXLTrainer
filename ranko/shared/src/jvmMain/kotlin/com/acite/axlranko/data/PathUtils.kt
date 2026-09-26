@@ -1,16 +1,12 @@
 package com.acite.axlranko.data
 
-import com.akuleshov7.ktoml.Toml
-import com.akuleshov7.ktoml.TomlInputConfig
 import java.io.File
-import com.akuleshov7.ktoml.file.TomlFileReader
 import okio.Path
 
-actual fun getAppExecutionPath(): String {
+fun getAppExecutionPath(): String {
     return try {
         val codeSource = ::getAppExecutionPath::class.java.protectionDomain.codeSource
         val jarFile = File(codeSource.location.toURI())
-
         jarFile.parentFile?.absolutePath ?: ""
     } catch (e: Exception) {
         e.printStackTrace()
@@ -18,19 +14,21 @@ actual fun getAppExecutionPath(): String {
     }
 }
 
-actual fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
+/** Test helper: decode a config file from a path. Production reads go through IPC `config_get`. */
+fun loadTrainerConfig(tomlPath: Path): AxlTrainerConfig? {
     return try {
-        ConfigImporter.parseConfig(java.io.File(tomlPath.toString()).readText())
+        ConfigImporter.parseConfig(File(tomlPath.toString()).readText())
     } catch (e: Exception) {
         e.printStackTrace()
         null
     }
 }
 
-actual fun saveTrainerConfigPatched(
+/** Test helper: patch a config file in place. Production writes go through IPC `config_save`. */
+fun saveTrainerConfigPatched(
     tomlPath: Path,
     sectionValues: Map<String, Map<String, String>>,
-    arrayBlocks: Map<String, List<Map<String, String>>>
+    arrayBlocks: Map<String, List<Map<String, String>>> = emptyMap(),
 ): Result<Unit> {
     return try {
         val file = File(tomlPath.toString())

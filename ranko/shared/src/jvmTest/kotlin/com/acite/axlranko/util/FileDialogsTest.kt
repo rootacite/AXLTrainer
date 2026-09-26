@@ -50,7 +50,7 @@ class FileDialogsTest {
         val placeholder = dir.resolve("mylora")
         placeholder.writeBytes(ByteArray(0))
 
-        deleteEmptyPlaceholder(placeholder)
+        deleteEmptyPlaceholder(placeholder.absolutePath)
 
         assertFalse(placeholder.exists())
     }
@@ -61,7 +61,7 @@ class FileDialogsTest {
         val existing = dir.resolve("mylora.safetensors")
         existing.writeBytes(ByteArray(8) { 1 })
 
-        deleteEmptyPlaceholder(existing)
+        deleteEmptyPlaceholder(existing.absolutePath)
 
         assertTrue(existing.isFile)
         assertEquals(8L, existing.length())

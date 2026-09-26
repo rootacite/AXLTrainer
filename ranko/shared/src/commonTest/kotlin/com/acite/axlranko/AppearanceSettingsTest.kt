@@ -17,6 +17,10 @@ class AppearanceSettingsTest {
         assertTrue(defaults.backgroundBlurRadiusDp in AppearanceSettings.MIN_BLUR..AppearanceSettings.MAX_BLUR)
         assertTrue(defaults.fontScale in AppearanceSettings.MIN_FONT_SCALE..AppearanceSettings.MAX_FONT_SCALE)
         assertTrue(defaults.iconScale in AppearanceSettings.MIN_ICON_SCALE..AppearanceSettings.MAX_ICON_SCALE)
+        assertTrue(
+            defaults.thumbnailQuality in
+                AppearanceSettings.MIN_THUMBNAIL_QUALITY..AppearanceSettings.MAX_THUMBNAIL_QUALITY,
+        )
     }
 
     @Test
@@ -29,6 +33,7 @@ class AppearanceSettingsTest {
                 fontScale = 0.1f,
                 iconScale = 5f,
                 backgroundImagePath = "  /tmp/wallpaper.png  ",
+                thumbnailQuality = 400,
             )
         )
         assertEquals(BackgroundStyle.Image, clamped.background)
@@ -37,6 +42,7 @@ class AppearanceSettingsTest {
         assertEquals(AppearanceSettings.MIN_FONT_SCALE, clamped.fontScale)
         assertEquals(AppearanceSettings.MAX_ICON_SCALE, clamped.iconScale)
         assertEquals("/tmp/wallpaper.png", clamped.backgroundImagePath)
+        assertEquals(AppearanceSettings.MAX_THUMBNAIL_QUALITY, clamped.thumbnailQuality)
     }
 
     @Test

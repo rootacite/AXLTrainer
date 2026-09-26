@@ -1,8 +1,5 @@
 package com.acite.axlranko.util
 
-import com.acite.axlranko.data.TrainerRepo
-import java.io.File
-
 /**
  * WD-tagger English → Chinese map from `tagger/selected_tags.csv`.
  *
@@ -44,25 +41,22 @@ class TagLexicon(private val chineseByEnglish: Map<String, String>) {
                 val english = normalizeTag(row[nameIdx])
                 val chinese = row[zhIdx].trim()
                 if (english.isEmpty() || chinese.isEmpty()) continue
-                map.putIfAbsent(english, chinese)
+                if (english !in map) map[english] = chinese
             }
             return TagLexicon(map)
         }
 
-        fun load(file: File): TagLexicon {
-            if (!file.isFile) return TagLexicon(emptyMap())
-            return parse(file.readText(Charsets.UTF_8))
-        }
-
-        fun loadFromRepo(): TagLexicon {
-            val root = TrainerRepo.findRoot() ?: return TagLexicon(emptyMap())
-            return load(File(root, "tagger/selected_tags.csv"))
-        }
+        fun load(text: String): TagLexicon = parse(text)
     }
 }
 
 object TagTranslations {
-    val lexicon: TagLexicon by lazy { TagLexicon.loadFromRepo() }
+    var lexicon: TagLexicon = TagLexicon(emptyMap())
+        private set
+
+    fun install(text: String) {
+        lexicon = TagLexicon.parse(text)
+    }
 
     fun display(tag: String): String = lexicon.display(tag)
 

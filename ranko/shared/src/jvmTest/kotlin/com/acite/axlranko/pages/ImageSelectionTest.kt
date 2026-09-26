@@ -13,6 +13,8 @@ import kotlin.test.assertNull
 class ImageSelectionTest {
 
     private fun item(folder: String, stem: String) = ImageItem(
+        directory = folder,
+        stem = stem,
         imagePath = "$folder/$stem.png",
         txtPath = "$folder/$stem.txt",
         tags = "tag",

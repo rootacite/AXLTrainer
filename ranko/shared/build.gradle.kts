@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
@@ -9,6 +11,10 @@ plugins {
 kotlin {
     jvm()
 
+    @OptIn(ExperimentalWasmDsl::class)
+    wasmJs {
+        browser()
+    }
 
     sourceSets {
         commonMain.dependencies {
@@ -26,18 +32,23 @@ kotlin {
             implementation("com.squareup.okio:okio:3.17.0")
 
             implementation(libs.ktoml.core)
-            implementation(libs.ktoml.file)
             implementation(libs.kotlinx.datetime)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.coil.compose)
-            implementation(libs.coil.network.ktor)
-            implementation(libs.filekit.core)
             implementation(libs.haze)
             implementation(libs.haze.blur)
         }
 
         jvmMain.dependencies {
             implementation(libs.kotlinx.datetime)
+            implementation(libs.ktoml.file)
+            implementation(libs.filekit.core)
+            implementation(libs.coil.network.ktor)
+        }
+
+        wasmJsMain.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-browser:0.3.0")
+            implementation("com.squareup.okio:okio-fakefilesystem:3.17.0")
         }
 
         // MaskPaintInputTest composes a real ComposeWindow, which needs the

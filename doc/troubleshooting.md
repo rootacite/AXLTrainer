@@ -87,4 +87,4 @@ cat "${XDG_RUNTIME_DIR:-/tmp}/axltrainer/state.json"   # current status
 - **Trainer tracebacks** → `<runtime_dir>/train.log`.
 - **Run status / progress** → `<runtime_dir>/state.json`.
 - **Metrics** → TensorBoard: `tensorboard --logdir <logging_dir>`.
-- **IPC traffic** → Ranko inherits `api.py`'s stderr to its console; `start_api.sh` lets you drive the helper manually on stdin/stdout.
+- **IPC traffic** → Ranko inherits `api.py`'s stderr to its console; `start_api.sh` starts the same loopback WebSocket helper.

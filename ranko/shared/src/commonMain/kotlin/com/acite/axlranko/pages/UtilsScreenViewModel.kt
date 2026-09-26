@@ -1,14 +1,14 @@
 package com.acite.axlranko.pages
 
+import com.acite.axlranko.IoDispatcher
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.AppearanceRepository
-import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.ConfigProfile
 import com.acite.axlranko.data.ConfigProfileStore
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
-import com.acite.axlranko.data.ProfileApply
+import com.acite.axlranko.data.TomlDocumentPatcher
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
@@ -19,8 +19,10 @@ import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TrainDataDirForm
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
-import com.acite.axlranko.util.pickDirectoryDialog
-import com.acite.axlranko.util.pickFileDialog
+import com.acite.axlranko.data.showsHelperEndpointSettings
+import com.acite.axlranko.data.wallpaperImagesSupported
+import com.acite.axlranko.pickClientWallpaper
+import com.acite.axlranko.util.PathPicker
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
@@ -32,9 +34,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-
-private val IMAGE_EXTENSIONS = listOf("jpg", "jpeg", "png", "webp", "bmp")
 
 @Inject
 @ViewModelKey
@@ -44,14 +43,30 @@ class UtilsScreenViewModel(
     private val refreshHub: DatasetRefreshHub,
     private val appearanceRepo: AppearanceRepository,
     private val datasetSelection: DatasetSelection,
+    private val pathPicker: PathPicker,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UtilsUiState())
     val uiState: StateFlow<UtilsUiState> = _uiState.asStateFlow()
 
     init {
-        loadConfig()
-        refreshProfiles()
+        _uiState.update {
+            it.copy(
+                helperHost = ipc.endpointHost(),
+                helperPort = ipc.endpointPort().toString(),
+                selectedSection = if (showsHelperEndpointSettings) {
+                    ConfigSection.Helper
+                } else {
+                    it.selectedSection
+                },
+            )
+        }
+        if (showsHelperEndpointSettings) {
+            _uiState.update { it.copy(isLoading = false) }
+        } else {
+            loadConfig()
+            refreshProfiles()
+        }
         viewModelScope.launch {
             appearanceRepo.settings.collect { value ->
                 _uiState.update { it.copy(appearance = value) }
@@ -64,7 +79,40 @@ class UtilsScreenViewModel(
         }
     }
 
+    fun updateHelperHost(value: String) {
+        _uiState.update { it.copy(helperHost = value, helperError = null) }
+    }
+
+    fun updateHelperPort(value: String) {
+        _uiState.update { it.copy(helperPort = value.filter { ch -> ch.isDigit() }.take(5), helperError = null) }
+    }
+
+    fun connectHelper() {
+        val host = _uiState.value.helperHost.trim()
+        val port = _uiState.value.helperPort.toIntOrNull() ?: return
+        if (host.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(helperBusy = true, helperError = null, helperStatus = "connecting") }
+            try {
+                ipc.setEndpoint(host, port)
+                ipc.restart()
+                _uiState.update { it.copy(helperBusy = false, helperStatus = "connected") }
+                loadConfig()
+                refreshProfiles()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        helperBusy = false,
+                        helperStatus = "failed",
+                        helperError = e.message,
+                    )
+                }
+            }
+        }
+    }
+
     fun updateBackground(style: BackgroundStyle) {
+        if (style == BackgroundStyle.Image && !wallpaperImagesSupported) return
         if (style == BackgroundStyle.Image &&
             _uiState.value.appearance.backgroundImagePath.isBlank()
         ) {
@@ -90,10 +138,13 @@ class UtilsScreenViewModel(
         appearanceRepo.update { it.copy(iconScale = value) }
     }
 
+    fun updateThumbnailQuality(value: Int) {
+        appearanceRepo.update { it.copy(thumbnailQuality = value) }
+    }
+
     fun browseBackgroundImage() {
         viewModelScope.launch {
-            val current = _uiState.value.appearance.backgroundImagePath
-            val selected = pickFileDialog("Select background image", current, IMAGE_EXTENSIONS) ?: return@launch
+            val selected = pickClientWallpaper() ?: return@launch
             appearanceRepo.update {
                 it.copy(background = BackgroundStyle.Image, backgroundImagePath = selected)
             }
@@ -121,19 +172,19 @@ class UtilsScreenViewModel(
     fun loadConfig(statusMessage: String? = null) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, statusMessage = null) }
-            withContext(Dispatchers.IO) {
+            withContext(IoDispatcher) {
                 try {
-                    val loaded = ConfigImporter.loadConfigOrNull()
-                    if (loaded == null) {
+                    val (path, config) = try {
+                        ipc.parsedConfig()
+                    } catch (e: Exception) {
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
-                                errorMessage = "Could not locate or parse config.toml"
+                                errorMessage = e.message ?: "Could not locate or parse config.toml"
                             )
                         }
                         return@withContext
                     }
-                    val (path, config) = loaded
                     val form = TrainingConfigForm.from(config)
                     _uiState.update {
                         it.copy(
@@ -220,7 +271,7 @@ class UtilsScreenViewModel(
     fun browseTrainDataDir(index: Int) {
         val current = _uiState.value.form.trainDataDirs.getOrNull(index)?.path ?: return
         viewModelScope.launch {
-            val selected = pickDirectoryDialog("Select directory", current) ?: return@launch
+            val selected = pathPicker.pickDirectory("Select directory", current) ?: return@launch
             updateTrainDataDir(index) { it.copy(path = selected) }
         }
     }
@@ -244,7 +295,7 @@ class UtilsScreenViewModel(
 
     fun browseDirectory(current: String, update: TrainingConfigForm.(String) -> TrainingConfigForm) {
         viewModelScope.launch {
-            val selected = pickDirectoryDialog("Select directory", current) ?: return@launch
+            val selected = pathPicker.pickDirectory("Select directory", current) ?: return@launch
             updateForm { update(selected) }
         }
     }
@@ -253,7 +304,7 @@ class UtilsScreenViewModel(
     fun browseCheckpointPath() {
         viewModelScope.launch {
             val current = _uiState.value.form.resumeLoraPath
-            val selected = pickFileDialog("Select checkpoint", current, listOf("safetensors")) ?: return@launch
+            val selected = pathPicker.pickFile("Select checkpoint", current, listOf("safetensors")) ?: return@launch
             updateForm { copy(resumeLoraPath = selected) }
         }
     }
@@ -277,7 +328,7 @@ class UtilsScreenViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingCheckpoints = true, checkpointError = null) }
             try {
-                val response = withContext(Dispatchers.IO) {
+                val response = withContext(IoDispatcher) {
                     ipc.listCheckpoints(
                         name = state.form.outputName.trim().ifBlank { null },
                         outputDir = state.form.outputDir.trim().ifBlank { null }
@@ -335,7 +386,7 @@ class UtilsScreenViewModel(
                 it.copy(isTagging = true, errorMessage = null, statusMessage = "Tagging dataset…")
             }
             try {
-                val result = withContext(Dispatchers.IO) {
+                val result = withContext(IoDispatcher) {
                     ipc.datasetTag(directory, threshold)
                 }
                 val provider = result.provider.ifBlank { "ONNX" }
@@ -372,8 +423,16 @@ class UtilsScreenViewModel(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, errorMessage = null, statusMessage = null) }
-            val result = withContext(Dispatchers.IO) {
-                ConfigImporter.savePatched(form.toTomlSections(), form.toTomlArrayBlocks())
+            val result = runCatching {
+                withContext(IoDispatcher) {
+                    val doc = ipc.configGet()
+                    var patched = doc.text
+                    for ((section, blocks) in form.toTomlArrayBlocks()) {
+                        patched = TomlDocumentPatcher.replaceArrayOfTables(patched, section, blocks)
+                    }
+                    patched = TomlDocumentPatcher.apply(patched, form.toTomlSections())
+                    ipc.configSave(patched)
+                }
             }
             result.fold(
                 onSuccess = {
@@ -431,8 +490,8 @@ class UtilsScreenViewModel(
     fun refreshProfiles() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingProfiles = true) }
-            val profiles = withContext(Dispatchers.IO) {
-                ConfigProfileStore.resolveDir()?.let(ConfigProfileStore::list).orEmpty()
+            val profiles = withContext(IoDispatcher) {
+                ipc.profileList().profiles.map { ConfigProfile(it.name, it.modified, it.size) }
             }
             _uiState.update { it.copy(isLoadingProfiles = false, profiles = profiles) }
         }
@@ -461,35 +520,24 @@ class UtilsScreenViewModel(
         }
 
         viewModelScope.launch {
-            val dir = ConfigProfileStore.resolveDir()
-            if (dir == null) {
-                _uiState.update { it.copy(errorMessage = "Could not locate the repository root") }
-                return@launch
+            val existing = withContext(IoDispatcher) {
+                ipc.profileList().profiles.any { it.name.equals(name, ignoreCase = true) }
             }
-            val existing = withContext(Dispatchers.IO) { ConfigProfileStore.findByName(dir, name) }
-            if (existing != null) {
+            if (existing) {
                 _uiState.update { it.copy(pendingProfileOverwrite = name) }
             } else {
-                writeProfile(dir, name, form, overwrite = false)
+                writeProfile(name, form, overwrite = false)
             }
         }
     }
 
     fun confirmProfileOverwrite() {
         val name = _uiState.value.pendingProfileOverwrite ?: return
-        val dir = ConfigProfileStore.resolveDir()
-        if (dir == null) {
-            _uiState.update {
-                it.copy(pendingProfileOverwrite = null, errorMessage = "Could not locate the repository root")
-            }
-            return
-        }
         val form = _uiState.value.form
-        viewModelScope.launch { writeProfile(dir, name, form, overwrite = true) }
+        viewModelScope.launch { writeProfile(name, form, overwrite = true) }
     }
 
     private suspend fun writeProfile(
-        dir: File,
         name: String,
         form: TrainingConfigForm,
         overwrite: Boolean,
@@ -502,20 +550,22 @@ class UtilsScreenViewModel(
                 pendingProfileOverwrite = null,
             )
         }
-        val result = withContext(Dispatchers.IO) {
-            val document = ConfigProfileStore.document(form.toTomlSections(), form.toTomlArrayBlocks())
-            ConfigProfileStore.save(dir, name, document, overwrite)
+        val result = runCatching {
+            withContext(IoDispatcher) {
+                val document = ConfigProfileStore.document(form.toTomlSections(), form.toTomlArrayBlocks())
+                ipc.profileSave(name, document, overwrite)
+                ipc.profileList().profiles.map { ConfigProfile(it.name, it.modified, it.size) }
+            }
         }
         result.fold(
-            onSuccess = { file ->
-                val profiles = withContext(Dispatchers.IO) { ConfigProfileStore.list(dir) }
+            onSuccess = { profiles ->
                 _uiState.update {
                     it.copy(
                         isSaving = false,
                         profiles = profiles,
                         profileName = "",
                         errorMessage = null,
-                        statusMessage = "Saved profile ${file.name}",
+                        statusMessage = "Saved profile $name",
                     )
                 }
             },
@@ -551,18 +601,14 @@ class UtilsScreenViewModel(
                     statusMessage = null,
                 )
             }
-            val result = withContext(Dispatchers.IO) {
-                val configPath = ConfigImporter.getConfigPath()
-                    ?: return@withContext Result.failure<ProfileApply>(
-                        IllegalStateException("Could not locate config.toml")
-                    )
-                val configFile = File(configPath)
-                ConfigProfileStore
-                    .applyToConfig(configFile.readText(), File(profile.path).readText())
-                    .mapCatching { apply ->
-                        configFile.writeText(apply.text)
-                        apply
-                    }
+            val result = runCatching {
+                withContext(IoDispatcher) {
+                    val config = ipc.configGet()
+                    val profileDoc = ipc.profileGet(profile.name)
+                    val apply = ConfigProfileStore.applyToConfig(config.text, profileDoc.text).getOrThrow()
+                    ipc.configSave(apply.text)
+                    apply
+                }
             }
             result.fold(
                 onSuccess = { apply ->
@@ -593,23 +639,18 @@ class UtilsScreenViewModel(
 
     fun confirmDeleteProfile() {
         val profile = _uiState.value.pendingProfileDelete ?: return
-        val dir = ConfigProfileStore.resolveDir()
         viewModelScope.launch {
             _uiState.update {
                 it.copy(pendingProfileDelete = null, errorMessage = null, statusMessage = null)
             }
-            val result = withContext(Dispatchers.IO) {
-                if (dir == null) {
-                    Result.failure<Unit>(IllegalStateException("Could not locate the repository root"))
-                } else {
-                    ConfigProfileStore.delete(dir, profile.path)
+            val result = runCatching {
+                withContext(IoDispatcher) {
+                    ipc.profileDelete(profile.name)
+                    ipc.profileList().profiles.map { ConfigProfile(it.name, it.modified, it.size) }
                 }
             }
             result.fold(
-                onSuccess = {
-                    val profiles = withContext(Dispatchers.IO) {
-                        dir?.let(ConfigProfileStore::list).orEmpty()
-                    }
+                onSuccess = { profiles ->
                     _uiState.update {
                         it.copy(profiles = profiles, statusMessage = "Deleted profile ${profile.name}")
                     }

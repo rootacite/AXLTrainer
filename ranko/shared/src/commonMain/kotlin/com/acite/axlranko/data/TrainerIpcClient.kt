@@ -11,25 +11,28 @@ import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
-import java.io.BufferedReader
-import java.io.BufferedWriter
-import java.io.File
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
+
 
 @Serializable
 internal data class IpcRequest(
@@ -46,6 +49,8 @@ internal data class IpcResponse(
     val error: String? = null,
 )
 
+private val BLOB_METHODS = setOf("blob_stat", "blob_batch")
+
 @Inject
 @SingleIn(AppScope::class)
 class TrainerIpcClient {
@@ -54,19 +59,22 @@ class TrainerIpcClient {
         isLenient = true
         encodeDefaults = true
     }
-    private val mutex = Mutex()
-    private val nextId = AtomicLong(1)
-    private val shutdownHookRegistered = AtomicBoolean(false)
+    private val transport = WsTransport()
+    private val controlMutex = Mutex()
+    private val connectMutex = Mutex()
+    private val writeMutex = Mutex()
+    private val waitersMutex = Mutex()
+    private val idMutex = Mutex()
+    private var nextIdValue = 1L
+    private val waiters = mutableMapOf<Long, CompletableDeferred<IpcResponse>>()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var readerJob: Job? = null
+    private var wsHost = defaultWsHost()
+    private var wsPort = defaultWsPort()
+    private var connection: WsConnection? = null
 
-    @Volatile private var process: Process? = null
-    @Volatile private var writer: BufferedWriter? = null
-    @Volatile private var reader: BufferedReader? = null
-
-    init {
-        if (shutdownHookRegistered.compareAndSet(false, true)) {
-            Runtime.getRuntime().addShutdownHook(Thread { stopProcess() })
-        }
-    }
+    fun endpointHost(): String = wsHost
+    fun endpointPort(): Int = wsPort
 
     suspend fun ping() {
         call("ping", JsonObject(emptyMap()))
@@ -211,96 +219,303 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    suspend fun configGet(): ConfigDocument {
+        val result = call("config_get", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun parsedConfig(): Pair<String, AxlTrainerConfig> {
+        val doc = configGet()
+        val parsed = ConfigImporter.parseConfig(doc.text)
+            ?: error("Failed to parse config.toml at ${doc.path}")
+        return doc.path to parsed
+    }
+
+    suspend fun configSave(text: String): ConfigSaveResult {
+        val result = call("config_save", buildJsonObject { put("text", text) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun profileList(): ProfileListResult {
+        val result = call("profile_list", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun profileGet(name: String): ProfileDocument {
+        val result = call("profile_get", buildJsonObject { put("name", name) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun profileSave(name: String, text: String, overwrite: Boolean): ProfileSaveResult {
+        val result = call(
+            "profile_save",
+            buildJsonObject {
+                put("name", name)
+                put("text", text)
+                put("overwrite", overwrite)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun profileDelete(name: String) {
+        call("profile_delete", buildJsonObject { put("name", name) })
+    }
+
+    suspend fun tagLexicon(): TagLexiconResult {
+        val result = call("tag_lexicon", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun datasetList(directory: String): DatasetListResult {
+        val result = call("dataset_list", buildJsonObject { put("directory", directory) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun captionWrite(directory: String, stem: String, text: String) {
+        call(
+            "caption_write",
+            buildJsonObject {
+                put("directory", directory)
+                put("stem", stem)
+                put("text", text)
+            },
+        )
+    }
+
+    suspend fun datasetDrop(
+        directory: String,
+        rate: Float,
+        seed: Long? = null,
+        stems: List<String>? = null,
+    ): DatasetDropResult {
+        val result = call(
+            "dataset_drop",
+            buildJsonObject {
+                put("directory", directory)
+                put("rate", rate.toDouble())
+                seed?.let { put("seed", it) }
+                if (stems != null) {
+                    put(
+                        "stems",
+                        buildJsonArray {
+                            stems.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                        },
+                    )
+                }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun datasetShuffle(directory: String, seed: Long? = null): DatasetShuffleResult {
+        val result = call(
+            "dataset_shuffle",
+            buildJsonObject {
+                put("directory", directory)
+                seed?.let { put("seed", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun maskGet(directory: String, stem: String): MaskGetResult {
+        val result = call(
+            "mask_get",
+            buildJsonObject {
+                put("directory", directory)
+                put("stem", stem)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun maskWrite(directory: String, stem: String, pngBase64: String) {
+        call(
+            "mask_write",
+            buildJsonObject {
+                put("directory", directory)
+                put("stem", stem)
+                put("png_base64", pngBase64)
+            },
+        )
+    }
+
+    suspend fun maskDelete(directory: String, stem: String) {
+        call(
+            "mask_delete",
+            buildJsonObject {
+                put("directory", directory)
+                put("stem", stem)
+            },
+        )
+    }
+
+    suspend fun blobStat(
+        paths: List<String>,
+        maxEdge: Int,
+        quality: Int = 80,
+        format: String = "jpeg",
+    ): BlobListResult {
+        val result = call("blob_stat", blobParams(paths, maxEdge, quality, format), blob = true)
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun blobBatch(
+        paths: List<String>,
+        maxEdge: Int,
+        quality: Int = 80,
+        format: String = "jpeg",
+    ): BlobListResult {
+        val result = call("blob_batch", blobParams(paths, maxEdge, quality, format), blob = true)
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun checkpointExport(source: String, dest: String): CheckpointExportResult {
+        val result = call(
+            "checkpoint_export",
+            buildJsonObject {
+                put("source", source)
+                put("dest", dest)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun fsListdir(path: String): FsListResult {
+        val result = call("fs_listdir", buildJsonObject { put("path", path) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun fsRoots(): FsRootsResult {
+        val result = call("fs_roots", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun setEndpoint(host: String, port: Int) {
+        val trimmed = host.trim().ifBlank { "127.0.0.1" }
+        val bounded = port.coerceIn(1, 65535)
+        if (trimmed == wsHost && bounded == wsPort && connection != null) return
+        wsHost = trimmed
+        wsPort = bounded
+        persistWsEndpoint(trimmed, bounded)
+        closeConnection()
+    }
+
     suspend fun restart() {
-        mutex.withLock {
-            withContext(Dispatchers.IO) {
-                stopProcess()
-                startProcess()
-            }
-        }
+        closeConnection()
+        stopSpawnedHelper()
+        ensureConnected(attempts = 4)
         ping()
     }
 
-    private suspend fun call(method: String, params: JsonObject): JsonElement {
-        mutex.withLock {
-            return withContext(Dispatchers.IO) {
-                ensureProcess()
-                val id = nextId.getAndIncrement()
-                val request = json.encodeToString(IpcRequest.serializer(), IpcRequest(id, method, params))
-                val out = writer ?: error("IPC writer is not available")
-                val inp = reader ?: error("IPC reader is not available")
-                out.write(request)
-                out.newLine()
-                out.flush()
-                readResponse(inp, id)
-            }
-        }
-    }
-
-    private fun readResponse(inp: BufferedReader, id: Long): JsonElement {
-        while (true) {
-            val line = inp.readLine()
-                ?: throw IllegalStateException("Dashboard helper closed unexpectedly")
-            if (line.isBlank()) continue
-            val response = try {
-                json.decodeFromString(IpcResponse.serializer(), line)
-            } catch (_: Exception) {
-                continue
-            }
-            if (response.id != null && response.id != id) continue
-            if (!response.ok) {
-                throw IllegalStateException(response.error ?: "IPC call failed")
-            }
-            return response.result ?: JsonObject(emptyMap())
-        }
-    }
-
-    private fun ensureProcess() {
-        val running = process?.isAlive == true
-        if (running && writer != null && reader != null) return
-        stopProcess()
-        startProcess()
-    }
-
-    private fun startProcess() {
-        val root = findRepoRoot()
-            ?: error("Could not locate api.py. Run AxlRanko from the trainer repo, or set the working directory to the repo root.")
-        val python = System.getenv("AXL_PYTHON")?.takeIf { it.isNotBlank() } ?: "python3"
-        val script = File(root, "api.py")
-        val builder = ProcessBuilder(python, "-u", script.absolutePath)
-            .directory(root)
-            .redirectError(ProcessBuilder.Redirect.INHERIT)
-        builder.environment()["PYTHONUNBUFFERED"] = "1"
-
-        val started = try {
-            builder.start()
-        } catch (e: Exception) {
-            throw IllegalStateException(
-                "Failed to start $python ${script.absolutePath}. Set AXL_PYTHON to your interpreter. ${e.message}",
-                e,
+    private fun blobParams(paths: List<String>, maxEdge: Int, quality: Int, format: String): JsonObject =
+        buildJsonObject {
+            put(
+                "paths",
+                buildJsonArray {
+                    paths.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                },
             )
+            put("max_edge", maxEdge)
+            put("quality", quality)
+            put("format", format)
         }
-        process = started
-        writer = BufferedWriter(OutputStreamWriter(started.outputStream, StandardCharsets.UTF_8))
-        reader = BufferedReader(InputStreamReader(started.inputStream, StandardCharsets.UTF_8))
+
+    private suspend fun call(method: String, params: JsonObject, blob: Boolean = false): JsonElement {
+        val invoke = suspend {
+            val id = idMutex.withLock { nextIdValue++ }
+            val deferred = CompletableDeferred<IpcResponse>()
+            waitersMutex.withLock { waiters[id] = deferred }
+            val request = json.encodeToString(IpcRequest.serializer(), IpcRequest(id, method, params))
+            try {
+                writeMutex.withLock {
+                    val conn = connection ?: error("IPC WebSocket is not available")
+                    conn.send(request)
+                }
+                val response = deferred.await()
+                if (!response.ok) {
+                    throw IllegalStateException(response.error ?: "IPC call failed")
+                }
+                response.result ?: JsonObject(emptyMap())
+            } catch (e: Exception) {
+                waitersMutex.withLock { waiters.remove(id) }
+                throw e
+            }
+        }
+        ensureConnected()
+        return if (blob || method in BLOB_METHODS) {
+            invoke()
+        } else {
+            controlMutex.withLock { invoke() }
+        }
     }
 
-    private fun stopProcess() {
-        runCatching { writer?.close() }
-        runCatching { reader?.close() }
-        writer = null
-        reader = null
-        val running = process
-        process = null
-        if (running != null) {
-            running.destroy()
-            if (running.isAlive) {
-                running.destroyForcibly()
+    private suspend fun ensureConnected(attempts: Int = 40) {
+        if (connection != null) return
+        connectMutex.withLock {
+            if (connection != null) return
+            withContext(Dispatchers.Default) {
+                val host = wsHost
+                val port = wsPort
+                if (!helperListening(host, port)) {
+                    spawnHelperIfNeeded(host, port)
+                }
+                var last: Exception? = null
+                repeat(attempts.coerceAtLeast(1)) {
+                    if (wsHost != host || wsPort != port) {
+                        throw IllegalStateException("endpoint changed while connecting")
+                    }
+                    try {
+                        val conn = withTimeout(5.seconds) { transport.connect(host, port) }
+                        connection = conn
+                        startReader(conn)
+                        return@withContext
+                    } catch (e: Exception) {
+                        last = e
+                        delay(250)
+                    }
+                }
+                throw IllegalStateException(
+                    "Could not connect to ws://$host:$port. ${last?.message ?: ""}".trim(),
+                    last,
+                )
             }
         }
     }
 
-    companion object {
-        fun findRepoRoot(): File? = TrainerRepo.findRoot()
+    private fun startReader(conn: WsConnection) {
+        readerJob?.cancel()
+        readerJob = scope.launch {
+            try {
+                while (isActive) {
+                    val line = conn.receive()
+                    if (line.isBlank()) continue
+                    val response = try {
+                        json.decodeFromString(IpcResponse.serializer(), line)
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    val id = response.id ?: continue
+                    val waiter = waitersMutex.withLock { waiters.remove(id) }
+                    waiter?.complete(response)
+                }
+            } catch (_: Exception) {
+                closeConnection()
+            }
+        }
+    }
+
+    private fun closeConnection() {
+        readerJob?.cancel()
+        readerJob = null
+        val conn = connection
+        connection = null
+        conn?.close()
+        val pending = waiters.values.toList()
+        waiters.clear()
+        pending.forEach { waiter ->
+            waiter.completeExceptionally(IllegalStateException("Dashboard helper closed unexpectedly"))
+        }
     }
 }

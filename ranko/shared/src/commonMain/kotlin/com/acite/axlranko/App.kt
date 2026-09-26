@@ -7,16 +7,27 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import com.acite.axlranko.data.AppearanceRepository
+import com.acite.axlranko.data.BlobStore
+import com.acite.axlranko.data.LocalThumbnailQuality
 import com.acite.axlranko.ui.components.RankoBackdrop
 import com.acite.axlranko.ui.theme.RankoTheme
+import com.acite.axlranko.util.InstallPathPickerHost
+import com.acite.axlranko.util.PathPicker
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
+
+@Composable
+expect fun InstallBlobImageLoader(blobStore: BlobStore)
 
 @Composable
 fun App(
     metroVmf: MetroViewModelFactory,
     appearanceRepo: AppearanceRepository,
+    blobStore: BlobStore,
+    pathPicker: PathPicker,
 ) {
+    InstallBlobImageLoader(blobStore)
+    InstallPathPickerHost(pathPicker)
     val settings by appearanceRepo.settings.collectAsState()
     val baseDensity = LocalDensity.current
     val scaledDensity = Density(
@@ -24,7 +35,10 @@ fun App(
         fontScale = settings.scaledFontScale(baseDensity.fontScale),
     )
     RankoTheme {
-        CompositionLocalProvider(LocalMetroViewModelFactory provides metroVmf) {
+        CompositionLocalProvider(
+            LocalMetroViewModelFactory provides metroVmf,
+            LocalThumbnailQuality provides settings.thumbnailQuality,
+        ) {
             RankoBackdrop(settings = settings) {
                 CompositionLocalProvider(LocalDensity provides scaledDensity) {
                     Stage()

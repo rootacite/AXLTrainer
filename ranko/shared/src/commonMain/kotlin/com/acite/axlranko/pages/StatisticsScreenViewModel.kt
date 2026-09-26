@@ -1,11 +1,13 @@
 package com.acite.axlranko.pages
 
+import com.acite.axlranko.IoDispatcher
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.acite.axlranko.data.ConfigImporter
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.data.trainDataEntries
+import com.acite.axlranko.util.TagTranslations
 import com.acite.axlranko.model.DatasetItem
 import com.acite.axlranko.model.StatisticsUiState
 import com.acite.axlranko.model.TagStat
@@ -20,13 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.acite.axlranko.util.isMaskSidecar
-import com.acite.axlranko.util.maskFileFor
-import com.acite.axlranko.util.shuffleAndRenumber
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import kotlin.random.Random
+
 
 @Inject
 @ViewModelKey
@@ -34,13 +30,15 @@ import kotlin.random.Random
 class StatisticsScreenViewModel(
     private val refreshHub: DatasetRefreshHub,
     private val datasetSelection: DatasetSelection,
+    private val ipc: TrainerIpcClient,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(StatisticsUiState())
     val uiState: StateFlow<StatisticsUiState> = _uiState.asStateFlow()
 
-    private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "bmp")
-
     init {
+        viewModelScope.launch(IoDispatcher) {
+            runCatching { TagTranslations.install(ipc.tagLexicon().text) }
+        }
         scanDataset(isInitial = true)
         viewModelScope.launch {
             refreshHub.events.collect { scanDataset() }
@@ -51,8 +49,19 @@ class StatisticsScreenViewModel(
      * Core: Scan dataset, verify image-text pairs, and calculate frequencies
      */
     fun scanDataset(isInitial: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val entries = ConfigImporter.getConfig().environment.trainDataEntries()
+        viewModelScope.launch(IoDispatcher) {
+            val entries = try {
+                ipc.parsedConfig().second.environment.trainDataEntries()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isRefreshing = false,
+                        errorMessage = e.message ?: "Could not load config.toml",
+                    )
+                }
+                return@launch
+            }
             val selected = datasetSelection.index.value.coerceIn(0, entries.lastIndex.coerceAtLeast(0))
             _uiState.update {
                 it.copy(
@@ -65,9 +74,7 @@ class StatisticsScreenViewModel(
             }
 
             val dirPath = entries.getOrNull(selected)?.path.orEmpty()
-            val dir = File(dirPath)
-
-            if (!dir.exists() || !dir.isDirectory) {
+            if (dirPath.isEmpty()) {
                 _uiState.update {
                     it.copy(isLoading = false, isRefreshing = false,
                         errorMessage = "Invalid dataset directory: $dirPath")
@@ -75,38 +82,44 @@ class StatisticsScreenViewModel(
                 return@launch
             }
 
-            val allFiles = dir.listFiles() ?: emptyArray()
-            val txtFiles = allFiles.filter { it.extension.lowercase() == "txt" }
-            val imageMap = allFiles.filter {
-                it.extension.lowercase() in imageExtensions && !isMaskSidecar(it)
-            }.associateBy { it.nameWithoutExtension }
+            val listed = try {
+                ipc.datasetList(dirPath)
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isRefreshing = false,
+                        errorMessage = e.message ?: "Invalid dataset directory: $dirPath",
+                    )
+                }
+                return@launch
+            }
+            if (listed.orphans.isNotEmpty()) {
+                val err = "Dataset error: Found isolated tag file ${listed.orphans.first()} without a corresponding image! Execution aborted."
+                _uiState.update { it.copy(isLoading = false, isRefreshing = false, errorMessage = err) }
+                return@launch
+            }
 
             val items = mutableListOf<DatasetItem>()
             val tagCounter = mutableMapOf<String, Int>()
-
-            for (txt in txtFiles) {
-                val baseName = txt.nameWithoutExtension
-                val imageFile = imageMap[baseName]
-
-                // Strict verification: abort immediately if isolated txt file is found
-                if (imageFile == null) {
-                    val err = "Dataset error: Found isolated tag file ${txt.name} without a corresponding image! Execution aborted."
-                    _uiState.update { it.copy(isLoading = false, errorMessage = err) }
-                    return@launch
-                }
-
-                // Read tags, clean format, calculate frequency (deduplicate within single file)
-                val content = txt.readText(Charsets.UTF_8)
-                val tags = content.split(",")
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-
+            for (record in listed.items) {
+                val tags = record.tags
+                if (tags.isEmpty()) continue
                 val uniqueTags = tags.toSet()
                 uniqueTags.forEach { tag ->
-                    tagCounter[tag] = tagCounter.getOrDefault(tag, 0) + 1
+                    tagCounter[tag] = (tagCounter[tag] ?: 0) + 1
                 }
-
-                items.add(DatasetItem(txt, imageFile, tags))
+                items.add(
+                    DatasetItem(
+                        stem = record.stem,
+                        imagePath = record.image,
+                        txtPath = record.txt,
+                        maskPath = record.mask,
+                        tags = tags,
+                        width = record.width,
+                        height = record.height,
+                    )
+                )
             }
 
             val totalFiles = items.size
@@ -123,7 +136,7 @@ class StatisticsScreenViewModel(
                     isLoading = false,
                     isRefreshing = false,
                     datasetItems = items,
-                    imageCount = imageMap.size,
+                    imageCount = listed.items.size,
                     tagStats = stats,
                     selectedTags = validSelected
                 )
@@ -194,12 +207,9 @@ class StatisticsScreenViewModel(
         _uiState.update { it.copy(isAddStart = isStart) }
     }
 
-    /**
-     * Rewrite the corresponding txt file (with clean comma formatting)
-     */
-    private suspend fun writeTagsToFile(txtFile: File, newTags: List<String>) = withContext(Dispatchers.IO) {
-        val cleanContent = newTags.joinToString(", ")
-        txtFile.writeText(cleanContent, Charsets.UTF_8)
+    private suspend fun writeTags(item: DatasetItem, newTags: List<String>) {
+        val directory = item.imagePath.substringBeforeLast('/', missingDelimiterValue = ".")
+        ipc.captionWrite(directory, item.stem, newTags.joinToString(", "))
     }
 
     /**
@@ -210,11 +220,11 @@ class StatisticsScreenViewModel(
         val targets = state.filteredImages
         if (targets.isEmpty() || state.selectedTags.isEmpty()) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(IoDispatcher) {
             _uiState.update { it.copy(isRefreshing = true) }
             targets.forEach { item ->
                 val updatedTags = item.tags.filterNot { it in state.selectedTags }
-                writeTagsToFile(item.txtFile, updatedTags)
+                writeTags(item, updatedTags)
             }
             // The captions changed on disk: every page holding dataset state reloads off the hub,
             // this one included (its collector rescans).
@@ -233,41 +243,15 @@ class StatisticsScreenViewModel(
         val targets = state.filteredImages
         if (targets.isEmpty()) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        val directory = state.datasetDirs.getOrNull(state.datasetDirIndex)?.path.orEmpty()
+        if (directory.isEmpty()) return
+        viewModelScope.launch(IoDispatcher) {
             _uiState.update { it.copy(isLoading = true) }
-            val trashDir = File("/tmp/axlranko/trash")
-            if (!trashDir.exists()) {
-                trashDir.mkdirs()
+            try {
+                ipc.datasetDrop(directory, rate, stems = targets.map { it.stem })
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-
-            targets.forEach { item ->
-                if (Random.nextFloat() <= rate) {
-                    try {
-                        // Use Files.move for cross-partition moves and allow replacement
-                        Files.move(
-                            item.txtFile.toPath(),
-                            File(trashDir, item.txtFile.name).toPath(),
-                            StandardCopyOption.REPLACE_EXISTING
-                        )
-                        Files.move(
-                            item.imageFile.toPath(),
-                            File(trashDir, item.imageFile.name).toPath(),
-                            StandardCopyOption.REPLACE_EXISTING
-                        )
-                        val maskFile = maskFileFor(item.imageFile)
-                        if (maskFile.exists()) {
-                            Files.move(
-                                maskFile.toPath(),
-                                File(trashDir, maskFile.name).toPath(),
-                                StandardCopyOption.REPLACE_EXISTING
-                            )
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-            // Samples left the folder: Images has to drop them too, and the hub is what tells it.
             refreshHub.notifyDatasetChanged()
         }
     }
@@ -282,7 +266,7 @@ class StatisticsScreenViewModel(
 
         if (newTag.isEmpty() || targets.isEmpty()) return
 
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(IoDispatcher) {
             _uiState.update { it.copy(isLoading = true) }
             targets.forEach { item ->
                 // Skip if tag already exists (prevent duplicates)
@@ -292,7 +276,7 @@ class StatisticsScreenViewModel(
                     } else {
                         item.tags + newTag
                     }
-                    writeTagsToFile(item.txtFile, updatedTags)
+                    writeTags(item, updatedTags)
                 }
             }
             refreshHub.notifyDatasetChanged()
@@ -307,15 +291,16 @@ class StatisticsScreenViewModel(
     fun shuffleDataset() {
         val state = _uiState.value
         if (state.isShuffling || state.isRefreshing) return
-        val dir = File(state.datasetDirs.getOrNull(state.datasetDirIndex)?.path.orEmpty())
-        if (!dir.isDirectory) return
+        val dirPath = state.datasetDirs.getOrNull(state.datasetDirIndex)?.path.orEmpty()
+        if (dirPath.isEmpty()) return
+        val dirName = dirPath.trimEnd('/').substringAfterLast('/')
 
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(IoDispatcher) {
             _uiState.update {
-                it.copy(isShuffling = true, statusMessage = "Shuffling ${dir.name}…", statusIsError = false)
+                it.copy(isShuffling = true, statusMessage = "Shuffling $dirName…", statusIsError = false)
             }
             try {
-                val report = shuffleAndRenumber(dir, imageExtensions)
+                val report = ipc.datasetShuffle(dirPath)
                 _uiState.update {
                     it.copy(
                         isShuffling = false,

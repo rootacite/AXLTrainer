@@ -2,7 +2,7 @@
 
 Working notes for coding agents. Human-facing docs live under `doc/` and `README.md`. Prefer this file when changing, extending, or refactoring code.
 
-**What this is:** a local-first **LoRA** training stack (SDXL implemented; SD 3.5 catalogued but not trainable): Python engine (`trainer/`) + NDJSON IPC (`api.py`) + Kotlin/Compose desktop dashboard (`ranko/`, product name **AxlRanko**) + dataset scripts (`tools/`, `tagger/`, `ranko/tools/agent.py`).
+**What this is:** a local-first **LoRA** training stack (SDXL implemented; SD 3.5 catalogued but not trainable): Python engine (`trainer/`) + JSON-RPC helper (`api.py`) + Kotlin/Compose desktop dashboard (`ranko/`, product name **AxlRanko**) + dataset scripts (`tools/`, `tagger/`, `ranko/tools/agent.py`).
 
 **What this is not:** an HTTP API, a generation/inference server, or a kohya `sd-scripts` fork. There is no network control plane.
 
@@ -56,7 +56,7 @@ Do **not** start a real training run to “see if it compiles” unless the task
 ## 2. Process model (do not invent a new one)
 
 ```
-Ranko (JVM)  --NDJSON stdin/stdout-->  api.py  --reads-->  TensorBoard + sample PNGs
+Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, datasets, TB, samples
                                       |  writes command.json
                                       |  spawns (setsid) bash start_train.sh
                                       v
@@ -72,11 +72,11 @@ Ranko (JVM)  --NDJSON stdin/stdout-->  api.py  --reads-->  TensorBoard + sample 
 Hard rules:
 
 - Training is **detached**. `api.py` `train_start` uses `start_new_session=True` (`setsid`). Closing Ranko must not kill the run.
-- Ranko **never** talks to the GPU. It only spawns `api.py` and renders responses.
+- Ranko **never** talks to the GPU. After connect, `commonMain` does not read or write trainer files; it only speaks JSON-RPC. Desktop `jvmMain` may spawn `api.py --websocket` and pick paths with FileKit.
 - The trainer is `exec`'d by `start_train.sh`, so that shell's PID and **session** become the trainer's. A GPU fault aborts the trainer from inside HIP (see `doc/troubleshooting.md`) without running Python's `atexit`; its DataLoader forkserver then keeps the workers it forked alive, reparented to init, each holding `/dev/kfd` and ~0.5 GB. `start_train.sh` therefore starts `trainer/orphans.py` first, detached, to reap that session once the trainer is gone — keep it, and keep it unable to touch a session that is not the trainer's.
-- `api.py` stdout is **NDJSON only**. Logs / tracebacks go to stderr (`run_ipc_loop` redirects `sys.stdout` to stderr after keeping the real stdout for replies).
+- Ranko uses `python -u api.py --websocket` (default `127.0.0.1:18765`). LAN bind is `--host 0.0.0.0` plus `--allow-ip` / `AXL_WS_ALLOW`; loopback is always admitted. WebSocket is the only control channel; there is no stdin NDJSON fallback. Logs / tracebacks go to stderr.
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (directory that contains `api.py` and `trainer/`).
-- Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited.
+- Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited. That walk is desktop bootstrap only.
 
 Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
@@ -254,6 +254,8 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/env.py` | MIGraphX cache dir, `flush_memory`. |
 | `trainer/hardware.py` | Ranko hardware panel: nvtop snapshot, AMD edge/junction, CPU util/temp, RAM. |
 | `trainer/utils.py` | Image list, caption shuffle, bucket math (`pick_bucket_size`), fit geometry (`fit_geometry`/`fit_to_bucket`), loss masks, `build_time_ids`. |
+| `trainer/blobcodec.py` | Torch-free resize/re-encode + `/tmp` LRU cache + spawn process pool for Ranko `blob_*`. |
+| `trainer/fsrpc.py` | Torch-free dataset/config/profile/mask/export IO behind IPC. |
 | `text_processing.py` | **Repo root**, not under `trainer/`. Long-prompt chunking + dual CLIP encode. `family_sdxl.py` adds `os.getcwd()` to `sys.path` to import it. |
 
 ### Import dualism (easy to break)
@@ -316,7 +318,7 @@ Cleanup treats every child dir of the run dir whose name **starts with** `output
 
 ## 6. IPC (`api.py`)
 
-Framing: one JSON object per line. `{id, method, params}` → `{id, ok: true, result}` or `{id, ok: false, error}`.
+Framing: one JSON object per WebSocket text frame. `{id, method, params}` → `{id, ok: true, result}` or `{id, ok: false, error}`.
 
 Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient.kt`):
 
@@ -324,7 +326,7 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | --- | --- |
 | `ping` | none |
 | `dashboard` | read TB scalars + flattened config (run-scoped: `run_id`) |
-| `list_samples` | scan the run's sample PNGs |
+| `list_samples` | scan the run's sample PNGs (`path` is a blob key) |
 | `list_checkpoints` | list LoRA files under `output_dir/{name}_<timestamp>/` (read-only) |
 | `train_status` | `control.status_payload()` + dead-PID reconcile |
 | `train_start` | spawn `start_train.sh` (rejects a bad `resume_lora_path` up front) |
@@ -334,56 +336,68 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | `generate_sample` | spawn `trainer/generate_sample.py` **detached** (returns immediately; refuses while any trainer PID is alive, and while another job is running) |
 | `list_generated_samples` | read-only: the run's `generated/*.json` jobs, newest first; a `running` job whose PID died is rewritten to `error` |
 | `hardware_status` | `nvtop -s` JSON + DRM hwmon temps + `/proc` CPU (read-only) |
+| `config_get` / `config_save` | read / atomic-write repo `config.toml` |
+| `profile_list` / `_get` / `_save` / `_delete` | `configs/` presets |
+| `dataset_list` | non-recursive folder scan + tags + sizes |
+| `caption_write` | `{stem}.txt` |
+| `dataset_drop` / `dataset_shuffle` | trash / renumber (Python owns IO) |
+| `mask_get` / `_write` / `_delete` | `{stem}.mask.png` PNG |
+| `blob_stat` / `blob_batch` | resized JPEG/WebP/PNG, process pool, `/tmp` cache |
+| `tag_lexicon` | `tagger/selected_tags.csv` text |
+| `checkpoint_export` | server-local copy of a `.safetensors` |
+| `fs_listdir` / `fs_roots` | directory listing for the Web path picker (no file bytes) |
 
 `dashboard` synthesizes `Train/Avg_Loss` from `Train/Loss` via `synthesize_avg_loss` when the tag is missing (old runs). Do not rename TensorBoard tags without updating Ranko chart cards.
 
-Kotlin client: one request at a time (`Mutex` in `TrainerIpcClient`). `ignoreUnknownKeys = true`. Keep that when adding fields.
+Kotlin client: match replies on `id`. Control methods are serialized; blob calls may run next to `train_status`. `ignoreUnknownKeys = true`. Keep that when adding fields. Do not add a generic `read_file` / `write_file`.
 
 ---
 
 ## 7. Ranko (`ranko/`)
 
-Compose Multiplatform **desktop JVM only** (not Android/iOS). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura**: `RankoTheme` + Nunito + porcelain cards. Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
+Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura**: `RankoTheme` + Nunito + porcelain cards. Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
 
-User-facing look-and-feel (background: Solid / Glow / Image, independent card vs background blur, font/icon scale) lives in the **Appearance** section of the Utils tab and is persisted by `AppearanceRepository` (Java Preferences, key `com/acite/axlranko/appearance`). `App.kt` consumes it and feeds `LocalDensity` so **font scale only affects sp** and **icon scale only affects dp** (`density * iconScale`, `fontScale * font / iconScale`). `RankoBackdrop` renders glow orbs for `Glow` and a cropped, dimmed photo for `Image`. A full-window haze layer uses `backgroundBlurRadiusDp` (gaps); `PorcelainCard` / `FrostedSurface` use `cardBlurRadiusDp`.
+User-facing look-and-feel (background: Solid / Glow / Image, independent card vs background blur, font/icon scale, thumbnail JPEG quality) lives in the **Appearance** section of the Utils tab and is persisted by `AppearanceRepository` (Java Preferences, key `com/acite/axlranko/appearance`). `App.kt` consumes it and feeds `LocalDensity` so **font scale only affects sp** and **icon scale only affects dp** (`density * iconScale`, `fontScale * font / iconScale`). `RankoBackdrop` renders glow orbs for `Glow` and a cropped, dimmed photo for `Image`. A full-window haze layer uses `backgroundBlurRadiusDp` (gaps); `PorcelainCard` / `FrostedSurface` use `cardBlurRadiusDp`.
 
 | Path | Role |
 | --- | --- |
 | `ranko/desktopApp/…/main.kt` | Window; `createGraph<AppGraph>()` |
+| `ranko/webApp/…/main.kt` | `ComposeViewport` `#webApp`; same graph; no spawn |
 | `…/util/ProcessExitGuard.kt` (jvmMain) | One watcher per quit, armed from `main.kt`'s close request and from a shutdown hook: it kills the JVM if it is still there `DEFAULT_GRACE_SECONDS` later, start-time guarded so a reused PID is left alone. A hang inside the VM cannot be undone from inside the VM, and a windowless Ranko keeps the GPU render nodes and its `api.py` child. |
 | `ranko/shared/src/commonMain/…/App.kt`, `Stage.kt` | Shell + four screens |
 | `…/ui/theme/` | Sky & Sakura palette, tokens, Nunito, `RankoTheme` |
 | `…/ui/components/` | Backdrop, porcelain/frosted surfaces, capsule controls |
 | `…/pages/*Screen.kt` + `*ViewModel.kt` | UI + state |
-| `…/data/TrainerIpcClient.kt` | NDJSON child process |
-| `…/data/TrainerRepo.kt` | Repo-root discovery |
+| `…/data/TrainerIpcClient.kt` | WebSocket JSON-RPC client |
+| `…/data/TrainerRepo.kt` (jvmMain) | Repo-root discovery for spawning the helper |
 | `…/data/ConfigModel.kt` | Sectional TOML model |
-| `…/data/TomlDocumentPatcher.kt` | Comment-preserving save |
+| `…/data/TomlDocumentPatcher.kt` | Comment-preserving in-memory patch |
 | `…/data/TomlIntegerLiterals.kt` | Bare-integer tolerance on load |
-| `…/data/ConfigImporter.kt` | expect/actual load/save |
-| `…/data/ConfigProfileStore.kt` | `configs/` presets (Utils → Profiles): name rules, list/save/delete, and the apply merge — patch `config.toml` in place, decode the result before writing. The trainer never reads that folder. |
-| `…/jvmMain/` | TOML IO, `getAppExecutionPath` |
+| `…/data/ConfigImporter.kt` | In-memory parse only; load/save go through IPC |
+| `…/data/ConfigProfileStore.kt` | Name rules + apply merge; disk IO is `profile_*` |
+| `…/data/BlobStore.kt` | Hash cache + coalesced `blob_stat`/`blob_batch` |
+| `…/jvmMain/` | WebSocket transport, helper spawn, FileKit, Coil fetcher |
 | `Graphs.kt` / `Factory.kt` | Metro `AppGraph` + ViewModel factory |
 
 Screens: `Images` | `Statistics` | `Utils` | `Dashboard` (`Stage.kt` enum).
 
-Every file/folder/save dialog goes through `util/FileDialogs.kt` (FileKit: XDG desktop portal on Linux, so the KDE/GNOME picker, `IFileDialog` / `NSOpenPanel` elsewhere). Do not reintroduce `JFileChooser`: it is Swing-drawn and ignores the desktop theme, and FileKit only falls back to it when no portal is reachable. The functions are suspend and are called from a ViewModel's `viewModelScope` (no parent-window handle is passed, matching the reference setup). `initialDirectoryFor` seeds the dialog from the current field value; `saveFileDialog` lets FileKit create the destination file, so the Save As path overwrites it and `deleteEmptyPlaceholder` removes the leftover when the appended `.safetensors` renamed it.
+Path pickers go through `PathPicker`. Desktop (`JvmPathPicker`) is FileKit (XDG portal on Linux). Web (`WasmPathPicker`) is an in-app porcelain dialog over `fs_listdir` / `fs_roots`, because the browser cannot return a POSIX path the trainer can open. Do not reintroduce `JFileChooser`. `initialDirectoryFor` seeds FileKit from the current field value; Save As on desktop may create a 0-byte placeholder that `deleteEmptyPlaceholder` removes.
 
-Dashboard charts: the five training charts draw an always-on hover cursor with the exact step under the pointer, and mark the clicked step (dashed) plus the step a pick matched (bold, flagged). The **Train / Avg Loss** card additionally owns the checkpoint panel, opened by `Ctrl`+left click or by a left double click — the pick fires on the *picking* click, so a double click anchors at the second click, and the 400 ms window rule lives in `completesDoubleClick` (`pages/components/ChartPick.kt`). The panel shows the matched checkpoint highlighted, the clicked step's `Avg Loss`/`Loss`/UNet+TE LR, that step's samples with any generated ones, and can be dismissed by a click outside / close / `Esc`. It is resizable by dragging its bottom-right grip: placement is decided once from the click and the *default* size so a drag can never move the panel (`placePanelOrigin`/`clampPanelOrigin`), and the slots fill the dragged width (`sampleSlotWidth`, no 400 dp cap) with extra images wrapping instead of scrolling. `Save As` copies the LoRA file out through the OS save dialog with progress; `Generate sample` renders one extra image per §5. Pure helpers for the mapping, the nearest-checkpoint/sample selection, the click timing, the panel sizing/placement, the training-stat lookup and the generate-form validation live in `pages/components/ChartPick.kt`; the checkpoint list is scanned on click (2 s for 60+ files) and cached per session; the copy lives in `util/FileCopy.kt` and refuses to overwrite the source.
+Dashboard charts: the five training charts draw an always-on hover cursor with the exact step under the pointer, and mark the clicked step (dashed) plus the step a pick matched (bold, flagged). The **Train / Avg Loss** card additionally owns the checkpoint panel, opened by `Ctrl`+left click or by a left double click — the pick fires on the *picking* click, so a double click anchors at the second click, and the 400 ms window rule lives in `completesDoubleClick` (`pages/components/ChartPick.kt`). The panel shows the matched checkpoint highlighted, the clicked step's `Avg Loss`/`Loss`/UNet+TE LR, that step's samples with any generated ones, and can be dismissed by a click outside / close / `Esc`. It is resizable by dragging its bottom-right grip: placement is decided once from the click and the *default* size so a drag can never move the panel (`placePanelOrigin`/`clampPanelOrigin`), and the slots fill the dragged width (`sampleSlotWidth`, no 400 dp cap) with extra images wrapping instead of scrolling. `Save As` asks the OS for a dest path then calls `checkpoint_export`; `Generate sample` renders one extra image per §5. Sample and dataset images load through `blob_batch` (Coil `BlobRef`), never `java.io.File`.
 
 Dataset scan in the GUI is **non-recursive**, one folder, image + same-stem `.txt`. Orphan captions **abort** the statistics scan. `ranko/tools/agent.py` mirrors this (`--allow-orphans` to inspect anyway). Trash for GUI/agent drops: `/tmp/axlranko/trash` (not the dataset’s own `trash/` used by some `tools/` scripts).
 
-Statistics → Control Panel **Shuffle & Renumber** is the GUI's `tools/suf.py`: `util/DatasetShuffle.kt` builds one group per stem (image(s) + `.txt` + `.mask.png`), then renames each group through a unique `axl-shuffle-*` name to `0001…`. The group is what keeps a mask on its image; a member keeps everything after the stem, so extensions and case survive. It refuses a folder with an orphan `.txt` (the scan's fuse), leaves directories (`.latents_cache`, `trash`) and files outside the contract alone, and rolls the applied renames back when one fails, so a mid-run kill leaves names a rerun recovers. The standalone `tools/suf.py` still splits on the last dot and therefore still separates `{stem}.mask.png` from its image (measured: it becomes a bare `<N>.png` sample) — the Kotlin path is the mask-safe one.
+Statistics → Control Panel **Shuffle & Renumber** is IPC `dataset_shuffle` (`trainer/fsrpc.py`): one group per stem (image(s) + `.txt` + `.mask.png`), temp `axl-shuffle-*` names, then `0001…`. The group keeps a mask on its image. It refuses a folder with an orphan `.txt`. Kotlin `DatasetShuffle.kt` remains a jvmTest helper. The standalone `tools/suf.py` still splits on the last dot and therefore still separates `{stem}.mask.png` from its image.
 
 Every page that changes dataset files on disk **must** call `DatasetRefreshHub.notifyDatasetChanged()` — Statistics' tag edits, drop and shuffle, Utils' tagger, Images' caption save. Images and Statistics both cache the folder and reload off that hub (`reloadFromDisk`, `scanDataset`), and its buffer drops the oldest signal rather than refusing a burst. The other direction needs no signal: the nav rail scans Statistics on entry. The Statistics → Images thumbnail jump has to rescan too (`selectItemByTxtPath` always reloads with the jump remembered) instead of selecting out of the cached list, which is what used to show captions and samples the other page had already replaced. Images' reload keeps an unsaved caption draft only while the file still holds the text the draft was based on.
 
-Mask painting does **not** use Compose pointer APIs: `maskPaintInput` (`pages/components/MaskPaint.kt` expect, `jvmMain/.../MaskPaint.jvm.kt` actual) attaches a global AWT mouse listener to the host window (both buttons are reported) plus a 4 ms `MouseInfo` sampler while a stroke is active, because AWT coalesces motion events and fast strokes used to land as separate dots. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
+Mask edits stay in memory until **Save mask**. Invert / Fill / Clear / strokes set `maskDirty`; Clear is a pending sidecar delete; **Reset mask** restores the last loaded/saved snapshot. Navigation never writes a mask (`flushPendingMask` is gone). Raster is a `ByteArray` (`MaskCanvas`). Desktop `maskPaintInput` is AWT + 4 ms `MouseInfo` poll; wasm is document pointer events + a 4 ms interval. Compose pointer APIs still report the primary button only, which is why those actuals exist. The same listener reports every pointer position (`onPointerMoved`, throttled to 16 ms by `MaskPreview` for the brush cursor) and handles Alt+wheel brush resizing (`onBrushResize`; `util/MaskBrush.nudgeBrushRadius` owns the step and range). Coordinates come from `LayoutCoordinates.boundsInWindow()` in that modifier.
 
 Screen→window conversion for the sampled pointer must go through a component **inside** the window (`window.contentPane`), never through the `Window` itself: a `Window`'s screen position is its frame origin including decorations, so converting through it lands `insets.top` pixels off — 41 px under KWin/XWayland — and half the samples then paint a parallel line offset from the other half. `MaskPreview` maps box coordinates to image coordinates and drops samples outside the drawn image, calling `onStrokeLeaveImage` so a stroke that leaves the image resumes as a new segment instead of smearing along the border. Brush math lives in `util/MaskBrush.kt` (falloff, path interpolation, blending) and raster ops in `util/MaskCanvas.kt`; both are unit-tested without a display.
 
 DI: Metro `@Inject` / `@SingleIn(AppScope)` / `@ContributesBinding`. ViewModels via `metroViewModel()`. New ViewModels need constructor injection and to be reachable from the graph (follow existing `*ScreenViewModel`).
 
-Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopApp:run`.
+Hot reload: `./gradlew :desktopApp:hotRun --auto`. Normal: `./gradlew :desktopApp:run`. Web: `./gradlew :webApp:wasmJsBrowserDevelopmentRun` (helper must already be listening).
 
 ---
 
@@ -448,6 +462,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Suite | Command | Covers |
 | --- | --- | --- |
 | IPC | `python -m unittest discover -s test -p 'test_api_ipc.py'` | ping, dashboard empty logs, sample grouping (incl. `_p{set}_` names), avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset, `sample_sets` payload |
+| Blob / FS RPC | `python -m unittest discover -s test -p 'test_blob_ipc.py'` | encode params, cache hit, hash, LRU cap, process pool, dataset list/shuffle/drop/mask/config/profile, WS ping |
 | Validation sets | `python -m unittest discover -s test -p 'test_validation.py'` | `resolve_sample_sets`: no entries → one set from the scalars, per-key fallback, name defaulting, ranges with the entry index, matching seed sequences. `tracker_hparams` against a real `SummaryWriter` (a list-valued key must not reach `add_hparams`) |
 | Tagger | `python -m unittest discover -s test -p 'test_tagger.py'` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest discover -s test -p 'test_train_control.py'` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
@@ -495,6 +510,10 @@ Do not hit a real GPU in unit tests except `test_vram_gpu`, which is skipped whe
 | Var | Who | Meaning |
 | --- | --- | --- |
 | `AXL_PYTHON` | Ranko | Interpreter for `api.py` |
+| `AXL_WS_HOST` / `AXL_WS_PORT` | api.py / Ranko | WebSocket bind (default `127.0.0.1:18765`) |
+| `AXL_WS_ALLOW` | api.py | Comma-separated client IPs/CIDRs; loopback always allowed |
+| `AXL_BLOB_WORKERS` | api.py | Blob encode pool size (`0` = inline) |
+| `AXL_BLOB_CACHE_DIR` / `AXL_BLOB_CACHE_BYTES` | api.py | Processed-image cache |
 | `AXL_RUNTIME_DIR` | trainer + api | Override runtime dir (required in tests) |
 | `XDG_RUNTIME_DIR` | trainer + api | Default parent for `axltrainer/` |
 | `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
@@ -508,7 +527,7 @@ Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD RO
 
 ## 13. Out of scope unless explicitly asked
 
-- Porting Ranko off desktop JVM.
+- Publishing Ranko as a public site, TLS, and auth tokens. LAN with an IP allowlist is in. Process: `doc/ranko-web-target.md`.
 - Replacing PEFT/diffusers with kohya sd-scripts internals.
 - Serving checkpoints, Civitai upload, or remote training.
 - Changing default `bucket_reso_steps` away from 128.

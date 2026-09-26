@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -71,12 +72,15 @@ import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.checkpointSubtitle
 import com.acite.axlranko.util.formatBytes
+import com.acite.axlranko.util.formatFixed
 import dev.zacsweers.metrox.viewmodel.metroViewModel
-import java.awt.Cursor
-import java.io.File
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import com.acite.axlranko.localWallpaperModel
+import com.acite.axlranko.data.showsHelperEndpointSettings
+import com.acite.axlranko.data.wallpaperImagesSupported
+import com.acite.axlranko.ui.pointerIconHorizontalResize
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Instant
 import kotlin.math.roundToInt
 
 @Composable
@@ -85,7 +89,11 @@ public fun UtilsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    if (uiState.errorMessage != null && !uiState.isLoading && uiState.configPath.isEmpty()) {
+    if (uiState.errorMessage != null &&
+        !uiState.isLoading &&
+        uiState.configPath.isEmpty() &&
+        !showsHelperEndpointSettings
+    ) {
         Box(
             modifier = Modifier.fillMaxSize().padding(32.dp),
             contentAlignment = Alignment.Center
@@ -115,7 +123,7 @@ public fun UtilsScreen(
         return
     }
 
-    if (uiState.isLoading) {
+    if (uiState.isLoading && !showsHelperEndpointSettings) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
@@ -140,7 +148,7 @@ public fun UtilsScreen(
                 modifier = Modifier
                     .fillMaxHeight()
                     .width(8.dp)
-                    .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR)))
+                    .pointerHoverIcon(pointerIconHorizontalResize)
                     .pointerInput(totalWidthPx) {
                         detectHorizontalDragGestures { _, dragAmount ->
                             if (totalWidthPx > 0) {
@@ -332,7 +340,10 @@ private fun SectionNav(
         contentPadding = PaddingValues(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        items(ConfigSection.entries.toList(), key = { it.name }) { section ->
+        val sections = ConfigSection.entries.filter {
+            it != ConfigSection.Helper || showsHelperEndpointSettings
+        }
+        items(sections, key = { it.name }) { section ->
             val selected = uiState.selectedSection == section
             val hasError = uiState.fieldErrors.keys.any { section.owns(it) }
             val colors = rankoColors
@@ -374,6 +385,7 @@ private fun SectionNav(
 }
 
 private fun ConfigSection.icon(): ImageVector = when (this) {
+    ConfigSection.Helper -> Icons.Default.Cloud
     ConfigSection.Environment -> Icons.Default.Folder
     ConfigSection.Rocm -> Icons.Default.Memory
     ConfigSection.ModelSpec -> Icons.Default.Info
@@ -398,6 +410,7 @@ private fun SectionFields(
     val errors = uiState.fieldErrors
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         when (uiState.selectedSection) {
+            ConfigSection.Helper -> HelperFields(uiState, viewModel)
             ConfigSection.Environment -> EnvironmentFields(uiState, viewModel)
             ConfigSection.Rocm -> RocmFields(uiState, viewModel)
             ConfigSection.ModelSpec -> ModelSpecFields(form, errors, viewModel)
@@ -411,6 +424,63 @@ private fun SectionFields(
             ConfigSection.Validation -> ValidationFields(uiState, form, errors, viewModel)
             ConfigSection.Appearance -> AppearanceFields(uiState, viewModel)
             ConfigSection.Profiles -> ProfilesFields(uiState, viewModel)
+        }
+    }
+}
+
+@Composable
+private fun HelperFields(
+    uiState: UtilsUiState,
+    viewModel: UtilsScreenViewModel,
+) {
+    val colors = rankoColors
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "Dashboard helper",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "WebSocket address of api.py. Defaults 127.0.0.1:18765. Saved in this browser. LAN needs --host 0.0.0.0 and --allow-ip on the helper.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            OutlinedTextField(
+                value = uiState.helperHost,
+                onValueChange = viewModel::updateHelperHost,
+                label = { Text("Host") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = rankoFieldColors(),
+            )
+            OutlinedTextField(
+                value = uiState.helperPort,
+                onValueChange = viewModel::updateHelperPort,
+                label = { Text("Port") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = rankoFieldColors(),
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CapsuleButton(
+                    text = if (uiState.helperBusy) "Connecting" else "Connect",
+                    onClick = { viewModel.connectHelper() },
+                    enabled = !uiState.helperBusy &&
+                        uiState.helperHost.isNotBlank() &&
+                        uiState.helperPort.toIntOrNull() != null,
+                    compact = true,
+                    emphasized = true,
+                )
+                Text(
+                    text = uiState.helperError ?: uiState.helperStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (uiState.helperError != null) colors.qualityRed else colors.textDim,
+                )
+            }
         }
     }
 }
@@ -646,12 +716,12 @@ private fun AutoTagCard(
                 onSelect = viewModel::selectDatasetDir,
             )
             Text(
-                text = "Confidence  ${"%.2f".format(thresholdValue)}",
+                text = "Confidence  ${formatFixed(thresholdValue, 2)}",
                 style = MaterialTheme.typography.labelLarge
             )
             Slider(
                 value = thresholdValue,
-                onValueChange = { viewModel.updateTagThreshold("%.2f".format(it)) },
+                onValueChange = { viewModel.updateTagThreshold(formatFixed(it, 2)) },
                 valueRange = 0f..1f,
                 steps = 19,
                 enabled = !uiState.isTagging
@@ -1706,12 +1776,12 @@ private fun sampleAspectHint(set: SampleSetForm): String? {
 
 private tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) kotlin.math.abs(a) else gcd(b, a % b)
 
-private val PROFILE_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-
 private fun profileSubtitle(profile: ConfigProfile): String {
-    val stamp = Instant.ofEpochMilli(profile.modified)
-        .atZone(ZoneId.systemDefault())
-        .format(PROFILE_TIMESTAMP)
+    val local = Instant.fromEpochMilliseconds(profile.modified)
+        .toLocalDateTime(TimeZone.currentSystemDefault())
+    val hour = local.hour.toString().padStart(2, '0')
+    val minute = local.minute.toString().padStart(2, '0')
+    val stamp = "${local.date} $hour:$minute"
     return "$stamp · ${formatBytes(profile.size)}"
 }
 
@@ -1855,7 +1925,7 @@ private fun ProfilesFields(
         AlertDialog(
             onDismissRequest = { viewModel.cancelProfileDialog() },
             title = { Text("Delete \"${profile.name}\"?") },
-            text = { Text("${profile.path} is deleted. config.toml is not touched.") },
+            text = { Text("Profile ${profile.name} is deleted. config.toml is not touched.") },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmDeleteProfile() }) { Text("Delete") }
             },
@@ -1888,7 +1958,7 @@ private fun ProfileRow(
                 color = rankoColors.textDim,
             )
             Text(
-                text = profile.path,
+                text = profile.name,
                 style = MaterialTheme.typography.bodySmall,
                 color = rankoColors.textDim,
                 maxLines = 1,
@@ -1936,13 +2006,17 @@ private fun AppearanceFields(
                     selected = settings.background == BackgroundStyle.Glow,
                     onClick = { viewModel.updateBackground(BackgroundStyle.Glow) },
                 )
-                CapsuleChoice(
-                    text = "Image",
-                    selected = settings.background == BackgroundStyle.Image,
-                    onClick = { viewModel.updateBackground(BackgroundStyle.Image) },
-                )
+                if (wallpaperImagesSupported) {
+                    CapsuleChoice(
+                        text = "Image",
+                        selected = settings.background == BackgroundStyle.Image,
+                        onClick = { viewModel.updateBackground(BackgroundStyle.Image) },
+                    )
+                }
             }
-            BackgroundImagePicker(settings = settings, viewModel = viewModel)
+            if (wallpaperImagesSupported) {
+                BackgroundImagePicker(settings = settings, viewModel = viewModel)
+            }
         }
     }
 
@@ -1989,7 +2063,7 @@ private fun AppearanceFields(
                 valueRange = AppearanceSettings.MIN_FONT_SCALE..AppearanceSettings.MAX_FONT_SCALE,
             )
             Text(
-                text = "${"%.2f".format(settings.fontScale)} ×",
+                text = "${formatFixed(settings.fontScale, 2)} ×",
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.accentPink,
             )
@@ -2014,7 +2088,33 @@ private fun AppearanceFields(
                 valueRange = AppearanceSettings.MIN_ICON_SCALE..AppearanceSettings.MAX_ICON_SCALE,
             )
             Text(
-                text = "${"%.2f".format(settings.iconScale)} ×",
+                text = "${formatFixed(settings.iconScale, 2)} ×",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.accentPink,
+            )
+        }
+    }
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Thumbnail quality",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "JPEG quality for dataset and sample thumbnails sent over the helper (1–100). Lower is smaller and faster; the next load after a change uses the new quality.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Slider(
+                value = settings.thumbnailQuality.toFloat(),
+                onValueChange = { viewModel.updateThumbnailQuality(it.roundToInt()) },
+                valueRange = AppearanceSettings.MIN_THUMBNAIL_QUALITY.toFloat()..
+                    AppearanceSettings.MAX_THUMBNAIL_QUALITY.toFloat(),
+            )
+            Text(
+                text = "${settings.thumbnailQuality}",
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.accentPink,
             )
@@ -2058,7 +2158,7 @@ private fun BackgroundImagePicker(
     val colors = rankoColors
     val tokens = rankoTokens
     val path = settings.backgroundImagePath
-    val file = remember(path) { File(path).takeIf { path.isNotEmpty() && it.isFile } }
+    val file = remember(path) { localWallpaperModel(path) }
     val missing = path.isNotEmpty() && file == null
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2072,7 +2172,14 @@ private fun BackgroundImagePicker(
                 .background(colors.bgCard.copy(alpha = 0.42f)),
             contentAlignment = Alignment.Center,
         ) {
-            if (file != null) {
+            if (file is androidx.compose.ui.graphics.ImageBitmap) {
+                androidx.compose.foundation.Image(
+                    bitmap = file,
+                    contentDescription = "Background preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (file != null) {
                 AsyncImage(
                     model = file,
                     contentDescription = "Background preview",
@@ -2090,7 +2197,8 @@ private fun BackgroundImagePicker(
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = when {
-                    file != null -> file.name
+                    file != null && path.startsWith("data:") -> "Local image"
+                    file != null -> path.substringAfterLast('/')
                     missing -> "Image not found"
                     else -> "No image selected"
                 },
@@ -2100,7 +2208,7 @@ private fun BackgroundImagePicker(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = path.ifBlank { "jpg / png / webp / bmp" },
+                text = if (path.startsWith("data:")) "jpg / png / webp / bmp" else path.ifBlank { "jpg / png / webp / bmp" },
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.textDim,
                 maxLines = 1,
