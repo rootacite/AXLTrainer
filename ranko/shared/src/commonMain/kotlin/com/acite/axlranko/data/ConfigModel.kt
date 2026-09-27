@@ -79,9 +79,12 @@ data class TrainingConfig(
 
 @Serializable
 data class NetworkConfig(
+    @SerialName("network_type") val networkType: String = "standard",
     @SerialName("network_dim") val networkDim: Int,
     @SerialName("network_alpha") val networkAlpha: Int,
     @SerialName("network_dropout") val networkDropout: Double,
+    @SerialName("conv_dim") val convDim: Int = 0,
+    @SerialName("conv_alpha") val convAlpha: Int = 0,
     @SerialName("clip_skip") val clipSkip: Int,
     @SerialName("max_token_length") val maxTokenLength: Int
 )

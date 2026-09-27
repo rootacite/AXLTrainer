@@ -97,8 +97,15 @@ def build_kohya_metadata(
     put("modelspec.date", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     put("ss_network_module", "networks.lora")
+    network_type = str(getattr(cfg, "network_type", "standard") or "standard").strip().lower()
+    put("ss_network_type", network_type)
     put("ss_network_dim", cfg.network_dim)
     put("ss_network_alpha", cfg.network_alpha)
+    if network_type == "locon":
+        put(
+            "ss_network_args",
+            f"conv_dim={int(cfg.conv_dim)} conv_alpha={int(cfg.conv_alpha)}",
+        )
     put("ss_output_name", cfg.output_name)
     put("ss_seed", cfg.seed)
     put("ss_steps", global_step)

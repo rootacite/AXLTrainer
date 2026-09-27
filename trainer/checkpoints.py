@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -62,6 +63,54 @@ def read_lora_metadata(path: Union[str, Path]) -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001 - surfaced as a config error
         raise ValueError(f"failed to read safetensors metadata from {target}: {exc}") from exc
     return {str(key): str(value) for key, value in metadata.items()}
+
+
+def parse_network_args(raw: Any) -> dict[str, str]:
+    """`ss_network_args`: kohya JSON object, or `conv_dim=N conv_alpha=M`."""
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    if text[:1] in "{[":
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return {str(key): str(value) for key, value in parsed.items()}
+    out: dict[str, str] = {}
+    for part in text.split():
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def infer_network_type(metadata: Optional[dict[str, Any]]) -> str:
+    """Resume discriminator. Missing `ss_network_type` is standard unless conv_dim > 0."""
+    data = metadata or {}
+    raw = str(data.get("ss_network_type") or "").strip().lower()
+    if raw:
+        return raw
+    conv_dim = _int_or_none(parse_network_args(data.get("ss_network_args")).get("conv_dim"))
+    if conv_dim is not None and conv_dim > 0:
+        return "locon"
+    return "standard"
+
+
+def conv_dim_alpha_from_metadata(metadata: Optional[dict[str, Any]]) -> tuple[int, int]:
+    args = parse_network_args((metadata or {}).get("ss_network_args"))
+    return _int_or_none(args.get("conv_dim")) or 0, _int_or_none(args.get("conv_alpha")) or 0
+
+
+def require_resume_network_type(cfg: Any, metadata: dict[str, Any], source: Union[str, Path]) -> None:
+    file_type = infer_network_type(metadata)
+    cfg_type = str(getattr(cfg, "network_type", "standard") or "standard").strip().lower()
+    if file_type != cfg_type:
+        raise ValueError(
+            f"checkpoint {source} is a {file_type} LoRA but this config is {cfg_type}; "
+            f"set network_type to {file_type!r} to resume it"
+        )
 
 
 def parse_checkpoint_dir(dir_name: str, output_name: str) -> dict[str, Any]:

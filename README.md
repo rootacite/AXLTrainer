@@ -195,6 +195,7 @@ Provided as a reference, not a requirement. This is also the machine on which th
 | [Dashboard](doc/dashboard.md) | Ranko tabs, IPC, train controls, charts. |
 | [Dataset tools](doc/dataset-tools.md) | `tools/`, `tagger/`, `ranko/tools/agent.py`. |
 | [Mask verification](doc/mask-verification.md) | Closed-loop verification of the loss-mask pipeline: what it asserts, status, restart runbook. |
+| [LoCon](doc/locon.md) | Kohya LoCon (LoRA-C3Lier): layers, keys, ComfyUI, resume mismatch. |
 | [Troubleshooting](doc/troubleshooting.md) | ROCm bucket-step rule, env vars, common failures. |
 | [API.md](API.md) | IPC protocol. |
 

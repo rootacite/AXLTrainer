@@ -96,7 +96,7 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `epoch` | `16` | Total epochs for this run. |
 | `save_every_n_epochs` | `1` | **Defined but not used**; checkpoints are driven by `save_every_n_steps`. |
 | `save_every_n_steps` | `100` | Save a LoRA checkpoint + generate samples every N steps. |
-| `resume_lora_path` | `""` | Optional. kohya LoRA `.safetensors` (or a checkpoint directory holding exactly one) loaded into the UNet + both text encoders **before** training. Weights only: step/epoch counting still starts at 0 and the run gets its own timestamped directory, so earlier runs are never overwritten. `network_dim` / `network_alpha` must match the checkpoint. See [Training → Resuming from a checkpoint](training.md#resuming-from-a-checkpoint). |
+| `resume_lora_path` | `""` | Optional. kohya LoRA `.safetensors` (or a checkpoint directory holding exactly one) loaded into the UNet + both text encoders **before** training. Weights only: step/epoch counting still starts at 0 and the run gets its own timestamped directory, so earlier runs are never overwritten. `network_type` and `network_dim` / `network_alpha` must match the checkpoint. See [Training → Resuming from a checkpoint](training.md#resuming-from-a-checkpoint). |
 
 `run_dir` is **not** a config key you should write: the trainer fills it in at runtime with the absolute run directory created for that run.
 
@@ -104,11 +104,16 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 
 | Key | Default | Notes |
 | --- | --- | --- |
+| `network_type` | `"standard"` | `"standard"` (attention LoRA) or `"locon"` (Kohya LoRA-C3Lier on the UNet). See [LoCon](locon.md). |
 | `network_dim` | `48` | LoRA rank `r`. |
 | `network_alpha` | `24` | LoRA alpha. Scale ≈ `alpha / dim` (0.5 here). |
 | `network_dropout` | `0.25` | LoRA dropout (`0.0`–`1.0`), regularization / overfitting control. |
+| `conv_dim` | `0` | Locon only: rank of Conv2d 3×3 (and ResNet 1×1 shortcuts). May differ from `network_dim`. `0` with `network_type = "locon"` is invalid. |
+| `conv_alpha` | `0` | Locon only: conv alpha. Scale is `conv_alpha / conv_dim`. May differ from `network_alpha`. |
 | `clip_skip` | `1` | Hidden-state index used from the text encoders. |
 | `max_token_length` | `225` | Upper bound on prompt tokens. Captions longer than CLIP's 75 content tokens are split into `model_max_length − 2` chunks; a batch is padded only to the longest caption in that batch (not always to this cap). Sampling still uses as many chunks as the sample prompt needs, up to this value. |
+
+Standard wraps UNet `to_q` / `to_k` / `to_v` / `to_out.0` and TE `q_proj` / `k_proj` / `v_proj` / `out_proj`. Locon adds UNet Linear extras (`proj_in` / `proj_out` / `ff.net.0.proj` / `ff.net.2` / `time_emb_proj`) at `network_dim`, Conv2d extras (`conv1` / `conv2` / `conv_shortcut` / `conv`) at `conv_dim`, and TE MLP `fc1` / `fc2`. `conv_in` and `conv_out` stay unwrapped. Checkpoints write `ss_network_type` (`standard` or `locon`) and, for locon, `ss_network_args = "conv_dim=N conv_alpha=M"`.
 
 ### `[bucketing]` — aspect-ratio buckets
 
@@ -236,7 +241,7 @@ Intentionally empty. The Python side treats missing keys as `None`; it exists fo
 The Ranko **Utils** tab is a validated form over exactly these sections/keys:
 
 - Path fields have a Browse button (OS file dialog: the desktop portal picker on Linux).
-- `mixed_precision` and `lr_scheduler` are segmented buttons / chips.
+- `mixed_precision`, `network_type`, and `lr_scheduler` are segmented buttons / chips.
 - Booleans are switches.
 - Inline hints show derived values (effective batch, LoRA scale, bucket-step divisibility, sample aspect ratio).
 - The **Validation** section edits `[[validation.samples]]` as horizontal tabs: one chip per set

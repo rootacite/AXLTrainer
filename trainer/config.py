@@ -297,9 +297,13 @@ class TrainConfig:
     run_dir: str = get_val("run_dir", "")
 
     # Network Dimensions
+    # standard = attention LoRA; locon = Kohya C3Lier on the UNet (see doc/locon.md).
+    network_type: str = get_val("network_type", "standard")
     network_dim: int = get_val("network_dim", 48)
     network_alpha: int = get_val("network_alpha", 24)
     network_dropout: float = get_val("network_dropout", 0.15)
+    conv_dim: int = get_val("conv_dim", 0)
+    conv_alpha: int = get_val("conv_alpha", 0)
     clip_skip: int = get_val("clip_skip", 1)
     max_token_length: int = get_val("max_token_length", 225)
 
@@ -379,3 +383,12 @@ class TrainConfig:
             raise ValueError(
                 f"amdfq_vram_reserve_gib must be >= 0, not {self.amdfq_vram_reserve_gib}"
             )
+        network_type = str(self.network_type or "standard").strip().lower()
+        self.network_type = network_type
+        if network_type not in ("standard", "locon"):
+            raise ValueError(
+                f"network_type must be 'standard' or 'locon', not {self.network_type!r}"
+            )
+        if network_type == "locon":
+            if int(self.conv_dim) < 1 or int(self.conv_alpha) < 1:
+                raise ValueError("locon requires conv_dim and conv_alpha >= 1")

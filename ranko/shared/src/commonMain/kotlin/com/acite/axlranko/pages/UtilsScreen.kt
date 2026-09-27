@@ -1076,6 +1076,36 @@ private fun NetworkFields(
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
 ) {
+    Text("Network type", style = MaterialTheme.typography.labelLarge, color = rankoColors.text)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        TrainingConfigForm.networkTypeOptions.forEach { option ->
+            CapsuleChoice(
+                text = if (option == "locon") "LoCon" else "Standard",
+                selected = form.networkType == option,
+                onClick = {
+                    viewModel.updateForm {
+                        if (option == "locon") {
+                            val convEmpty = convDim.trim().toIntOrNull().let { it == null || it == 0 }
+                            val alphaEmpty = convAlpha.trim().toIntOrNull().let { it == null || it == 0 }
+                            copy(
+                                networkType = option,
+                                convDim = if (convEmpty) networkDim else convDim,
+                                convAlpha = if (alphaEmpty) networkAlpha else convAlpha,
+                            )
+                        } else {
+                            copy(networkType = option)
+                        }
+                    }
+                },
+            )
+        }
+    }
+    errors["network_type"]?.let { message ->
+        Text(message, style = MaterialTheme.typography.bodySmall, color = rankoColors.qualityRed)
+    }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Network dim (rank)",
@@ -1092,6 +1122,26 @@ private fun NetworkFields(
             onValueChange = { viewModel.updateForm { copy(networkAlpha = it) } },
             modifier = Modifier.weight(1f)
         )
+    }
+    if (form.networkType == "locon") {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ConfigTextField(
+                label = "Conv dim",
+                value = form.convDim,
+                error = errors["conv_dim"],
+                supporting = convScaleHint(form),
+                onValueChange = { viewModel.updateForm { copy(convDim = it) } },
+                modifier = Modifier.weight(1f)
+            )
+            ConfigTextField(
+                label = "Conv alpha",
+                value = form.convAlpha,
+                error = errors["conv_alpha"],
+                supporting = convScaleHint(form),
+                onValueChange = { viewModel.updateForm { copy(convAlpha = it) } },
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
@@ -1754,6 +1804,13 @@ private fun effectiveBatchHint(form: TrainingConfigForm): String? {
 private fun loraScaleHint(form: TrainingConfigForm): String? {
     val dim = form.networkDim.toIntOrNull() ?: return null
     val alpha = form.networkAlpha.toIntOrNull() ?: return null
+    if (dim <= 0) return null
+    return "α/dim = ${alpha.toDouble() / dim}"
+}
+
+private fun convScaleHint(form: TrainingConfigForm): String? {
+    val dim = form.convDim.toIntOrNull() ?: return null
+    val alpha = form.convAlpha.toIntOrNull() ?: return null
     if (dim <= 0) return null
     return "α/dim = ${alpha.toDouble() / dim}"
 }

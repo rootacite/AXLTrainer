@@ -16,7 +16,12 @@ from typing import Any, Optional
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from trainer.amdfq_patch import resolve_preload
-from trainer.checkpoints import discover_checkpoints, resolve_resume_path
+from trainer.checkpoints import (
+    discover_checkpoints,
+    read_lora_metadata,
+    require_resume_network_type,
+    resolve_resume_path,
+)
 from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets, resolve_train_data_entries
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
@@ -246,7 +251,8 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
     resume_raw = str(getattr(cfg_obj, "resume_lora_path", "") or "").strip()
     if resume_raw:
         try:
-            resolve_resume_path(resume_raw)
+            source = resolve_resume_path(resume_raw)
+            require_resume_network_type(cfg_obj, read_lora_metadata(source), source)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
 

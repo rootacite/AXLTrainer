@@ -98,10 +98,12 @@ Because the counters restart, the run writes into its own `{output_dir}/{run_id}
 
 Rules and failure modes:
 
-- `network_dim` / `network_alpha` must match the checkpoint's rank. A rank mismatch is rejected at startup with a message naming `network_dim`; a differing alpha only logs a warning (the checkpoint's alpha scalars are ignored — this run uses `network_alpha`).
-- Tensors in the checkpoint that this LoRA does not use (e.g. modules outside `to_q/to_k/to_v/to_out.0` and `q_proj/k_proj/v_proj/out_proj`) are counted and listed in the run log; if **no** tensor maps, the run refuses to start.
+- `network_type` must match the checkpoint. The trainer reads `ss_network_type`; a file without that field is `standard`, unless `ss_network_args` has `conv_dim > 0` (kohya LoCon). A locon file into a standard wrap (or the reverse) raises `ValueError` before any weights load. A locon wrap also refuses a locon file that has no TE `mlp_fc1` / `mlp_fc2` keys (pre-MLP locon files). `train_start` runs the type check, so the dashboard fails without touching the GPU.
+- `network_dim` / `network_alpha` must match the checkpoint's rank. Locon `conv_dim` must match `ss_network_args` when that field is present. A rank mismatch is rejected at startup with a message naming `network_dim` or `conv_dim`; a differing alpha only logs a warning (the checkpoint's alpha scalars are ignored — this run uses `network_alpha` / `conv_alpha`).
+- Tensors in the checkpoint that this LoRA does not use (e.g. modules outside the current `network_type` targets) are counted and listed in the run log; if **no** tensor maps, the run refuses to start.
+- TE1 keys saved today are `lora_te1_text_model_encoder_layers_*`. Files written before that spelling (`lora_te1_encoder_layers_*`) still resume.
 - `train_start` (and the trainer itself) validates the path before doing any GPU work, so a missing or ambiguous path surfaces as an immediate error in the dashboard.
-- Any kohya-format LoRA works as long as its rank matches, including ones trained by other tools; `ss_steps` / `ss_epoch` metadata are only reported for information.
+- Any kohya-format LoRA works as long as its type and rank match, including ones trained by other tools; `ss_steps` / `ss_epoch` metadata are only reported for information.
 
 ## Watching progress
 

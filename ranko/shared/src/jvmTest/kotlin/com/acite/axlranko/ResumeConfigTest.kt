@@ -49,6 +49,12 @@ class ResumeConfigTest {
         val form = TrainingConfigForm.from(config)
         assertEquals(true, form.gradientCheckpointingUnet)
         assertEquals(true, form.gradientCheckpointingTe)
+        assertEquals("standard", config.network.networkType)
+        assertEquals(0, config.network.convDim)
+        assertEquals(0, config.network.convAlpha)
+        assertEquals("standard", form.networkType)
+        assertEquals("0", form.convDim)
+        assertEquals("0", form.convAlpha)
         assertEquals("none", config.environment.amdfq)
         assertEquals("none", form.amdfq)
         assertEquals(0.0, config.environment.amdfqVramReserveGib)
@@ -58,6 +64,32 @@ class ResumeConfigTest {
         // A config written before the row existed gets the shipped default, not off.
         assertEquals(64, config.environment.amdfqPoolMib)
         assertEquals("64", form.amdfqPoolMib)
+    }
+
+    @Test
+    fun patcherInsertsNetworkTypeIntoLegacyFile() {
+        val source = LEGACY_CONFIG.replace("RESUME_PLACEHOLDER", "")
+        val patched = TomlDocumentPatcher.apply(
+            source,
+            mapOf(
+                "network" to mapOf(
+                    "network_type" to TomlDocumentPatcher.quote("locon"),
+                    "conv_dim" to "16",
+                    "conv_alpha" to "8",
+                ),
+            ),
+        )
+        assertTrue(patched.contains("network_type = \"locon\""))
+        assertTrue(patched.contains("conv_dim = 16"))
+        assertTrue(patched.contains("conv_alpha = 8"))
+        assertTrue(patched.contains("network_dim = 48"))
+        val file = Files.createTempFile("axl-config", ".toml").toFile()
+        file.deleteOnExit()
+        file.writeText(patched)
+        val config = assertNotNull(loadTrainerConfig(file.absolutePath.toPath()))
+        assertEquals("locon", config.network.networkType)
+        assertEquals(16, config.network.convDim)
+        assertEquals(8, config.network.convAlpha)
     }
 
     @Test

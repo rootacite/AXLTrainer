@@ -14,7 +14,12 @@ from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
 from safetensors.torch import load_file, save_file
 
 try:
-    from checkpoints import read_lora_metadata, resolve_resume_path
+    from checkpoints import (
+        conv_dim_alpha_from_metadata,
+        read_lora_metadata,
+        require_resume_network_type,
+        resolve_resume_path,
+    )
     from family import FamilyModules, FamilySpec
     from models import (
         build_kohya_metadata,
@@ -23,7 +28,12 @@ try:
     )
     from utils import apply_loss_mask, build_time_ids
 except ImportError:
-    from trainer.checkpoints import read_lora_metadata, resolve_resume_path
+    from trainer.checkpoints import (
+        conv_dim_alpha_from_metadata,
+        read_lora_metadata,
+        require_resume_network_type,
+        resolve_resume_path,
+    )
     from trainer.family import FamilyModules, FamilySpec
     from trainer.models import (
         build_kohya_metadata,
@@ -41,7 +51,9 @@ from text_processing import encode_prompt_batch
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# SDXL UNet: diffusers path  →  kohya / ComfyUI ldm path
+# SDXL UNet: diffusers path  →  kohya / ComfyUI ldm path.
+# Block prefixes from unet_to_diffusers (SDXL). Longest prefix wins; then
+# ResNet leaves (conv1 → in_layers.2, …).
 # ---------------------------------------------------------------------------
 _UNET_ATTN_MAP: dict[str, str] = {
     "down_blocks.1.attentions.0": "input_blocks.4.1",
@@ -57,17 +69,31 @@ _UNET_ATTN_MAP: dict[str, str] = {
     "up_blocks.1.attentions.2": "output_blocks.5.1",
 }
 
-_UNET_RESNET_MAP: dict[str, str] = {
-    "down_blocks.0.resnets.0.conv_shortcut": "input_blocks.1.0.skip_connection",
-    "down_blocks.0.resnets.1.conv_shortcut": "input_blocks.2.0.skip_connection",
-    "down_blocks.1.resnets.1.conv_shortcut": "input_blocks.5.0.skip_connection",
-    "down_blocks.2.resnets.1.conv_shortcut": "input_blocks.8.0.skip_connection",
-    "mid_block.resnets.0.conv_shortcut": "middle_block.0.skip_connection",
-    "mid_block.resnets.1.conv_shortcut": "middle_block.2.skip_connection",
+_UNET_RESNET_BLOCK_MAP: dict[str, str] = {
+    "down_blocks.0.resnets.0": "input_blocks.1.0",
+    "down_blocks.0.resnets.1": "input_blocks.2.0",
+    "down_blocks.1.resnets.0": "input_blocks.4.0",
+    "down_blocks.1.resnets.1": "input_blocks.5.0",
+    "down_blocks.2.resnets.0": "input_blocks.7.0",
+    "down_blocks.2.resnets.1": "input_blocks.8.0",
+    "mid_block.resnets.0": "middle_block.0",
+    "mid_block.resnets.1": "middle_block.2",
+    "up_blocks.0.resnets.0": "output_blocks.0.0",
+    "up_blocks.0.resnets.1": "output_blocks.1.0",
+    "up_blocks.0.resnets.2": "output_blocks.2.0",
+    "up_blocks.1.resnets.0": "output_blocks.3.0",
+    "up_blocks.1.resnets.1": "output_blocks.4.0",
+    "up_blocks.1.resnets.2": "output_blocks.5.0",
+    "up_blocks.2.resnets.0": "output_blocks.6.0",
+    "up_blocks.2.resnets.1": "output_blocks.7.0",
+    "up_blocks.2.resnets.2": "output_blocks.8.0",
 }
 
 _UNET_SAMPLER_MAP: dict[str, str] = {
-    "down_blocks.2.downsamplers.0.conv": "input_blocks.9.0.op",
+    "down_blocks.0.downsamplers.0.conv": "input_blocks.3.0.op",
+    "down_blocks.1.downsamplers.0.conv": "input_blocks.6.0.op",
+    "up_blocks.0.upsamplers.0.conv": "output_blocks.2.2.conv",
+    "up_blocks.1.upsamplers.0.conv": "output_blocks.5.2.conv",
     "up_blocks.2.upsamplers.0.conv": "output_blocks.8.1.conv",
 }
 
@@ -78,12 +104,25 @@ _UNET_EMBED_MAP: dict[str, str] = {
     "add_embedding.linear_2": "label_emb.0.2",
 }
 
-_UNET_PATH_MAP: dict[str, str] = {
-    **_UNET_RESNET_MAP,
-    **_UNET_SAMPLER_MAP,
-    **_UNET_EMBED_MAP,
-    **_UNET_ATTN_MAP,
+_UNET_RESNET_LEAF: dict[str, str] = {
+    "conv1": "in_layers.2",
+    "conv2": "out_layers.3",
+    "time_emb_proj": "emb_layers.1",
+    "conv_shortcut": "skip_connection",
 }
+
+_UNET_BLOCK_MAP: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        {
+            **_UNET_RESNET_BLOCK_MAP,
+            **_UNET_SAMPLER_MAP,
+            **_UNET_EMBED_MAP,
+            **_UNET_ATTN_MAP,
+        }.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
 
 _TE_PATH_REPLACEMENTS: list[tuple[str, str]] = [
     ("text_model.encoder.layers.", "text_model_encoder_layers_"),
@@ -93,17 +132,75 @@ _TE_PATH_REPLACEMENTS: list[tuple[str, str]] = [
     ("final_layer_norm.", "final_layer_norm_"),
 ]
 
+_TE1_NEW_PREFIX = "lora_te1_text_model_encoder_layers_"
+_TE1_OLD_PREFIX = "lora_te1_encoder_layers_"
+
+_TE_LORA_TARGETS: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "out_proj")
+_TE_MLP_TARGETS: tuple[str, ...] = ("fc1", "fc2")
+_LOCON_TE_LORA_TARGETS: tuple[str, ...] = _TE_LORA_TARGETS + _TE_MLP_TARGETS
+_STANDARD_UNET_LORA_TARGETS: tuple[str, ...] = ("to_q", "to_k", "to_v", "to_out.0")
+_LOCON_UNET_LINEAR_TARGETS: tuple[str, ...] = _STANDARD_UNET_LORA_TARGETS + (
+    "proj_in",
+    "proj_out",
+    "ff.net.0.proj",
+    "ff.net.2",
+    "time_emb_proj",
+)
+_LOCON_UNET_CONV_TARGETS: tuple[str, ...] = (
+    "conv1",
+    "conv2",
+    "conv_shortcut",
+    "conv",
+)
+_LOCON_UNET_LORA_TARGETS: tuple[str, ...] = (
+    _LOCON_UNET_LINEAR_TARGETS + _LOCON_UNET_CONV_TARGETS
+)
+_CONV_ADAPTER_NAME = "conv"
+
+
+def unet_lora_targets(network_type: str) -> tuple[str, ...]:
+    kind = str(network_type or "standard").strip().lower()
+    if kind == "standard":
+        return _STANDARD_UNET_LORA_TARGETS
+    if kind == "locon":
+        return _LOCON_UNET_LORA_TARGETS
+    raise ValueError(f"network_type must be 'standard' or 'locon', not {network_type!r}")
+
+
+def te_lora_targets(network_type: str) -> tuple[str, ...]:
+    kind = str(network_type or "standard").strip().lower()
+    if kind == "locon":
+        return _LOCON_TE_LORA_TARGETS
+    if kind == "standard":
+        return _TE_LORA_TARGETS
+    raise ValueError(f"network_type must be 'standard' or 'locon', not {network_type!r}")
+
+
+def _activate_locon_adapters(module: Any) -> None:
+    """PEFT 0.20 PeftModel.set_adapter takes one name; the LoRA tuner accepts both."""
+    tuner = getattr(module, "base_model", None)
+    setter = getattr(tuner, "set_adapter", None)
+    if callable(setter):
+        setter(["default", _CONV_ADAPTER_NAME])
+
 
 def _remap_unet_path(key: str) -> str:
     key = key.replace("unet.", "", 1)
-    for src, dst in _UNET_PATH_MAP.items():
+    for src, dst in _UNET_BLOCK_MAP:
         if src in key:
+            key = key.replace(src, dst, 1)
+            break
+    for src, dst in _UNET_RESNET_LEAF.items():
+        token = f".{src}"
+        if key.endswith(token) or f"{token}." in key:
             key = key.replace(src, dst, 1)
             break
     return key
 
 
 def _remap_te_path(key: str) -> str:
+    if key.startswith("encoder."):
+        key = "text_model." + key
     for src, dst in _TE_PATH_REPLACEMENTS:
         key = key.replace(src, dst)
     return key
@@ -194,6 +291,12 @@ def build_kohya_to_peft_map(
             if kohya_key.endswith(".alpha"):
                 continue
             mapping[kohya_key] = peft_key
+    if prefix == "te1":
+        extra: dict[str, str] = {}
+        for kohya_key, peft_key in mapping.items():
+            if kohya_key.startswith(_TE1_NEW_PREFIX):
+                extra[_TE1_OLD_PREFIX + kohya_key[len(_TE1_NEW_PREFIX) :]] = peft_key
+        mapping.update(extra)
     return mapping
 
 
@@ -282,13 +385,16 @@ class SdxlFamily:
         )
 
     def apply_lora(self, cfg: Any, modules: FamilyModules) -> FamilyModules:
+        network_type = str(getattr(cfg, "network_type", "standard") or "standard").strip().lower()
+        te_targets = te_lora_targets(network_type)
+
         def te_lora_config() -> LoraConfig:
             return LoraConfig(
                 r=cfg.network_dim,
                 lora_alpha=cfg.network_alpha,
                 lora_dropout=cfg.network_dropout,
                 init_lora_weights="gaussian",
-                target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
+                target_modules=list(te_targets),
             )
 
         unet_lora_config = LoraConfig(
@@ -296,13 +402,27 @@ class SdxlFamily:
             lora_alpha=cfg.network_alpha,
             lora_dropout=cfg.network_dropout,
             init_lora_weights="gaussian",
-            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+            target_modules=list(
+                _LOCON_UNET_LINEAR_TARGETS
+                if network_type == "locon"
+                else _STANDARD_UNET_LORA_TARGETS
+            ),
         )
         tes = [get_peft_model(te, te_lora_config()) for te in modules.text_encoders]
         if bool(getattr(cfg, "gradient_checkpointing_te", True)):
             for te in tes:
                 enable_te_gradient_checkpointing(te)
         denoise = get_peft_model(modules.denoise, unet_lora_config)
+        if network_type == "locon":
+            conv_config = LoraConfig(
+                r=int(cfg.conv_dim),
+                lora_alpha=int(cfg.conv_alpha),
+                lora_dropout=cfg.network_dropout,
+                init_lora_weights="gaussian",
+                target_modules=list(_LOCON_UNET_CONV_TARGETS),
+            )
+            denoise.add_adapter(_CONV_ADAPTER_NAME, conv_config)
+            _activate_locon_adapters(denoise)
         if bool(getattr(cfg, "gradient_checkpointing_unet", True)):
             denoise.enable_gradient_checkpointing()
         enable_flash_attention(denoise)
@@ -322,7 +442,21 @@ class SdxlFamily:
 
         source = resolve_resume_path(raw)
         metadata = read_lora_metadata(source)
+        require_resume_network_type(cfg, metadata, source)
         state = load_file(str(source))
+        network_type = str(getattr(cfg, "network_type", "standard") or "standard").strip().lower()
+        if network_type == "locon":
+            if not any("mlp_fc1" in key or "mlp_fc2" in key for key in state):
+                raise ValueError(
+                    f"checkpoint {source} is locon without TE MLP (fc1/fc2); "
+                    "this trainer wraps CLIPMLP on locon — train a new locon file"
+                )
+            file_conv_dim, _file_conv_alpha = conv_dim_alpha_from_metadata(metadata)
+            if file_conv_dim >= 1 and int(cfg.conv_dim) != file_conv_dim:
+                raise ValueError(
+                    f"checkpoint {source} conv_dim={file_conv_dim} but this config is "
+                    f"conv_dim={cfg.conv_dim}"
+                )
 
         targets: list[tuple[str, Any]] = [("unet", modules.denoise)]
         targets += [(prefix, te) for prefix, te in zip(("te1", "te2"), modules.text_encoders)]
@@ -541,8 +675,21 @@ class SdxlFamily:
         unwrapped_unet = accelerator.unwrap_model(modules.denoise)
         tes = [accelerator.unwrap_model(te) for te in modules.text_encoders]
         unet_state = _convert_peft_to_kohya_bf16(
-            get_peft_model_state_dict(unwrapped_unet), "unet", cfg.network_alpha
+            get_peft_model_state_dict(unwrapped_unet, adapter_name="default"),
+            "unet",
+            cfg.network_alpha,
         )
+        peft_config = getattr(unwrapped_unet, "peft_config", None) or {}
+        if _CONV_ADAPTER_NAME in peft_config:
+            unet_state.update(
+                _convert_peft_to_kohya_bf16(
+                    get_peft_model_state_dict(
+                        unwrapped_unet, adapter_name=_CONV_ADAPTER_NAME
+                    ),
+                    "unet",
+                    cfg.conv_alpha,
+                )
+            )
         te_states = [
             _convert_peft_to_kohya_bf16(
                 get_peft_model_state_dict(te), prefix, cfg.network_alpha

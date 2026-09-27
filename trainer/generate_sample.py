@@ -8,9 +8,9 @@ written next to its spec under `{name}_samples/generated/`, so it sits beside th
 run's own samples without entering their `_<step>_<repeat>.png` namespace.
 
 The settings come from the checkpoint's own kohya metadata where possible
-(network_dim/alpha, clip_skip, max_token_length, base model), so a sample of an
-old checkpoint is reproduced with the settings it was trained with rather than
-with whatever config.toml says today.
+(network_type, network_dim/alpha, conv_dim/alpha, clip_skip, max_token_length,
+base model), so a sample of an old checkpoint is reproduced with the settings
+it was trained with rather than with whatever config.toml says today.
 """
 
 from __future__ import annotations
@@ -29,14 +29,24 @@ import torch
 # not; support both (see AGENT.md "Import dualism").
 try:
     import genjob
-    from checkpoints import read_lora_metadata, resolve_resume_path
+    from checkpoints import (
+        conv_dim_alpha_from_metadata,
+        infer_network_type,
+        read_lora_metadata,
+        resolve_resume_path,
+    )
     from config import TrainConfig
     from env import flush_memory, setup_migraphx_cache
     from family import require_trainable, resolve_family
     from models import enable_flash_attention
 except ImportError:
     from trainer import genjob
-    from trainer.checkpoints import read_lora_metadata, resolve_resume_path
+    from trainer.checkpoints import (
+        conv_dim_alpha_from_metadata,
+        infer_network_type,
+        read_lora_metadata,
+        resolve_resume_path,
+    )
     from trainer.config import TrainConfig
     from trainer.env import flush_memory, setup_migraphx_cache
     from trainer.family import require_trainable, resolve_family
@@ -75,11 +85,26 @@ def _build_config(metadata: dict[str, str], checkpoint: Path) -> TrainConfig:
             f"{cfg.base_model_version!r}; point [model_spec] at {version!r} to sample from it"
         )
 
+    network_dim = _meta_int(metadata, "ss_network_dim", cfg.network_dim)
+    network_alpha = _meta_int(metadata, "ss_network_alpha", cfg.network_alpha)
+    network_type = infer_network_type(metadata)
+    conv_dim, conv_alpha = conv_dim_alpha_from_metadata(metadata)
+    if network_type == "locon":
+        if conv_dim < 1:
+            conv_dim = network_dim
+        if conv_alpha < 1:
+            conv_alpha = network_alpha
+    else:
+        conv_dim, conv_alpha = 0, 0
+
     cfg = replace(
         cfg,
         resume_lora_path=str(checkpoint),
-        network_dim=_meta_int(metadata, "ss_network_dim", cfg.network_dim),
-        network_alpha=_meta_int(metadata, "ss_network_alpha", cfg.network_alpha),
+        network_type=network_type,
+        network_dim=network_dim,
+        network_alpha=network_alpha,
+        conv_dim=conv_dim,
+        conv_alpha=conv_alpha,
         clip_skip=_meta_int(metadata, "ss_clip_skip", cfg.clip_skip),
         max_token_length=_meta_int(metadata, "ss_max_token_length", cfg.max_token_length),
         # Inference only: checkpointing and its input-require-grads hooks are pure overhead here.
@@ -145,7 +170,8 @@ def run_generation(spec: dict, generated: Path) -> None:
     dtype = torch.float16 if cfg.mixed_precision == "fp16" else torch.bfloat16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _log(
-        f"checkpoint={checkpoint} dim={cfg.network_dim} alpha={cfg.network_alpha} "
+        f"checkpoint={checkpoint} type={cfg.network_type} dim={cfg.network_dim} "
+        f"alpha={cfg.network_alpha} "
         f"steps={steps} cfg={guidance_scale} seed={requested_seed} {width}x{height} on {device}"
     )
 

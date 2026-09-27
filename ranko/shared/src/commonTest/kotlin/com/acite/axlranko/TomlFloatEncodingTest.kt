@@ -137,6 +137,40 @@ class TomlFloatEncodingTest {
         assertEquals("Enter an integer", base.copy(amdfqPoolMib = "sixty").validate()["amdfq_pool_mib"])
         assertTrue(TrainingConfigForm.amdfqPoolMibOptions.all { it == 0 || it in 16..512 })
     }
+
+    @Test
+    fun formRoundTripsNetworkTypeAndConv() {
+        val base = TrainingConfigForm.from(wholeValuedFloatConfig())
+        assertEquals("standard", base.networkType)
+        assertEquals("0", base.convDim)
+        assertEquals("0", base.convAlpha)
+        val network = base.toTomlSections()["network"]!!
+        assertEquals("\"standard\"", network["network_type"])
+        assertEquals("0", network["conv_dim"])
+        assertEquals("0", network["conv_alpha"])
+        assertTrue("network_type" in ConfigSection.Network.fieldKeys)
+        assertTrue("conv_dim" in ConfigSection.Network.fieldKeys)
+        assertTrue("conv_alpha" in ConfigSection.Network.fieldKeys)
+
+        val locon = base.copy(
+            networkType = "locon",
+            networkDim = "16",
+            networkAlpha = "8",
+            convDim = "16",
+            convAlpha = "8",
+        )
+        assertEquals(null, locon.validate()["conv_dim"])
+        assertEquals(null, locon.validate()["conv_alpha"])
+        assertEquals(null, locon.validate()["network_type"])
+        val unequal = locon.copy(convDim = "8", convAlpha = "4")
+        assertEquals(null, unequal.validate()["conv_dim"])
+        assertEquals(null, unequal.validate()["conv_alpha"])
+        assertEquals("standard or locon", locon.copy(networkType = "lycoris").validate()["network_type"])
+        val loconToml = locon.toTomlSections()["network"]!!
+        assertEquals("\"locon\"", loconToml["network_type"])
+        assertEquals("16", loconToml["conv_dim"])
+        assertEquals("8", loconToml["conv_alpha"])
+    }
 }
 
 @Serializable

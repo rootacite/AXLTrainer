@@ -64,11 +64,14 @@ enum class ConfigSection(
     ),
     Network(
         title = "Network",
-        description = "LoRA rank, alpha, dropout, and token length",
+        description = "LoRA type, rank, alpha, dropout, and token length",
         fieldKeys = setOf(
+            "network_type",
             "network_dim",
             "network_alpha",
             "network_dropout",
+            "conv_dim",
+            "conv_alpha",
             "clip_skip",
             "max_token_length"
         )

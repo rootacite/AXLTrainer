@@ -81,9 +81,12 @@ data class TrainingConfigForm(
 
     val resumeLoraPath: String = "",
 
+    val networkType: String = "standard",
     val networkDim: String = "",
     val networkAlpha: String = "",
     val networkDropout: String = "",
+    val convDim: String = "0",
+    val convAlpha: String = "0",
     val clipSkip: String = "",
     val maxTokenLength: String = "",
 
@@ -254,9 +257,20 @@ data class TrainingConfigForm(
         requireInt("save_every_n_epochs", saveEveryNEpochs, min = 1)
         requireInt("save_every_n_steps", saveEveryNSteps, min = 1)
 
+        val type = networkType.trim().lowercase()
+        if (type !in networkTypeOptions) {
+            errors["network_type"] = "standard or locon"
+        }
         requireInt("network_dim", networkDim, min = 1)
         requireInt("network_alpha", networkAlpha, min = 1)
         requireDouble("network_dropout", networkDropout, min = 0.0, max = 1.0)
+        if (type == "locon") {
+            requireInt("conv_dim", convDim, min = 1)
+            requireInt("conv_alpha", convAlpha, min = 1)
+        } else {
+            requireInt("conv_dim", convDim, min = 0)
+            requireInt("conv_alpha", convAlpha, min = 0)
+        }
         requireInt("clip_skip", clipSkip, min = 1)
         requireInt("max_token_length", maxTokenLength, min = 75)
 
@@ -355,9 +369,12 @@ data class TrainingConfigForm(
                 "resume_lora_path" to q(resumeLoraPath.trim())
             ),
             "network" to mapOf(
+                "network_type" to q(networkType.trim().lowercase().ifBlank { "standard" }),
                 "network_dim" to n(networkDim),
                 "network_alpha" to n(networkAlpha),
                 "network_dropout" to f(networkDropout),
+                "conv_dim" to n(convDim.ifBlank { "0" }),
+                "conv_alpha" to n(convAlpha.ifBlank { "0" }),
                 "clip_skip" to n(clipSkip),
                 "max_token_length" to n(maxTokenLength)
             ),
@@ -456,6 +473,7 @@ data class TrainingConfigForm(
     companion object {
         val baseModelVersionOptions = ModelSpecCatalog.versions
         val mixedPrecisionOptions = listOf("bf16", "fp16", "no")
+        val networkTypeOptions = listOf("standard", "locon")
         val amdfqOptions = listOf("none", "tail", "vmm")
         /** Pool sizes the picker offers, in MiB; 0 is off. The hook clamps to 16..512 and rounds to
          * an even number of allocation granules, so these are all values it takes as written. */
@@ -510,9 +528,12 @@ data class TrainingConfigForm(
                 saveEveryNEpochs = train.saveEveryNEpochs.toString(),
                 saveEveryNSteps = train.saveEveryNSteps.toString(),
                 resumeLoraPath = train.resumeLoraPath,
+                networkType = net.networkType.trim().lowercase().ifBlank { "standard" },
                 networkDim = net.networkDim.toString(),
                 networkAlpha = net.networkAlpha.toString(),
                 networkDropout = formatNumber(net.networkDropout),
+                convDim = net.convDim.toString(),
+                convAlpha = net.convAlpha.toString(),
                 clipSkip = net.clipSkip.toString(),
                 maxTokenLength = net.maxTokenLength.toString(),
                 enableBucket = bucket.enableBucket,

@@ -303,7 +303,7 @@ Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does n
 
 Params: `{}`
 
-Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet. Also fails synchronously — before any GPU work — when `[training].resume_lora_path` is set but does not resolve to a `.safetensors` file, and when `[environment].amdfq` is `tail` or `vmm` but the corresponding `target/release/libamdfq_*_rs.so` is missing.
+Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet. Also fails synchronously — before any GPU work — when `[training].resume_lora_path` is set but does not resolve to a `.safetensors` file, when that file's `ss_network_type` does not match `[network].network_type`, and when `[environment].amdfq` is `tail` or `vmm` but the corresponding `target/release/libamdfq_*_rs.so` is missing.
 
 ### `train_pause` / `train_resume` / `train_stop`
 

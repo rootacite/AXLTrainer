@@ -33,6 +33,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 | Wire protocol (methods, shapes) | `API.md` |
 | Dataset CLIs | `doc/dataset-tools.md` |
 | Mask verification status + restart runbook | `doc/mask-verification.md` |
+| Kohya LoCon (C3Lier) | `doc/locon.md` |
 | ROCm pitfalls | `doc/troubleshooting.md` (the field reports behind it are sealed in `archive/`: 涉及负责任披露流程，暂不公开) |
 
 Verify after a change (pick the layer you touched):
@@ -279,7 +280,7 @@ When adding a trainer module, support **both** import styles, or you will pass C
 
 - Mixed precision default **bf16**.
 - Dual optimizers: **Schedule-Free AdamW** on UNet (no LR scheduler), **AdamW** on TE1+TE2 with cosine/warmup via Accelerator.
-- LoRA targets: UNet `to_q/to_k/to_v/to_out.0`; TE `q_proj/k_proj/v_proj/out_proj` (`setup.apply_lora_modules`).
+- LoRA targets (`SdxlFamily.apply_lora`): Standard UNet `to_q/to_k/to_v/to_out.0`, TE `q_proj/k_proj/v_proj/out_proj`. Locon UNet uses two PEFT adapters — Linear extras at `network_dim`, Conv2d (`conv1/conv2/conv_shortcut/conv`) at `conv_dim` — and TE also wraps `fc1/fc2`. See `doc/locon.md`.
 - When `[optimization].gradient_checkpointing_unet` / `gradient_checkpointing_te` are true (the defaults), UNet and both TEs enable gradient checkpointing after PEFT wrap (TEs also `enable_input_require_grads` because embeddings stay frozen).
 - Batches are **regrouped by `(bucket_w, bucket_h)`** before stacking — never stack mixed spatial sizes.
 - `at_safe_point` is called every step (and during cache/sample). New long GPU work must call it or pause/stop will hang until the phase ends.
