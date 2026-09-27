@@ -483,19 +483,28 @@ class ImageScreenViewModel(
             }
             return
         }
-        val maxEdge = maxOf(item.width, item.height, 32).coerceIn(32, 4096)
-        val photoBytes = try {
-            blobStore.get(BlobRef(item.imagePath, maxEdge = maxEdge, quality = 90, format = "jpeg"))
-        } catch (_: Exception) {
-            return
-        }
-        val rgba = ImageCodecs.decodeRgba(photoBytes) ?: return
         val maskBytes = try {
             val b64 = ipc.maskGet(item.directory, item.stem).pngBase64
             if (b64.isNotEmpty()) decodeBase64(b64) else null
         } catch (_: Exception) {
             null
         }
+        // JPEG/WebP blobs flatten onto black and drop alpha; PNG keeps it for the no-sidecar fallback.
+        val useAlphaFallback = maskBytes == null && item.hasAlpha
+        val maxEdge = maxOf(item.width, item.height, 32).coerceIn(32, 4096)
+        val photoBytes = try {
+            blobStore.get(
+                BlobRef(
+                    item.imagePath,
+                    maxEdge = maxEdge,
+                    quality = 90,
+                    format = if (useAlphaFallback) "png" else "jpeg",
+                ),
+            )
+        } catch (_: Exception) {
+            return
+        }
+        val rgba = ImageCodecs.decodeRgba(photoBytes) ?: return
         val canvas = when {
             maskBytes != null -> {
                 val loaded = ImageCodecs.decodeRgba(maskBytes)
@@ -505,6 +514,13 @@ class ImageScreenViewModel(
                     MaskCanvas.white(rgba.width, rgba.height)
                 }
             }
+            useAlphaFallback -> MaskCanvas.fromAlphaRgba(
+                rgba.argb,
+                rgba.width,
+                rgba.height,
+                rgba.width,
+                rgba.height,
+            )
             else -> MaskCanvas.white(rgba.width, rgba.height)
         }
         photoArgb = rgba.argb
