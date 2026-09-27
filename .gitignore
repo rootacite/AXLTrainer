@@ -45,3 +45,8 @@ configs/*
 # Named wizard profiles written by tools/gen_prompts.py. Local, like the configs above.
 prompt_profiles/*
 !prompt_profiles/.gitkeep
+
+# Local state of the Automation page: settings, uploaded ComfyUI workflows, saved prompt sets
+# and one directory per job (its images included). Local, like the two folders above.
+automation/*
+!automation/.gitkeep
