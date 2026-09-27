@@ -5,8 +5,8 @@ output_dir = "/home/acite/LLM/axltrainer/outputs"
 logging_dir = "/home/acite/LLM/axltrainer/logs"
 
 # Alternatives:
-train_data_dir = "/home/acite/LLM/Character/Sena/st/"
-output_name = "sena"
+train_data_dir = "/home/acite/LLM/Character/Kirika/st"
+output_name = "Kirika"
 # Datasets trained together: one `[[environment.train_data]]` block per folder, `repeat` = how often
 # that folder's images are drawn inside a single epoch (1..512; 3 against 1 trains it three times as
 # often per epoch). With no block at all the list is empty and the `train_data_dir` line above is
@@ -54,12 +54,12 @@ amdfq_pool_mib = 0
 # output_name = "miyako"
 
 [[environment.train_data]]
-path = "/home/acite/LLM/Character/Sena/st/"
+path = "/home/acite/LLM/Character/Kirika/st"
 repeat = 1
 
 [[environment.train_data]]
-path = "/home/acite/LLM/Character/Sena/cg/"
-repeat = 2
+path = "/home/acite/LLM/Character/Kirika/cg"
+repeat = 3
 
 [model_spec]
 base_model_version = "sdxl_base_v1-0"
@@ -78,18 +78,21 @@ learning_rate = 1.0
 lr_scheduler = "cosine"
 lr_warmup_steps = 100
 max_grad_norm = 1.0
-epoch = 22
+epoch = 15
 save_every_n_epochs = 1
-save_every_n_steps = 50
+save_every_n_steps = 100
 # Optional: kohya LoRA .safetensors (or its checkpoint directory) to load before
 # training starts. Weights only: step/epoch counting still starts at 0, and this
 # run writes into its own timestamped run directory.
 resume_lora_path = ""
 
 [network]
+network_type = "locon"
 network_dim = 32
 network_alpha = 16
 network_dropout = 0.08
+conv_dim = 16
+conv_alpha = 8
 clip_skip = 1
 max_token_length = 225
 
@@ -118,15 +121,15 @@ noise_offset = 0.05
 flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 7.5E-5
+unet_learning_rate = 0.00008
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
-unet_eps = 1.0E-8
+unet_eps = 1e-8
 unet_warmup_steps = 100
 
 [te_optimizer]
-te_learning_rate = 7.5E-6
+te_learning_rate = 0.000008
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99
@@ -137,36 +140,80 @@ max_data_loader_n_workers = 20
 persistent_workers = true
 
 [validation]
-sample_prompts = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, morning, indoors, sitting, looking at viewer, smile, blush, open eyes,"
+sample_prompts = "kirika_character, 1girl, 1boy, hetero, serafuku, black thighhighs, open clothes, large breasts, breasts, breasts out, nipples, navel, cowgirl position, girl on top, sitting, straddling, leaning back, sex, anal, large penis, anus, ass, painful, open eyes, bedroom, indoors, on bed, sheets, blue sky, sunlight"
 sample_negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 sample_width = 1152
 sample_height = 768
 sample_steps = 35
 sample_seed = 0
-sample_repeat = 2
+sample_repeat = 1
 guidance_scale = 6.0
 
 [[validation.samples]]
-name = "sena_morning"
-prompt = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, morning, indoors, sitting, looking at viewer, smile, blush, open eyes,"
+name = "cowgirl_anal"
+prompt = "kirika_character, 1girl, 1boy, hetero, serafuku, black thighhighs, open clothes, large breasts, breasts, breasts out, nipples, navel, cowgirl position, girl on top, sitting, straddling, leaning back, sex, anal, large penis, anus, ass, painful, open eyes, bedroom, indoors, on bed, sheets, blue sky, sunlight"
 negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 width = 1152
 height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 2
+repeat = 1
 
 [[validation.samples]]
-name = "sena_night"
-prompt = "sena_character, 1girl, solo, full body, school uniform, plaid skirt, white thighhighs, hair ornament, (large breasts:1.2), open clothes, cleavage, nipple, bra pull, skirt lift, pussy, underwear, panties around one leg, classroom, night, indoors, sitting, looking at viewer, smile, blush, open eyes,"
+name = "missionary"
+prompt = "kirika_character, 1girl, 1boy, hetero, school uniform, white shirt, pleated skirt, black thighhighs, open clothes, large breasts, breasts, breasts out, nipples, navel, missionary, on back, looking at viewer, from front, sex, vaginal, large penis, pussy, smile, happy sex, orgasm, bedroom, indoors, on bed, sheets, neon lights, night"
 negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
 width = 1152
 height = 768
 steps = 35
 guidance_scale = 6.0
 seed = 0
-repeat = 2
+repeat = 1
+
+[[validation.samples]]
+name = "doggystyle_anal"
+prompt = "kirika_character, 1girl, 1boy, hetero, nightgown, hair ornament, bare legs, open clothes, large breasts, breasts, breasts out, nipples, doggystyle, sex from behind, top-down bottom-up, sex, anal, large penis, anus, ass, looking back, looking at viewer, open eyes, living room, indoors, sofa, overcast, soft lighting"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[[validation.samples]]
+name = "mating_press_anal"
+prompt = "kirika_character, 1girl, explicit, white sundress, open clothes, hair ornament, white thighhighs, large breasts, breasts out, nipple, mating press, legs up, folded, knees to chest, looking at viewer, shy, blush, open eyes, large penis, anal, pussy, indoors, bedroom, bed, warm atmosphere,"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[[validation.samples]]
+name = "anal_insert"
+prompt = "kirika_character, 1girl, large breasts, solo, white pajamas, hair ornament, white thighhighs, open clothes, breasts, breasts out, nipples, navel, embarrassed, looking at viewer, open eyes, closed mouth, blush, mating press, legs up, folded, knees to chest, from above, anus, pussy, ass, anal object insertion, living room, indoors, sofa, warm atmosphere"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
+
+[[validation.samples]]
+name = "paizuri"
+prompt = "kirika_character, 1girl, large breasts, solo, nightgown, hair ornament, bare legs, open clothes, breasts, breasts out, nipples, navel, orgasm, looking at viewer, open eyes, closed mouth, blush, paizuri, oral, fellatio, after sex, cumdrip, cafe, indoors, window, sunset, backlighting"
+negative = "worst quality, low quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes"
+width = 1152
+height = 768
+steps = 35
+guidance_scale = 6.0
+seed = 0
+repeat = 1
 
 [bookkeeping]
 # TOML doesn't support Null directly in standard key-value pairs without specific schema handling,
