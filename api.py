@@ -4,9 +4,12 @@ import json
 import logging
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
@@ -36,7 +39,7 @@ from trainer.control import (
 )
 from trainer.hardware import collect_hardware_status
 from trainer.runs import find_latest_run
-from trainer import blobcodec, fsrpc, genjob
+from trainer import automation, blobcodec, comfy, fsrpc, genjob
 
 _TAG_BLOCKED = frozenset(
     {
@@ -601,6 +604,30 @@ def handle_profile_delete(params: dict[str, Any]) -> dict[str, Any]:
     return fsrpc.profile_delete(str(params.get("name") or ""))
 
 
+def handle_prompt_matrix(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.prompt_matrix()
+
+
+def handle_prompt_profile_list(_params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.prompt_profile_list()
+
+
+def handle_prompt_profile_get(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.prompt_profile_get(str(params.get("name") or ""))
+
+
+def handle_prompt_profile_save(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.prompt_profile_save(
+        str(params.get("name") or ""),
+        str(params.get("text") or ""),
+        bool(params.get("overwrite")),
+    )
+
+
+def handle_prompt_profile_delete(params: dict[str, Any]) -> dict[str, Any]:
+    return fsrpc.prompt_profile_delete(str(params.get("name") or ""))
+
+
 def handle_tag_lexicon(_params: dict[str, Any]) -> dict[str, Any]:
     return fsrpc.tag_lexicon()
 
@@ -689,11 +716,21 @@ def _filter_blob_paths(paths: list[str], cfg: dict[str, Any]) -> list[dict[str, 
     marks: list[dict[str, Any] | None] = []
     for raw in paths:
         path = Path(raw)
-        if not fsrpc.blob_path_allowed(path, cfg):
+        if not fsrpc.blob_path_allowed(path, cfg, extra_roots=_automation_roots()):
             marks.append({"path": raw, "error": "path is not an allowed image"})
         else:
             marks.append(None)
     return marks
+
+
+def _automation_roots() -> list[Path]:
+    """Folders the Automation page may show images from, on top of the dataset and output roots."""
+    roots = [automation.automation_root()]
+    try:
+        roots.append(Path(automation.load_settings()["output_dir"]).expanduser())
+    except (ValueError, OSError, KeyError):
+        pass
+    return roots
 
 
 def handle_blob_stat(params: dict[str, Any]) -> dict[str, Any]:
@@ -749,6 +786,348 @@ def handle_fs_roots(_params: dict[str, Any]) -> dict[str, Any]:
     return fsrpc.fs_roots(_train_config_dict())
 
 
+# --- Automation page: settings, workflows, prompt sets, ComfyUI jobs ---
+
+
+def _automation_object_info(server: str = "") -> Optional[dict[str, Any]]:
+    """The instance's node definitions, when one can be reached; None means "check skipped"."""
+    try:
+        settings = automation.load_settings()
+        url = server or settings["server"]
+        found = comfy.discover(server=url, budget=2.0) if not url else comfy.discover(server=url)
+        if not found["found"]:
+            return None
+        return comfy.ComfyClient(found["url"]).object_info()
+    except (comfy.ComfyError, ValueError, OSError):
+        return None
+
+
+def _automation_workflow_report(path: Path, positive_node: str = "", object_info: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    payload = automation.load_workflow(path)
+    report = automation.validate_workflow(payload, positive_node=positive_node, object_info=object_info)
+    return {"name": path.stem, "path": str(path), **report}
+
+
+def handle_automation_config_get(_params: dict[str, Any]) -> dict[str, Any]:
+    settings = automation.load_settings()
+    return {
+        "settings": settings,
+        "default_output_dir": str(automation.default_output_dir()),
+        "paths": {
+            "root": str(automation.automation_root()),
+            "workflows": str(automation.workflows_dir()),
+            "prompts": str(automation.prompts_dir()),
+            "jobs": str(automation.jobs_dir()),
+        },
+    }
+
+
+def handle_automation_config_save(params: dict[str, Any]) -> dict[str, Any]:
+    payload = params.get("settings")
+    if not isinstance(payload, dict):
+        raise ValueError("settings must be an object")
+    return {"settings": automation.save_settings(payload)}
+
+
+def handle_automation_discover(params: dict[str, Any]) -> dict[str, Any]:
+    server = str(params.get("server") or "")
+    if server:
+        # An explicit address is probed on its own; discovery would not add anything to it.
+        client = comfy.ComfyClient(server)
+        version = client.version()
+        if version is None:
+            return {
+                "found": False,
+                "url": comfy.normalize_server(server),
+                "version": "",
+                "queue_running": 0,
+                "queue_pending": 0,
+                "checked": [{"url": comfy.normalize_server(server), "ok": False, "reason": "no answer"}],
+                "probed_all": True,
+            }
+        queue: dict[str, Any] = {}
+        try:
+            queue = client.queue()
+        except comfy.ComfyError:
+            queue = {}
+        running = queue.get("queue_running")
+        pending = queue.get("queue_pending")
+        return {
+            "found": True,
+            "url": client.server,
+            "version": version,
+            "queue_running": len(running) if isinstance(running, list) else 0,
+            "queue_pending": len(pending) if isinstance(pending, list) else 0,
+            "checked": [],
+            "probed_all": True,
+        }
+    return comfy.discover()
+
+
+def handle_automation_workflow_list(_params: dict[str, Any]) -> dict[str, Any]:
+    settings = automation.load_settings()
+    object_info = _automation_object_info(settings["server"])
+    workflows: list[dict[str, Any]] = []
+    for item in automation.workflow_list():
+        path = Path(item["path"])
+        if not item["valid"]:
+            workflows.append({"name": item["name"], "path": str(path), "valid": False, "error": item["error"]})
+            continue
+        try:
+            workflows.append(
+                _automation_workflow_report(path, positive_node=settings["positive_node"], object_info=object_info)
+            )
+        except ValueError as exc:
+            workflows.append({"name": item["name"], "path": str(path), "valid": False, "error": str(exc)})
+    return {
+        "workflows": workflows,
+        "default_workflow": settings["workflow"],
+        "model_check": object_info is not None,
+    }
+
+
+def handle_automation_workflow_validate(params: dict[str, Any]) -> dict[str, Any]:
+    raw = str(params.get("path") or "")
+    if not raw:
+        raise ValueError("path is required")
+    settings = automation.load_settings()
+    object_info = _automation_object_info(settings["server"])
+    report = _automation_workflow_report(
+        Path(raw).expanduser(),
+        positive_node=str(params.get("positive_node") or settings["positive_node"]),
+        object_info=object_info,
+    )
+    report["model_check"] = object_info is not None
+    return report
+
+
+def handle_automation_workflow_save(params: dict[str, Any]) -> dict[str, Any]:
+    return automation.workflow_save(str(params.get("name") or ""), str(params.get("text") or ""))
+
+
+def handle_automation_workflow_delete(params: dict[str, Any]) -> dict[str, Any]:
+    return automation.workflow_delete(str(params.get("name") or ""))
+
+
+def handle_automation_prompt_list(_params: dict[str, Any]) -> dict[str, Any]:
+    return {"prompts": automation.prompt_set_list()}
+
+
+def handle_automation_prompt_save(params: dict[str, Any]) -> dict[str, Any]:
+    return automation.prompt_set_save(str(params.get("name") or ""), params.get("text"))
+
+
+def handle_automation_prompt_get(params: dict[str, Any]) -> dict[str, Any]:
+    return automation.prompt_set_get(str(params.get("name") or ""))
+
+
+def handle_automation_prompt_delete(params: dict[str, Any]) -> dict[str, Any]:
+    return automation.prompt_set_delete(str(params.get("name") or ""))
+
+
+def _automation_runner_script() -> Path:
+    script = _repo_root() / "trainer" / "run_automation.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"missing runner: {script}")
+    return script
+
+
+def _spawn_automation_job(job_id: str, output_dir: str, only_failed: bool = False) -> int:
+    spec_path = automation.job_path(job_id, output_dir)
+    log = automation.log_path(job_id, output_dir)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    command = [sys.executable, "-u", str(_automation_runner_script()), "--spec", str(spec_path)]
+    if only_failed:
+        command.append("--only-failed")
+    with open(log, "a", encoding="utf-8") as handle:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(_repo_root()),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    return proc.pid
+
+
+def handle_automation_job_start(params: dict[str, Any]) -> dict[str, Any]:
+    """Write the job record, then spawn the runner detached. Returns immediately."""
+    settings = automation.load_settings()
+    merged = dict(settings)
+    for key in ("server", "workflow", "positive_node", "count", "poll", "output_dir"):
+        if params.get(key) not in (None, ""):
+            merged[key] = params[key]
+    settings = automation.normalize_settings(merged)
+
+    prompts_payload = params.get("prompts")
+    if prompts_payload in (None, "", []):
+        set_name = str(params.get("prompt_set") or "")
+        if not set_name:
+            raise ValueError("prompts or a prompt set is required")
+        prompts = automation.normalize_prompts(automation.prompt_set_get(set_name)["text"])
+    else:
+        prompts = automation.normalize_prompts(prompts_payload)
+
+    workflow_raw = settings["workflow"]
+    if not workflow_raw:
+        raise ValueError("pick a workflow first")
+    workflow_path = Path(workflow_raw).expanduser()
+    if not workflow_path.is_file():
+        workflow_path = automation.workflow_path(Path(workflow_raw).stem)
+    report = _automation_workflow_report(workflow_path, positive_node=settings["positive_node"])
+    if not report["valid"]:
+        raise ValueError(f"workflow is not usable: {report['error']}")
+    if settings["count"] > 1 and not report["batch_size_nodes"]:
+        raise ValueError("this workflow has no numeric batch_size input, so images per prompt cannot apply")
+    if not report["positive_node"]:
+        raise ValueError("pick the CLIPTextEncode node that receives the prompt")
+
+    output_dir = settings["output_dir"]
+    running = next(
+        (job for job in automation.reconcile_jobs(output_dir) if job.get("state") == automation.STATE_RUNNING),
+        None,
+    )
+    if running is not None:
+        raise ValueError(f"a job is already running ({running.get('id')})")
+
+    stem = Path(workflow_path).stem or "automation"
+    job_id = automation.new_job_id(stem)
+    now = time.time()
+    job = {
+        "id": job_id,
+        "state": automation.STATE_RUNNING,
+        "created_at": now,
+        "started_at": None,
+        "updated_at": now,
+        "finished_at": None,
+        "pid": None,
+        "server": settings["server"],
+        "comfy_url": "",
+        "workflow": str(workflow_path),
+        "workflow_path": str(workflow_path),
+        "positive_node": report["positive_node"],
+        "count": settings["count"],
+        "poll": settings["poll"],
+        "output_dir": output_dir,
+        "error": None,
+        "prompts": [
+            {"index": index, "text": text, "state": automation.PROMPT_STATE_PENDING, "images": []}
+            for index, text in enumerate(prompts)
+        ],
+    }
+    automation.write_job(job, output_dir)
+    pid = _spawn_automation_job(job_id, output_dir)
+    job = automation.update_job(job_id, output_dir, pid=pid, started_at=now)
+    return {"job": _json_safe(automation.job_summary(job)), "log_path": str(automation.log_path(job_id, output_dir))}
+
+
+def handle_automation_job_list(_params: dict[str, Any]) -> dict[str, Any]:
+    settings = automation.load_settings()
+    jobs = automation.reconcile_jobs(settings["output_dir"])
+    return {"jobs": [_json_safe(automation.job_summary(job)) for job in jobs]}
+
+
+def handle_automation_job_get(params: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(params.get("id") or "")
+    if not job_id:
+        raise ValueError("id is required")
+    settings = automation.load_settings()
+    for job in automation.reconcile_jobs(settings["output_dir"]):
+        if str(job.get("id")) != job_id:
+            continue
+        payload = dict(job)
+        payload["summary"] = automation.job_summary(job)
+        payload["log_tail"] = _automation_log_tail(automation.log_path(job_id, job.get("output_dir") or settings["output_dir"]))
+        return _json_safe(payload)
+    raise ValueError(f"no job named {job_id}")
+
+
+def _automation_log_tail(path: Path, lines: int = 40) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def handle_automation_job_cancel(params: dict[str, Any]) -> dict[str, Any]:
+    """Stop a running job: signal its own process group, then mark it cancelled."""
+    job_id = str(params.get("id") or "")
+    settings = automation.load_settings()
+    for job in automation.reconcile_jobs(settings["output_dir"]):
+        if str(job.get("id")) != job_id:
+            continue
+        pid = job.get("pid")
+        if job.get("state") == automation.STATE_RUNNING and is_pid_alive(pid):
+            try:
+                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError, TypeError, ValueError):
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError, TypeError, ValueError):
+                    pass
+            for _ in range(40):
+                if not is_pid_alive(pid):
+                    break
+                time.sleep(0.05)
+        updated = automation.update_job(
+            job_id,
+            job.get("output_dir") or settings["output_dir"],
+            state=automation.STATE_CANCELLED,
+            error=job.get("error") or "cancelled",
+            finished_at=time.time(),
+        )
+        return {"job": _json_safe(automation.job_summary(updated))}
+    raise ValueError(f"no job named {job_id}")
+
+
+def handle_automation_job_retry_failed(params: dict[str, Any]) -> dict[str, Any]:
+    """Run the prompts that do not have an image yet, in the same job directory."""
+    job_id = str(params.get("id") or "")
+    settings = automation.load_settings()
+    for job in automation.reconcile_jobs(settings["output_dir"]):
+        if str(job.get("id")) != job_id:
+            continue
+        if job.get("state") == automation.STATE_RUNNING and is_pid_alive(job.get("pid")):
+            raise ValueError(f"{job_id} is still running")
+        output_dir = job.get("output_dir") or settings["output_dir"]
+        prompts = job.get("prompts") if isinstance(job.get("prompts"), list) else []
+        if not any(isinstance(p, dict) and p.get("state") != automation.PROMPT_STATE_DONE for p in prompts):
+            raise ValueError("every prompt of that job already produced its images")
+        pid = _spawn_automation_job(job_id, output_dir, only_failed=True)
+        updated = automation.update_job(
+            job_id,
+            output_dir,
+            state=automation.STATE_RUNNING,
+            pid=pid,
+            error=None,
+            finished_at=None,
+        )
+        return {
+            "job": _json_safe(automation.job_summary(updated)),
+            "log_path": str(automation.log_path(job_id, output_dir)),
+        }
+    raise ValueError(f"no job named {job_id}")
+
+
+def handle_automation_job_delete(params: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(params.get("id") or "")
+    settings = automation.load_settings()
+    for job in automation.reconcile_jobs(settings["output_dir"]):
+        if str(job.get("id")) != job_id:
+            continue
+        if job.get("state") == automation.STATE_RUNNING and is_pid_alive(job.get("pid")):
+            raise ValueError(f"{job_id} is still running; cancel it first")
+        directory = automation.job_dir(job_id, job.get("output_dir") or settings["output_dir"]).resolve()
+        root = Path(job.get("output_dir") or settings["output_dir"]).expanduser().resolve()
+        if directory.parent != root:
+            raise ValueError(f"refusing to delete outside the job root: {directory}")
+        shutil.rmtree(directory, ignore_errors=False)
+        return {"id": job_id}
+    raise ValueError(f"no job named {job_id}")
+
+
 _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
@@ -770,6 +1149,28 @@ _HANDLERS = {
     "profile_get": handle_profile_get,
     "profile_save": handle_profile_save,
     "profile_delete": handle_profile_delete,
+    "prompt_matrix": handle_prompt_matrix,
+    "prompt_profile_list": handle_prompt_profile_list,
+    "prompt_profile_get": handle_prompt_profile_get,
+    "prompt_profile_save": handle_prompt_profile_save,
+    "prompt_profile_delete": handle_prompt_profile_delete,
+    "automation_config_get": handle_automation_config_get,
+    "automation_config_save": handle_automation_config_save,
+    "automation_discover": handle_automation_discover,
+    "automation_workflow_list": handle_automation_workflow_list,
+    "automation_workflow_validate": handle_automation_workflow_validate,
+    "automation_workflow_save": handle_automation_workflow_save,
+    "automation_workflow_delete": handle_automation_workflow_delete,
+    "automation_prompt_list": handle_automation_prompt_list,
+    "automation_prompt_get": handle_automation_prompt_get,
+    "automation_prompt_save": handle_automation_prompt_save,
+    "automation_prompt_delete": handle_automation_prompt_delete,
+    "automation_job_start": handle_automation_job_start,
+    "automation_job_list": handle_automation_job_list,
+    "automation_job_get": handle_automation_job_get,
+    "automation_job_cancel": handle_automation_job_cancel,
+    "automation_job_retry_failed": handle_automation_job_retry_failed,
+    "automation_job_delete": handle_automation_job_delete,
     "tag_lexicon": handle_tag_lexicon,
     "dataset_list": handle_dataset_list,
     "caption_write": handle_caption_write,
@@ -797,6 +1198,17 @@ _CONTROL_METHODS = frozenset(
         "config_save",
         "profile_save",
         "profile_delete",
+        "prompt_profile_save",
+        "prompt_profile_delete",
+        "automation_config_save",
+        "automation_workflow_save",
+        "automation_workflow_delete",
+        "automation_prompt_save",
+        "automation_prompt_delete",
+        "automation_job_start",
+        "automation_job_cancel",
+        "automation_job_retry_failed",
+        "automation_job_delete",
         "caption_write",
         "dataset_drop",
         "dataset_shuffle",

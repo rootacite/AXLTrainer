@@ -6,13 +6,14 @@ Handlers here are called from `api.dispatch`. Paths are allowlisted against
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import shutil
 import tomllib
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from PIL import Image
 
@@ -28,6 +29,9 @@ PROFILE_DIR_NAME = "configs"
 PROFILE_EXT = ".toml"
 PROFILE_MAX_NAME = 64
 PROFILE_ILLEGAL = set('/\\:*?"<>|')
+PROMPT_MATRIX_NAME = "input_matrix.txt"
+PROMPT_PROFILE_DIR_NAME = "prompt_profiles"
+PROMPT_PROFILE_EXT = ".json"
 SHUFFLE_TEMP_PREFIX = "axl-shuffle-"
 SHUFFLE_STEM_PAD = 4
 SHUFFLE_FIRST = "0001"
@@ -109,7 +113,7 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-def blob_path_allowed(path: Path, cfg: dict[str, Any]) -> bool:
+def blob_path_allowed(path: Path, cfg: dict[str, Any], extra_roots: Sequence[Path] = ()) -> bool:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         return False
@@ -119,7 +123,10 @@ def blob_path_allowed(path: Path, cfg: dict[str, Any]) -> bool:
         return False
     if resolved.parent in train_data_roots(cfg):
         return True
-    return _is_under(resolved, output_root(cfg))
+    if _is_under(resolved, output_root(cfg)):
+        return True
+    # The Automation page's own output (settings.json's output_dir, plus the automation tree).
+    return any(_is_under(resolved, root) for root in extra_roots)
 
 
 def checkpoint_source_allowed(path: Path, cfg: dict[str, Any]) -> bool:
@@ -448,6 +455,113 @@ def profile_delete(name: str) -> dict[str, Any]:
         raise ValueError(f"The profile is already gone: {name}")
     if path.resolve().parent != profile_dir().resolve():
         raise ValueError(f"Not a profile file: {path}")
+    path.unlink()
+    return {}
+
+
+def prompt_matrix_path() -> Path:
+    return _repo_root() / PROMPT_MATRIX_NAME
+
+
+def prompt_profile_dir() -> Path:
+    return _repo_root() / PROMPT_PROFILE_DIR_NAME
+
+
+def prompt_matrix() -> dict[str, Any]:
+    """The prompt wizard's input matrix, so Ranko and tools/gen_prompts.py read one file."""
+    path = prompt_matrix_path()
+    if not path.is_file():
+        raise ValueError(f"Could not locate {PROMPT_MATRIX_NAME} at {path}")
+    return {"path": str(path), "text": path.read_text(encoding="utf-8")}
+
+
+def _prompt_profile_path(name: str) -> Path:
+    err = validate_profile_name(name)
+    if err:
+        raise ValueError(err)
+    return prompt_profile_dir() / f"{name.strip()}{PROMPT_PROFILE_EXT}"
+
+
+def _prompt_profile_version(payload: dict[str, Any]) -> Optional[int]:
+    raw = payload.get("version")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return int(raw)
+
+
+def prompt_profile_list() -> dict[str, Any]:
+    directory = prompt_profile_dir()
+    if not directory.is_dir():
+        return {"profiles": []}
+    profiles = []
+    for path in sorted(directory.iterdir(), key=lambda p: p.name.lower()):
+        if not path.is_file() or path.suffix.lower() != PROMPT_PROFILE_EXT:
+            continue
+        stat = path.stat()
+        version: Optional[int] = None
+        error: Optional[str] = None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                error = "profile must be a JSON object"
+            else:
+                version = _prompt_profile_version(payload)
+        except OSError as exc:
+            error = f"cannot read: {exc}"
+        except json.JSONDecodeError as exc:
+            error = f"invalid JSON ({exc})"
+        profiles.append(
+            {
+                "name": path.stem,
+                "version": version,
+                "modified": int(stat.st_mtime * 1000),
+                "size": int(stat.st_size),
+                "error": error,
+            }
+        )
+    return {"profiles": profiles}
+
+
+def prompt_profile_get(name: str) -> dict[str, Any]:
+    path = _prompt_profile_path(name)
+    if not path.is_file():
+        raise ValueError(f"No prompt profile named {name.strip()}")
+    return {"name": path.stem, "text": path.read_text(encoding="utf-8")}
+
+
+def prompt_profile_save(name: str, text: str, overwrite: bool) -> dict[str, Any]:
+    err = validate_profile_name(name)
+    if err:
+        raise ValueError(err)
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("prompt profile text is empty")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"prompt profile would not parse: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("spec"), dict):
+        raise ValueError("a prompt profile needs a spec object")
+    trimmed = name.strip()
+    directory = prompt_profile_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = None
+    for path in directory.iterdir():
+        if path.is_file() and path.suffix.lower() == PROMPT_PROFILE_EXT and path.stem.lower() == trimmed.lower():
+            existing = path
+            break
+    if existing is not None and not overwrite:
+        raise ValueError(f'A prompt profile named "{trimmed}" already exists')
+    target = existing if existing is not None else directory / f"{trimmed}{PROMPT_PROFILE_EXT}"
+    atomic_write_text(target, text)
+    return {"name": target.stem, "path": str(target)}
+
+
+def prompt_profile_delete(name: str) -> dict[str, Any]:
+    path = _prompt_profile_path(name)
+    if not path.is_file():
+        raise ValueError(f"The prompt profile is already gone: {name}")
+    if path.resolve().parent != prompt_profile_dir().resolve():
+        raise ValueError(f"Not a prompt profile file: {path}")
     path.unlink()
     return {}
 

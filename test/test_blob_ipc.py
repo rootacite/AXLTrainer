@@ -352,6 +352,98 @@ class FsRpcTest(unittest.TestCase):
         self.assertEqual(dest.read_bytes(), b"lora")
 
 
+class PromptStoreTest(unittest.TestCase):
+    """The prompt wizard's shared files: the repo matrix, and the named profiles under prompt_profiles/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.profiles = self.root / "prompt_profiles"
+        self.profiles.mkdir()
+        self.matrix = self.root / "input_matrix.txt"
+        self.matrix.write_text("POSES:\nmissionary, spread legs : both\n", encoding="utf-8")
+        self._dir = mock.patch.object(fsrpc, "prompt_profile_dir", return_value=self.profiles)
+        self._matrix = mock.patch.object(fsrpc, "prompt_matrix_path", return_value=self.matrix)
+        self._dir.start()
+        self._matrix.start()
+
+    def tearDown(self):
+        self._matrix.stop()
+        self._dir.stop()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _profile_text(**overrides):
+        spec = {"character": "(kirika_character:1.1), 1girl", "mode": "sfw", "exposure": ["covered"]}
+        spec.update(overrides)
+        return json.dumps({"version": 3, "name": "Kirika", "spec": spec}, ensure_ascii=False)
+
+    def test_matrix_is_read_and_a_missing_file_is_an_error(self):
+        got = api.dispatch("prompt_matrix", {})
+        self.assertEqual(got["path"], str(self.matrix))
+        self.assertIn("missionary", got["text"])
+        self.matrix.unlink()
+        with self.assertRaises(ValueError) as ctx:
+            api.dispatch("prompt_matrix", {})
+        self.assertIn("input_matrix.txt", str(ctx.exception))
+
+    def test_profile_roundtrip_and_overwrite_rule(self):
+        text = self._profile_text()
+        saved = api.dispatch("prompt_profile_save", {"name": "Kirika", "text": text, "overwrite": False})
+        self.assertEqual(saved["name"], "Kirika")
+        self.assertTrue((self.profiles / "Kirika.json").is_file())
+
+        listed = api.dispatch("prompt_profile_list", {})["profiles"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["name"], "Kirika")
+        self.assertEqual(listed[0]["version"], 3)
+        self.assertIsNone(listed[0]["error"])
+
+        got = api.dispatch("prompt_profile_get", {"name": "Kirika"})
+        self.assertEqual(json.loads(got["text"]), json.loads(text))
+
+        with self.assertRaises(ValueError) as ctx:
+            api.dispatch("prompt_profile_save", {"name": "kirika", "text": text, "overwrite": False})
+        self.assertIn("already exists", str(ctx.exception))
+        api.dispatch("prompt_profile_save", {"name": "Kirika", "text": text, "overwrite": True})
+        self.assertEqual(len(api.dispatch("prompt_profile_list", {})["profiles"]), 1)
+
+        api.dispatch("prompt_profile_delete", {"name": "Kirika"})
+        self.assertEqual(api.dispatch("prompt_profile_list", {})["profiles"], [])
+        with self.assertRaises(ValueError):
+            api.dispatch("prompt_profile_get", {"name": "Kirika"})
+
+    def test_save_rejects_broken_json_and_a_missing_spec(self):
+        with self.assertRaises(ValueError):
+            api.dispatch("prompt_profile_save", {"name": "Broken", "text": "{not json", "overwrite": False})
+        with self.assertRaises(ValueError):
+            api.dispatch("prompt_profile_save", {"name": "Broken", "text": '{"version": 3}', "overwrite": False})
+        with self.assertRaises(ValueError):
+            api.dispatch("prompt_profile_save", {"name": "bad/name", "text": self._profile_text(), "overwrite": False})
+        self.assertFalse((self.profiles / "Broken.json").exists())
+
+    def test_list_reports_unreadable_entries_and_skips_foreign_files(self):
+        self.profiles.joinpath("Broken.json").write_text("{not json", encoding="utf-8")
+        self.profiles.joinpath("Old.json").write_text('{"spec": {"mode": "sfw"}}', encoding="utf-8")
+        self.profiles.joinpath(".gitkeep").write_text("", encoding="utf-8")
+        listed = {item["name"]: item for item in api.dispatch("prompt_profile_list", {})["profiles"]}
+        self.assertEqual(set(listed), {"Broken", "Old"})
+        self.assertIn("invalid JSON", listed["Broken"]["error"])
+        self.assertIsNone(listed["Old"]["error"])
+        self.assertIsNone(listed["Old"]["version"])
+
+    def test_delete_leaves_other_files_alone(self):
+        self.profiles.joinpath(".gitkeep").write_text("", encoding="utf-8")
+        api.dispatch(
+            "prompt_profile_save",
+            {"name": "Kirika", "text": self._profile_text(), "overwrite": False},
+        )
+        api.dispatch("prompt_profile_delete", {"name": "Kirika"})
+        self.assertEqual(sorted(p.name for p in self.profiles.iterdir()), [".gitkeep"])
+        with self.assertRaises(ValueError):
+            api.dispatch("prompt_profile_delete", {"name": "Kirika"})
+
+
 class NoStdinChannelTest(unittest.TestCase):
     def test_stdin_loop_is_gone(self):
         self.assertFalse(hasattr(api, "run_ipc_loop"))
