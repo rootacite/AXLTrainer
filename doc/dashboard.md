@@ -22,9 +22,9 @@ cd ranko
 ./gradlew :desktopApp:packageDeb     # package an installer (also: packageDmg / packageMsi)
 ```
 
-## The four tabs
+## The five tabs
 
-The app opens with a floating, draggable navigation rail (Images / Statistics / Utils / Dashboard). It snaps to the nearest window edge, collapses to a ball after a short idle (tap to expand), and stays inside the window when dragged or when the window is resized. State is app-scoped, so switching tabs never loses your place.
+The app opens with a floating, draggable navigation rail (Images / Statistics / Utils / Dashboard / Automation). It snaps to the nearest window edge, collapses to a ball after a short idle (tap to expand), and stays inside the window when dragged or when the window is resized. State is app-scoped, so switching tabs never loses your place.
 
 ### Images — dataset caption editor
 
@@ -70,7 +70,7 @@ See [Configuration](configuration.md) for the meaning of every field.
 
 The heart of the app. It spawns `api.py` on first use and polls it (every 1 s while a run is live, otherwise 3 s). The hardware panel polls `hardware_status` on its own 1 s cadence while the tab is visible.
 
-- **Header**: connected/disconnected indicator, auto-refresh switch, Refresh button, dataset / target / base-model compact metrics, and sliders for **Curve Smoothing** (EMA 0–0.99), **Chart Line** (stroke 1–8), and **Sample Size** (80–360 px thumbnails).
+- **Header**: connected/disconnected indicator, auto-refresh switch, Refresh button, dataset / target / base-model compact metrics, and sliders for **Curve Smoothing** (EMA 0–0.99), **Chart Line** (stroke 1–8), and **Sample Size** (80–360 px thumbnails, default 120).
 - **Training control card**:
   - Status chip (idle / starting / encoding / training / sampling / pausing / paused / resuming / stopping / finished / error), plus transient **gpu-out** / **gpu-in** chips with swap progress while offloading/loading.
   - Run info: output name, run id, PID, elapsed time, alive flag, and the run's `detail` / `error` lines. When `[training].resume_lora_path` is set, the card also shows what the next run will resume from, or — while running — the checkpoint this run was seeded from (`Resumed from … · checkpoint step N · M tensors`).
@@ -84,12 +84,91 @@ The heart of the app. It spawns `api.py` on first use and polls it (every 1 s wh
 
 If the helper process can't be reached (and no data has loaded), a full-screen error card with **Retry** (restarts `api.py`) is shown. The error message suggests setting `AXL_PYTHON` if the interpreter wasn't found.
 
+### Automation — prompt wizard, ComfyUI batch, gallery
+
+The tab that writes prompts (or takes them from a saved set) and pushes them through a ComfyUI
+workflow, then shows what came out. Its three sections sit in a rail on the left; the language
+chips (中文 / EN) at the top right switch the whole page, and it opens in English.
+
+Everything the section remembers lives under `automation/` in the repo root (gitignored):
+`settings.json`, `workflows/*.json` (workflows you uploaded), `prompts/*.txt` (saved prompt sets)
+and `jobs/<job_id>/` (one run's `job.json`, `log.txt` and `images/`). `AXL_AUTOMATION_DIR`
+overrides that root; a job's images are served to the tab through the same `blob_*` calls the rest
+of the app uses, so no new image path exists.
+
+**Prompts** — the wizard from `tools/gen_prompts.py`, in Kotlin:
+
+- The tag matrix is the repo's `input_matrix.txt` (read over IPC, never edited here); the status
+  line shows its path and line count, and **Reload** re-reads it after you edit the file by hand.
+- **Profiles** are the `prompt_profiles/*.json` files, listed with their format version, size and
+  mtime. Loading one opens the configuration list; a v1 or v2 profile is upgraded in memory (the
+  row then shows what changed, e.g. `upgraded from v2 to v3`) and is only rewritten when you save.
+  **Save as** writes a v3 profile, with an overwrite switch for a name that is taken; **Delete**
+  removes the file.
+- **Wizard**: 13 steps (character, mode, exposure, clothing, chest, belly, face, scene, family,
+  ratio, stages, pose, count) with a step list on the left, back/next at the bottom, and pages the
+  current mode or exposure does not use skipped (`nude` drops clothing; only `sex` has family /
+  ratio / stages). The face page is five groups (总表情, 视线, 眼睛状态, 嘴状态, 脸红, 眼泪 here named
+  Expression / Gaze / Eye state / Mouth / Blush / Tears), each with **any** (roll one of the whole
+  mode pool), **off**, or a tick list that becomes that group's candidate pool — one tag per group
+  per prompt, never two. Chest and belly take a level or "follow the pose". The stage page sets the
+  eight per-prompt weights (`during` starts at 1); all-zero falls back to `during`. SFW with a high
+  exposure, an exposed chest, or a sex face tag shows a yellow banner instead of the CLI's question.
+- **List**: the one-page configuration list (总清单) with the current value of every item; clicking
+  a row opens that step's editor in a dialog and returns to the list. **Generate**, **Save as
+  profile** and **Back to the wizard** sit at the bottom.
+- **Generated prompts**: the list, with a copy button per line, **Copy all**, **Download .txt** (the
+  desktop save dialog or a browser download), and **Send to batch**, which hands the list to the
+  ComfyUI section. The seed field is on the count step: blank means a fresh random seed, and the
+  result header shows the seed that was used so the same batch can be reproduced.
+
+**ComfyUI** — connect, pick a workflow, run the batch:
+
+- **Server**: probes the machine that runs the helper. With the address blank it asks the helper to
+  find a ComfyUI itself (it walks the loopback listeners and accepts only a server that reports a
+  `comfyui_version`); a filled address is probed as given. The card shows the version and the queue
+  depth, or the ports that were tried and why each was rejected.
+- **Workflow**: **Upload JSON…** takes a file from *your* machine (the desktop reads it after the OS
+  dialog; the web target sends it from a file input) and stores it under `automation/workflows/`.
+  Each stored workflow shows its node count, its `SaveImage` count and its numeric `batch_size`
+  count, and can be checked or deleted. The pre-check compares every model-like input against the
+  live `/object_info` and names what is missing (both combo shapes ComfyUI 0.35 reports are read).
+  **Positive-prompt node** lists every `CLIPTextEncode` with a snippet of its current text; the one
+  the sampler's `positive` link points at is picked for you and marked as guessed.
+- **Batch**: prompts come from the generated list, a saved prompt set, or a box you type into. Set
+  images per prompt (1–16; refused when the workflow has no numeric `batch_size`), the history poll
+  interval, and the output folder (defaults to `automation/jobs`; **Browse** picks it). **Save
+  settings** writes `settings.json`, **Start** queues the job, and while one runs the card shows its
+  progress with **Cancel**. `Save as prompt set` stores the current list under `automation/prompts/`
+  for reuse. The log card shows the tail of the job's `log.txt`.
+- Generation runs detached (`trainer/run_automation.py`), so closing Ranko does not stop it. Each
+  prompt gets its own random seed (written into every numeric seed input, including one that is
+  fed through a linked seed node), the positive node's text is replaced, and `batch_size` is set on
+  every numeric one. One bad prompt is recorded and the batch continues; three failures in a row
+  stop it. A `SaveImage` output is downloaded as `p0003_01.png` with a sidecar `.txt` holding the
+  seed, `prompt_id` and prompt text — `PreviewImage` nodes are ignored. Cancelling keeps whatever
+  already landed.
+
+**Gallery** — the jobs and their images:
+
+- Newest first, with state, `done/total`, image count and elapsed time; filter chips (all / running
+  / done / failed / cancelled) and a search box over the job id and workflow path.
+- The selected job offers **Cancel** (SIGTERMs the runner), **Retry failed** (runs only the prompts
+  that produced no image, in the same folder), **Save records .txt** (one line per image: name,
+  seed, `prompt_id`, prompt), **Open folder** (desktop) and **Delete** (asks first; removes the job
+  directory).
+- Thumbnails are grouped per prompt and wrap instead of scrolling sideways; the slider sets their
+  size (80–360 px). Clicking one opens the same fullscreen preview the Dashboard uses, with the
+  caption (seed, `prompt_id`, prompt), prev/next, **Save this image…** (the image at full size) and
+  **Copy prompt**.
+- A job only knows the images it recorded; a prompt that failed shows its error instead of thumbs.
+
 ## How it talks to the trainer
 
 1. **Discovery** — `TrainerRepo.findRoot()` walks up from the app's executable and `user.dir` looking for `api.py` or a `config.toml` that sits next to the `trainer/` package.
 2. **Spawn** — Ranko connects to `ws://127.0.0.1:18765`. If nothing is listening it runs `$AXL_PYTHON` (if set) or `python3 -u api.py --websocket` with the working directory at the repo root, stderr inherited, `PYTHONUNBUFFERED=1`. A JVM shutdown hook kills the helper **this process spawned**.
 3. **Protocol** — JSON-RPC on that WebSocket: requests are `{"id": n, "method": "...", "params": {...}}`, responses are `{"id": n, "ok": true, "result": {...}}` or `{"id": n, "ok": false, "error": "..."}`. Replies match on `id`. Dataset images travel as resized JPEG blobs (`blob_batch`), not `java.io.File`.
-4. **Methods** — train control plus `config_*`, `dataset_*`, `blob_*`, `mask_*`, `profile_*`. Full reference: [API.md](../API.md).
+4. **Methods** — train control plus `config_*`, `dataset_*`, `blob_*`, `mask_*`, `profile_*`, `prompt_*` and `automation_*`. Full reference: [API.md](../API.md).
 
 **Important**: `train_start` spawns the trainer **detached** (`setsid`). Closing Ranko does not stop training; use Pause/Early Stop (or the runtime `command.json`) to control it.
 

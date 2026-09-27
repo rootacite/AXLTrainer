@@ -252,8 +252,10 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
 | `trainer/genjob.py` | Job records for one-off sample generation (`{name}_samples/generated/*.json`): naming, request validation, atomic write, listing. torch-free. |
 | `trainer/generate_sample.py` | `python -u trainer/generate_sample.py --spec <job.json>`: loads the base + a kohya LoRA (reusing `SdxlFamily.apply_lora`/`load_lora`), samples with the run's own scheduler/settings taken from the checkpoint metadata, writes the PNG + progress into the job file. Detached, never touches `state.json`/the lock. |
-| `trainer/env.py` | MIGraphX cache dir, `flush_memory`. |
-| `trainer/hardware.py` | Ranko hardware panel: nvtop snapshot, AMD edge/junction, CPU util/temp, RAM. |
+| `trainer/comfy.py` | ComfyUI HTTP client + local-server discovery. Torch-free. Every request bypasses `http_proxy` (a loopback call through this machine's proxy answers 502); discovery walks `/proc/net/tcp{,6}` and accepts only a `system.comfyui_version` answer. |
+| `trainer/automation.py` | The Automation page's state: `automation/settings.json`, uploaded workflows, prompt sets, job records (`jobs/<id>/job.json`), workflow validation + the model pre-check against the live `/object_info` (both combo shapes 0.35 reports). Torch-free. |
+| `trainer/run_automation.py` | `python -u trainer/run_automation.py --spec <job.json> [--only-failed]`: pushes each prompt through the workflow (positive node, batch size, its own seed), polls history, downloads `SaveImage` outputs as `p0003_01.png` + a sidecar `.txt`, updates the job file. Detached; SIGTERM cancels between prompts and inside a poll. |
+| `trainer/env.py` | MIGraphX cache dir, `flush_memory`. || `trainer/hardware.py` | Ranko hardware panel: nvtop snapshot, AMD edge/junction, CPU util/temp, RAM. |
 | `trainer/utils.py` | Image list, caption shuffle, bucket math (`pick_bucket_size`), fit geometry (`fit_geometry`/`fit_to_bucket`), loss masks, `build_time_ids`. |
 | `trainer/blobcodec.py` | Torch-free resize/re-encode + `/tmp` LRU cache + spawn process pool for Ranko `blob_*`. |
 | `trainer/fsrpc.py` | Torch-free dataset/config/profile/mask/export IO behind IPC. |
@@ -339,6 +341,15 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | `hardware_status` | `nvtop -s` JSON + DRM hwmon temps + `/proc` CPU (read-only) |
 | `config_get` / `config_save` | read / atomic-write repo `config.toml` |
 | `profile_list` / `_get` / `_save` / `_delete` | `configs/` presets |
+| `prompt_matrix` | read-only: repo-root `input_matrix.txt` (the prompt wizard's tag matrix) |
+| `prompt_profile_list` / `_get` / `_save` / `_delete` | `prompt_profiles/*.json`; the store is dumb (text + a `spec` object), the v1/v2 upgrades happen in Ranko |
+| `automation_config_get` / `_save` | `automation/settings.json` (server, workflow, positive node, count, poll, output dir) |
+| `automation_discover` | probe the machine's loopback listeners for a ComfyUI (`/proc/net/tcp{,6}` + `system.comfyui_version`), proxy-free |
+| `automation_workflow_list` / `_validate` / `_save` / `_delete` | uploaded API-format workflows + the model pre-check against the live `/object_info` |
+| `automation_prompt_list` / `_get` / `_save` / `_delete` | `automation/prompts/*.txt` prompt sets |
+| `automation_job_start` | write `automation/jobs/<id>/job.json`, spawn `trainer/run_automation.py` **detached** (refuses while another job runs) |
+| `automation_job_list` / `_get` | read-only, newest first; a `running` job whose PID died is rewritten to `error`; `_get` adds `summary` + `log_tail` |
+| `automation_job_cancel` / `_retry_failed` / `_delete` | SIGTERM the runner's group / rerun only the prompts without images / remove the job directory |
 | `dataset_list` | non-recursive folder scan + tags + sizes |
 | `caption_write` | `{stem}.txt` |
 | `dataset_drop` / `dataset_shuffle` | trash / renumber (Python owns IO) |
@@ -377,10 +388,16 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 | `…/data/ConfigImporter.kt` | In-memory parse only; load/save go through IPC |
 | `…/data/ConfigProfileStore.kt` | Name rules + apply merge; disk IO is `profile_*` |
 | `…/data/BlobStore.kt` | Hash cache + coalesced `blob_stat`/`blob_batch` |
+| `…/pages/AutomationScreen.kt` + `…ViewModel.kt` | The fifth tab: Prompts (wizard/profiles/results), ComfyUI (discovery, workflows, batch, log) and Gallery (jobs, thumbnails, save) |
+| `…/pages/components/automation/` | `PromptEditor`/`PromptPanes` (the ported wizard's pages, step rail, manifest, results), `ComfyPanes`, `GalleryPane`, `UiText` (this page's own chrome, both languages) |
+| `…/pages/components/SamplePreview.kt` | The fullscreen image preview, shared by the Dashboard's sample grid and the Gallery (`PreviewImage` + `ImagePreviewOverlay`). It must be given a window-sized box — inside a `verticalScroll` it collapses onto its header row |
+| `…/prompt/` | The Kotlin port of `tools/gen_prompts.py`: matrix parser, face groups, spec, profile codec (v1/v2 → v3), generator, wizard pages, manifest, the ported string table |
+| `…/util/SaveClientFile.kt` (+ jvm/wasm actuals) | Hands a finished file to the user: desktop save dialog, web download |
+| `…/util/ClientFilePicker.kt` (+ jvm/wasm actuals) | Reads a text file the user picks on their machine (a workflow JSON); `openLocalDirectory` is desktop-only |
 | `…/jvmMain/` | WebSocket transport, helper spawn, FileKit, Coil fetcher |
 | `Graphs.kt` / `Factory.kt` | Metro `AppGraph` + ViewModel factory |
 
-Screens: `Images` | `Statistics` | `Utils` | `Dashboard` (`Stage.kt` enum).
+Screens: `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum).
 
 Path pickers go through `PathPicker`. Desktop (`JvmPathPicker`) is FileKit (XDG portal on Linux). Web (`WasmPathPicker`) is an in-app porcelain dialog over `fs_listdir` / `fs_roots`, because the browser cannot return a POSIX path the trainer can open. Do not reintroduce `JFileChooser`. `initialDirectoryFor` seeds FileKit from the current field value; Save As on desktop may create a 0-byte placeholder that `deleteEmptyPlaceholder` removes.
 
@@ -470,6 +487,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing |
 | Orphans | `python -m unittest discover -s test -p 'test_orphans.py'` | start-time identity, an unreaped child counting as gone, session membership, reaping a session, watching a leader die, the forkserver command-line fallback (no GPU) |
 | Gen jobs | `python -m unittest discover -s test -p 'test_genjob.py'` | job naming/stem, request validation ranges, atomic write, listing order, done/error transitions (no GPU) |
+| Automation | `python -m unittest discover -s test -p 'test_automation.py'` | ComfyUI client (proxy bypass, queue/poll/download, cancel), discovery (port scan, signature check, `$AXL_COMFY_URL`), workflow validation + both combo schemas of the model pre-check, settings/prompt-set stores, job records and dead-PID reconcile, the real runner against a stub ComfyUI (images + sidecars, seeds, batch size, one failing prompt, consecutive-failure stop, `--only-failed`, SIGTERM), the `automation_*` handlers through `api.dispatch` (including that a job's image passes `blob_stat`), and two read-only checks against the machine's own ComfyUI when one is listening (no GPU work) |
 | Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
 | Sample offload | `python -m unittest discover -s test -p 'test_sampling_offload.py'` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
 | GPU smoke | `python -m unittest discover -s test -p 'test_vram_gpu.py'` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
@@ -480,7 +498,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Masked loss GPU | `python -m unittest discover -s test -p 'test_masked_loss_gpu.py'` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
 | Mask blur | `python -m unittest discover -s test -p 'test_mask_blur.py'` | sidecar naming/extensions, alpha extraction (RGBA/LA/palette), uniform-alpha skips, blur written at the source size with the `axl_mask_blur` marker and a monotone ramp, training image untouched, hand-painted sidecar protected vs `--overwrite`, rerun replaces its own output, `--dry-run`, worker-pool vs in-process runs agreeing byte for byte and keeping the input order, CLI end to end, one masked loader check (skipped without torch) |
 | Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
-| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display), dataset shuffle (mask/caption pairing, padded renumbering, seeded order, untouched directories and foreign files, orphan refusal, rollback on a failed rename) |
+| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display), dataset shuffle (mask/caption pairing, padded renumbering, seeded order, untouched directories and foreign files, orphan refusal, rollback on a failed rename), the prompt port (matrix/profile/generator/wizard/manifest) against the repo's own `input_matrix.txt` and `prompt_profiles/`, the Automation IPC payloads, and a render smoke test that composes each Automation pane in a real window with fixture state (it catches the layout crash class that only shows up at measurement time; needs a display) |
 
 Python suites live in `test/` — a plain namespace directory, deliberately **without**
 `__init__.py`, so `import test` still resolves to the standard library package. Run them from the
