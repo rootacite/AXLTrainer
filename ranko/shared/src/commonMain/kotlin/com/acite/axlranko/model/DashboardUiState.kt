@@ -274,7 +274,7 @@ data class DashboardUiState(
     val autoRefresh: Boolean = true,
     val smoothing: Float = 0.90f,
     val chartStroke: Float = 1.5f,
-    val sampleThumbSize: Float = 260f,
+    val sampleThumbSize: Float = 120f,
     val previewIndex: Int? = null,
     val config: JsonObject = JsonObject(emptyMap()),
     val runId: String? = null,
