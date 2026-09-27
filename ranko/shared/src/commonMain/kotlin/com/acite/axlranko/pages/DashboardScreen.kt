@@ -102,8 +102,10 @@ import com.acite.axlranko.pages.components.ChartPickMarkers
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
 import com.acite.axlranko.pages.components.HardwareSection
+import com.acite.axlranko.pages.components.ImagePreviewOverlay
 import com.acite.axlranko.pages.components.MetricCard
 import com.acite.axlranko.pages.components.PANEL_CARD_PADDING
+import com.acite.axlranko.pages.components.PreviewImage
 import com.acite.axlranko.pages.components.PANEL_MAX_HEIGHT
 import com.acite.axlranko.pages.components.PANEL_MAX_WIDTH
 import com.acite.axlranko.pages.components.PANEL_MIN_HEIGHT
@@ -1431,144 +1433,13 @@ private fun SamplePreviewOverlay(
     onPrev: () -> Unit,
     onNext: () -> Unit,
 ) {
-    val sample = samples[index]
-    val focusRequester = remember { FocusRequester() }
-    var dragAccum by remember { mutableFloatStateOf(0f) }
-
-    LaunchedEffect(index) {
-        focusRequester.requestFocus()
-        dragAccum = 0f
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(rankoColors.bgApp.copy(alpha = 0.92f))
-            .focusRequester(focusRequester)
-            .focusable()
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.Escape -> {
-                        onClose()
-                        true
-                    }
-                    Key.DirectionLeft -> {
-                        onPrev()
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        onNext()
-                        true
-                    }
-                    else -> false
-                }
-            }
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-                onClick = onClose,
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp)
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                    onClick = {},
-                ),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = sample.filename,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = rankoColors.text,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = "${index + 1} / ${samples.size}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = rankoColors.textDim
-                )
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = rankoColors.text)
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .pointerInput(index) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                when {
-                                    dragAccum > 80f -> onPrev()
-                                    dragAccum < -80f -> onNext()
-                                }
-                                dragAccum = 0f
-                            },
-                            onDragCancel = { dragAccum = 0f },
-                            onHorizontalDrag = { change, amount ->
-                                change.consume()
-                                dragAccum += amount
-                            },
-                        )
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = BlobRef(sample.path, maxEdge = 1024, quality = LocalThumbnailQuality.current),
-                    contentDescription = sample.filename,
-                    contentScale = ContentScale.Fit,
-                    filterQuality = FilterQuality.High,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 72.dp, vertical = 8.dp)
-                )
-
-                PreviewNavButton(
-                    modifier = Modifier.align(Alignment.CenterStart),
-                    icon = Icons.Default.ChevronLeft,
-                    description = "Previous",
-                    onClick = onPrev,
-                )
-                PreviewNavButton(
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    icon = Icons.Default.ChevronRight,
-                    description = "Next",
-                    onClick = onNext,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PreviewNavButton(
-    modifier: Modifier,
-    icon: ImageVector,
-    description: String,
-    onClick: () -> Unit,
-) {
-    IconButton(
-        onClick = onClick,
-        modifier = modifier
-            .size(48.dp)
-            .clip(CircleShape)
-            .background(rankoColors.bgCard.copy(alpha = 0.72f))
-            .pointerHoverIcon(pointerIconHand)
-    ) {
-        Icon(icon, contentDescription = description, tint = rankoColors.text, modifier = Modifier.size(32.dp))
-    }
+    ImagePreviewOverlay(
+        images = samples.map { PreviewImage(path = it.path, title = it.filename) },
+        index = index,
+        onClose = onClose,
+        onPrev = onPrev,
+        onNext = onNext,
+    )
 }
 
 private fun JsonObject.string(key: String): String {

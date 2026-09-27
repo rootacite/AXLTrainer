@@ -26,11 +26,14 @@ import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 
 
@@ -265,6 +268,162 @@ class TrainerIpcClient {
     suspend fun tagLexicon(): TagLexiconResult {
         val result = call("tag_lexicon", JsonObject(emptyMap()))
         return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun promptMatrix(): PromptMatrixDocument {
+        val result = call("prompt_matrix", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun promptProfileList(): PromptProfileListResult {
+        val result = call("prompt_profile_list", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun promptProfileGet(name: String): PromptProfileDocument {
+        val result = call("prompt_profile_get", buildJsonObject { put("name", name) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun promptProfileSave(name: String, text: String, overwrite: Boolean): PromptProfileSaveResult {
+        val result = call(
+            "prompt_profile_save",
+            buildJsonObject {
+                put("name", name)
+                put("text", text)
+                put("overwrite", overwrite)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun promptProfileDelete(name: String) {
+        call("prompt_profile_delete", buildJsonObject { put("name", name) })
+    }
+
+    // --- Automation ---
+
+    suspend fun automationConfigGet(): AutomationConfigResult {
+        val result = call("automation_config_get", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationConfigSave(settings: AutomationSettings): AutomationConfigSaveResult {
+        val result = call(
+            "automation_config_save",
+            buildJsonObject {
+                put(
+                    "settings",
+                    json.encodeToJsonElement(AutomationSettings.serializer(), settings),
+                )
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationDiscover(server: String = ""): ComfyDiscovery {
+        val params = if (server.isBlank()) JsonObject(emptyMap()) else buildJsonObject { put("server", server) }
+        val result = call("automation_discover", params)
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationWorkflowList(): AutomationWorkflowList {
+        val result = call("automation_workflow_list", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationWorkflowValidate(path: String, positiveNode: String = ""): AutomationWorkflow {
+        val result = call(
+            "automation_workflow_validate",
+            buildJsonObject {
+                put("path", path)
+                if (positiveNode.isNotBlank()) put("positive_node", positiveNode)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationWorkflowSave(name: String, text: String): AutomationWorkflow {
+        val result = call(
+            "automation_workflow_save",
+            buildJsonObject {
+                put("name", name)
+                put("text", text)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationWorkflowDelete(name: String) {
+        call("automation_workflow_delete", buildJsonObject { put("name", name) })
+    }
+
+    suspend fun automationPromptList(): PromptSetListResult {
+        val result = call("automation_prompt_list", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationPromptGet(name: String): PromptSetItem {
+        val result = call("automation_prompt_get", buildJsonObject { put("name", name) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationPromptSave(name: String, text: String): PromptSetSaveResult {
+        val result = call(
+            "automation_prompt_save",
+            buildJsonObject {
+                put("name", name)
+                put("text", text)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationPromptDelete(name: String) {
+        call("automation_prompt_delete", buildJsonObject { put("name", name) })
+    }
+
+    /** Starts a job; the caller either sends the prompts themselves or names a saved set. */
+    suspend fun automationJobStart(
+        prompts: List<String> = emptyList(),
+        promptSet: String = "",
+        overrides: JsonObject = JsonObject(emptyMap()),
+    ): AutomationJobStartResult {
+        val result = call(
+            "automation_job_start",
+            buildJsonObject {
+                if (prompts.isNotEmpty()) {
+                    put("prompts", JsonArray(prompts.map { JsonPrimitive(it) }))
+                }
+                if (promptSet.isNotBlank()) put("prompt_set", promptSet)
+                overrides.forEach { (key, value) -> put(key, value) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationJobList(): AutomationJobListResult {
+        val result = call("automation_job_list", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationJobGet(id: String): AutomationJobDetail {
+        val result = call("automation_job_get", buildJsonObject { put("id", id) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationJobCancel(id: String): AutomationJobStartResult {
+        val result = call("automation_job_cancel", buildJsonObject { put("id", id) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationJobRetryFailed(id: String): AutomationJobStartResult {
+        val result = call("automation_job_retry_failed", buildJsonObject { put("id", id) })
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun automationJobDelete(id: String) {
+        call("automation_job_delete", buildJsonObject { put("id", id) })
     }
 
     suspend fun datasetList(directory: String): DatasetListResult {

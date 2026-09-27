@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ShowChart
@@ -38,6 +39,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import axlranko.shared.generated.resources.Res
 import axlranko.shared.generated.resources.app_icon
+import com.acite.axlranko.pages.AutomationScreen
+import com.acite.axlranko.pages.AutomationScreenViewModel
 import com.acite.axlranko.pages.DashboardScreen
 import com.acite.axlranko.pages.DashboardScreenViewModel
 import com.acite.axlranko.pages.ImageScreenViewModel
@@ -55,7 +58,7 @@ import org.jetbrains.compose.resources.painterResource
 import kotlin.math.roundToInt
 
 enum class Screen {
-    Images, Statistics, Utils, Dashboard
+    Images, Statistics, Utils, Dashboard, Automation
 }
 
 @Composable
@@ -65,6 +68,7 @@ public fun Stage(
     imViewModel: ImageScreenViewModel = metroViewModel(),
     usViewModel: UtilsScreenViewModel = metroViewModel(),
     dsViewModel: DashboardScreenViewModel = metroViewModel(),
+    auViewModel: AutomationScreenViewModel = metroViewModel(),
 )
 {
     BoxWithConstraints(
@@ -94,6 +98,7 @@ public fun Stage(
                 Screen.Statistics -> StatisticsScreen()
                 Screen.Utils -> UtilsScreen()
                 Screen.Dashboard -> DashboardScreen(viewModel = dsViewModel)
+                Screen.Automation -> AutomationScreen(viewModel = auViewModel)
             }
         }
 
@@ -116,6 +121,10 @@ public fun Stage(
                 viewModel.currentScreen = Screen.Dashboard
                 dsViewModel.onEnter()
             },
+            onAutomation = {
+                viewModel.currentScreen = Screen.Automation
+                auViewModel.onEnter()
+            },
         )
     }
 }
@@ -128,6 +137,7 @@ private fun FloatingNavRail(
     onStatistics: () -> Unit,
     onUtils: () -> Unit,
     onDashboard: () -> Unit,
+    onAutomation: () -> Unit,
 ) {
     val density = LocalDensity.current
     val minPeekPx = with(density) { 24.dp.toPx() }
@@ -234,6 +244,12 @@ private fun FloatingNavRail(
                     description = "Dashboard",
                     selected = viewModel.currentScreen == Screen.Dashboard,
                     onClick = onDashboard,
+                )
+                StageNavButton(
+                    icon = Icons.Default.AutoAwesome,
+                    description = "Automation",
+                    selected = viewModel.currentScreen == Screen.Automation,
+                    onClick = onAutomation,
                 )
             }
         } else {
