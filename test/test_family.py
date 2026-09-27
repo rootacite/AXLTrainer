@@ -1,4 +1,7 @@
+import atexit
+import importlib.util
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +17,31 @@ import sys
 # `unittest discover -s test` does from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# TrainConfig takes its field defaults from the config.toml in the cwd
+# (trainer/config.py), and the repo's own file selects the author's local locon
+# network. These tests assert the code defaults, so they import a copy of
+# trainer.config loaded against a fixture that sets no keys; the repo's module keeps
+# the values the other suites and the GUI read.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_FIXTURE_DIR = Path(tempfile.mkdtemp(prefix="axl-test-family-config-"))
+_FIXTURE_DIR.joinpath("config.toml").write_text(
+    "# Fixture for test_family.py: no keys, so TrainConfig keeps its code defaults.\n",
+    encoding="utf-8",
+)
+_original_cwd = os.getcwd()
+try:
+    os.chdir(_FIXTURE_DIR)
+    _config_spec = importlib.util.spec_from_file_location(
+        "_test_family_config", _REPO_ROOT / "trainer" / "config.py"
+    )
+    _fixture_config = importlib.util.module_from_spec(_config_spec)
+    _config_spec.loader.exec_module(_fixture_config)
+finally:
+    os.chdir(_original_cwd)
+atexit.register(shutil.rmtree, _FIXTURE_DIR, ignore_errors=True)
+
+TrainConfig = _fixture_config.TrainConfig
+
 import api
 from trainer.checkpoints import (
     infer_network_type,
@@ -21,7 +49,6 @@ from trainer.checkpoints import (
     require_resume_network_type,
     resolve_resume_path,
 )
-from trainer.config import TrainConfig
 from trainer.family import (
     CATALOG,
     ModelSpecError,
