@@ -41,3 +41,7 @@ output/
 # extension, with the placeholder re-included.
 configs/*
 !configs/.gitkeep
+
+# Named wizard profiles written by tools/gen_prompts.py. Local, like the configs above.
+prompt_profiles/*
+!prompt_profiles/.gitkeep

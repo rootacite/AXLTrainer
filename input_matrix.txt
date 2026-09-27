@@ -105,6 +105,36 @@ seventh posture, on side, leg lift, from side : both
 # 第七式侧视
 seventh posture, on side, leg lift, looking at viewer : both
 # 第七式看镜头
+oral, fellatio : none
+# 口交：含住阴茎。非插入，不走阴道/肛门通道
+oral, fellatio, looking at viewer : none
+# 口交看镜头
+oral, fellatio, from side : none
+# 口交侧视
+oral, fellatio, from above : none
+# 口交俯视
+paizuri : none
+# 乳交。非插入，不走阴道/肛门通道
+paizuri, looking at viewer : none
+# 乳交看镜头
+paizuri, from above : none
+# 乳交俯视
+paizuri, from side : none
+# 乳交侧视
+paizuri, oral, fellatio : none
+# 乳交兼口交：一边乳交一边含住。非插入
+paizuri, oral, fellatio, looking at viewer : none
+# 乳交兼口交看镜头
+paizuri, oral, fellatio, from above : none
+# 乳交兼口交俯视
+paizuri, oral, fellatio, from side : none
+# 乳交兼口交侧视
+nursing handjob : none
+# 吸乳手淫：男方吸乳、女方给男方手淫。非插入
+nursing handjob, looking at viewer : none
+# 吸乳手淫看镜头
+nursing handjob, from side : none
+# 吸乳手淫侧视
 
 CLOTHING:
 [covered]
