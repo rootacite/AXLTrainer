@@ -20,6 +20,7 @@ All scripts live in `tools/` and run from anywhere (paths are positional). Capti
 | `inspect_lora.py` | Inspect a LoRA `.safetensors`: metadata dict, key count, prefix distribution (`lora_unet`, `lora_te`, …), sample keys with shapes/dtypes. Read-only. | `python inspect_lora.py <lora.safetensors>` |
 | `dumper.py` | Dump a directory tree + all readable file contents into one UTF-8 text file (respects `.dumpignore`, skips binaries, honors `--max-bytes`). Useful for sharing project context with an AI. | `python dumper.py [root] -o OUTPUT [--max-bytes N] [--include-hidden] [--follow-symlinks] [--no-verbose]` |
 | `snapping.py` | KDE/Wayland active-window screenshot (2 s delay, then captures and crops the titlebar). Exploratory helper. | `python snapping.py` |
+| `gen_prompts.py` | TUI wizard that samples Illustrious XL prompts from repo-root `input_matrix.txt` (character prefix, sfw/nsfw/sex pose pool, clothing exposure groups, chest/belly, expression and eye tags). Does not write quality or rating tags. | `python gen_prompts.py --language chinese` (also `--language english`, `--matrix PATH`, `-o FILE`) |
 
 Notes:
 

@@ -1,0 +1,284 @@
+POSES:
+mating press, legs up, folded, knees to chest : both
+# 交配压：女仰卧、腿折向胸。正反都能画，体位本身不锁通道
+mating press, legs up, folded, knees to chest, from above : both
+# 交配压俯视：从上往下看髋和插入
+mating press, legs up, folded, looking at viewer, from front : both
+# 交配压正面：女脸朝镜头，腿仍折向胸
+missionary, spread legs, from above : both
+# 传教士俯视：女仰卧分腿，从上往下看。默认姿势，通道随意
+missionary, spread legs, looking at viewer, from front : both
+# 传教士分腿正面：看镜头，强调脸和胸
+missionary, on back, looking at viewer, from front : both
+# 传教士正面：女仰卧看镜头。比俯视更容易画出脸
+missionary, on back, from above : both
+# 传教士仰卧俯视：不强调看镜头，构图偏身体
+anvil position, legs over head, folded : both
+# 铁砧：腿抬过头顶、髋抬高。是 mating press 的加强版，通道不限
+anvil position, legs over head, folded, from above : both
+# 铁砧俯视：腿过顶时从上往下看
+anvil position, legs over head, looking at viewer, from front : both
+# 铁砧正面：脸朝镜头，腿仍过顶
+cowgirl position, girl on top, sitting, straddling, leaning back : anal only
+# 女上正骑后仰。后仰时髋角更开、后穴更容易成为默认插入方向，前倾才会更像阴道骑乘
+cowgirl position, girl on top, sitting, straddling, leaning back, from front : anal only
+# 女上后仰正面：胸和腹朝镜头
+cowgirl position, girl on top, sitting, straddling, looking at viewer : both
+# 女上正骑看镜头。坐直、面对面，正反都常见，不锁通道
+cowgirl position, girl on top, sitting, straddling, from below : both
+# 女上仰视：从下往上看骑乘，常见构图
+squatting cowgirl position, squatting : vaginal only
+# 蹲骑。重心在脚、身体前压，训练图几乎都是阴道骑乘，写成 anal 很容易塌成普通坐骑
+squatting cowgirl position, squatting, looking at viewer, from front : vaginal only
+# 蹲骑正面看镜头
+squatting cowgirl position, squatting, from below : vaginal only
+# 蹲骑仰视
+reverse cowgirl position, sex from behind, looking back : vaginal only
+# 反骑：女背对坐上去并回看。这个词在丹布和 WAI 里默认是阴道；肛交反骑要额外写 anal，否则常画成阴道
+reverse cowgirl position, sex from behind, looking back, looking at viewer : vaginal only
+# 反骑回看镜头：过肩看向观众
+reverse cowgirl position, sex from behind, from behind : vaginal only
+# 反骑背面：不回看，强调背和臀
+doggystyle, sex from behind, top-down bottom-up : both
+# 趴跪后入+塌腰翘臀。后入总类，正反都稳
+doggystyle, all fours, looking back, from behind : both
+# 标准狗爬后入、回看。强调四肢着地，避免画成平趴
+doggystyle, all fours, looking back, looking at viewer, from behind : both
+# 狗爬回看镜头：过肩看观众
+doggystyle, all fours, from behind : both
+# 狗爬背面：不回看，只拍背和交合
+doggystyle, all fours, from above : both
+# 狗爬俯视
+standing doggystyle, bent over, sex from behind : both
+# 站立弯腰后入。人是站着不是跪着，和 doggystyle 要分开
+standing doggystyle, bent over, from behind : both
+# 站立后入背面
+standing doggystyle, bent over, looking back, from behind : both
+# 站立后入回看
+spooning, lying, on side : both
+# 汤匙：侧躺后入。姿态温和，通道不限
+spooning, lying, on side, from side : both
+# 汤匙侧视：两人侧躺的标准机位
+spooning, lying, on side, looking at viewer : both
+# 汤匙看镜头：女侧脸朝观众
+prone bone, on stomach, sex from behind : both
+# 平趴后入。女几乎贴床，和跪姿后入不同
+prone bone, on stomach, from behind : both
+# 平趴后入背面
+prone bone, on stomach, looking back, from behind : both
+# 平趴后入回看
+prone bone, on stomach, from above : both
+# 平趴后入俯视
+reverse suspended congress : both
+# 背对抱插，女离地、背对男方。站立抱起的后入变体
+reverse suspended congress, from behind : both
+# 背对抱插背面
+reverse suspended congress, looking back, looking at viewer : both
+# 背对抱插回看镜头
+suspended congress, held up : both
+# 对面抱插，女被抱离地、面对面。正反都能写，正面稍多见
+suspended congress, held up, looking at viewer, from front : both
+# 对面抱插看镜头
+suspended congress, held up, from below : both
+# 对面抱插仰视：从下往上看被抱起的身体
+full nelson : anal only
+# 全尼尔森：从背后锁臂抬头。这个姿势的插入方向几乎都是后方，默认肛交更符合训练分布；写阴道容易变成普通后入
+full nelson, from behind : anal only
+# 全尼尔森背面
+full nelson, looking at viewer : anal only
+# 全尼尔森看镜头：脸朝观众、身体仍被从后锁住
+standing missionary, standing sex, against wall : both
+# 站立对面插入，常靠墙。面对面站立，通道不限
+standing missionary, standing sex, against wall, looking at viewer, from front : both
+# 站立对面看镜头
+standing missionary, standing sex, against wall, from side : both
+# 站立对面侧视
+upright straddle, sitting on lap, girl on top : both
+# 坐抱：女坐在对方腿上、身体较直。比 cowgirl 更贴近拥抱，通道随意
+upright straddle, sitting on lap, girl on top, looking at viewer, from front : both
+# 坐抱看镜头
+upright straddle, sitting on lap, girl on top, from side : both
+# 坐抱侧视
+seventh posture, on side, leg lift : both
+# 第七式：侧卧抬一条腿。侧位通用，正反都行
+seventh posture, on side, leg lift, from side : both
+# 第七式侧视
+seventh posture, on side, leg lift, looking at viewer : both
+# 第七式看镜头
+
+CLOTHING:
+[covered]
+serafuku, white thighhighs (open clothes)
+# 水手服+白过膝袜
+serafuku, black thighhighs (open clothes)
+# 水手服+黑过膝袜
+school uniform, white shirt, pleated skirt, black thighhighs (open clothes)
+# 普通校服：白衬衫+百褶裙+黑过膝袜，比 serafuku 更偏西装/衬衫款
+school uniform, white shirt, pleated skirt, white thighhighs (open clothes)
+# 普通校服+白过膝袜
+hoodie, pleated skirt, white thighhighs (open clothes)
+# 卫衣+百褶裙+白过膝袜，便装
+sweater, miniskirt, black thighhighs (open clothes)
+# 毛衣+短裙+黑过膝袜
+white shirt, blue jeans (open clothes)
+# 白衬衫+蓝牛仔裤
+dress shirt, pencil skirt, black pantyhose (open clothes)
+# 职业装：衬衫+铅笔裙+黑连裤袜
+maid, maid headdress, apron, thighhighs (open clothes)
+# 女仆装+头饰+围裙+过膝袜
+wedding dress, veil, white gloves
+# 婚纱+头纱+白手套
+wedding dress, bare shoulders, bouquet
+# 露肩婚纱+捧花
+wedding dress, white thighhighs
+# 婚纱+白过膝袜，偏非典型搭配
+white dress, veil, pearl necklace
+# 白礼服+头纱+珍珠，比完整婚纱轻一点
+kimono, obi, hair ornament
+# 和服+带+发饰，比浴衣更正式
+white blouse, suspender skirt
+# 白衬衫+吊带裙
+shrine maiden, hakama, hair tube
+# 巫女服
+idol clothes, microphone
+# 偶像服
+yukata, obi, barefoot (open clothes)
+# 浴衣+腰带+光脚，和风
+[casual]
+white sundress, white thighhighs (open clothes)
+# 白连衣裙+白过膝袜；需要时加敞开/拨开衣服
+white sundress, black thighhighs (open clothes)
+# 白连衣裙+黑过膝袜
+white pajamas, hair ornament, white thighhighs (open clothes)
+# 白色睡衣+发饰+白过膝袜，偏居家
+white pajamas, hair ornament, black thighhighs (open clothes)
+# 白色睡衣+发饰+黑过膝袜
+sundress, bare legs, sandals (open clothes)
+# 连衣裙裸腿凉鞋，夏天向，没有袜子
+off-shoulder sweater, skirt
+# 露肩毛衣+裙
+camisole, cardigan, shorts
+# 吊带+开衫+短裤
+[revealing]
+bikini, side-tie bikini bottom (open clothes)
+# 侧绑带比基尼
+one-piece swimsuit (open clothes)
+# 连体泳装
+school swimsuit, name tag
+# 学校四库水
+nightgown, hair ornament, bare legs (open clothes)
+# 睡裙+发饰+裸腿，比睡衣更薄、更像裙
+
+SCENE:
+bedroom, indoors, bed
+# 卧室，点出床，但不强制躺上去
+bedroom, indoors, on bed, sheets
+# 卧室且人在床上，带床单
+classroom, indoors, desk
+# 教室+课桌
+classroom, indoors, window
+# 教室偏窗边，光更好打
+hallway, indoors, school
+# 学校走廊
+rooftop, outdoors, school
+# 学校天台
+outdoors, park, grass
+# 公园草地
+outdoors, park, bench
+# 公园长椅
+school courtyard, outdoors
+# 学校院子
+shrine, outdoors, torii
+# 神社+鸟居
+beach, outdoors, ocean, sand
+# 海滩：海+沙
+cafe, indoors, window
+# 咖啡店靠窗
+living room, indoors, sofa
+# 客厅沙发
+onsen, indoors, steam
+# 室内温泉，带蒸汽
+train interior, indoors, window
+# 电车车厢内
+outdoors, street, city
+# 城市街道
+outdoors, forest, shade
+# 森林树荫
+poolside, outdoors, pool
+# 泳池边
+
+SUFFIX:
+warm atmosphere
+# 温暖气氛，情绪向，不指定光源
+soft lighting, warm light
+# 柔和暖光，室内特写很稳
+sunlight through window
+# 窗光，适合教室/卧室
+sunset, backlighting
+# 黄昏逆光，室外剪影感
+night, warm light
+# 夜晚但灯光偏暖，不是冷色夜景
+morning, sunlight
+# 早晨直射日光
+depth of field, bokeh
+# 背景虚化，特写时把杂乱场景藏掉
+blue sky, sunlight
+# 晴天硬光，室外用
+neon lights, night
+# 夜晚霓虹，街道向
+overcast, soft lighting
+# 阴天漫射光，对比度低、比较柔
+
+SFW_POSES:
+sitting, looking at viewer, smile
+# 坐着看镜头微笑，最稳的日常特写
+sitting, desk, chin rest
+# 坐在桌边托腮，教室/咖啡店用
+standing, looking at viewer, arms behind back
+# 站立背手，干净全身
+standing, leaning forward, hands on own knees
+# 站立微前倾，手撑膝，还是 SFW
+walking, looking back, smile
+# 走路回看
+lying, on back, looking at viewer
+# 仰卧看镜头，卧室用，不加 sex
+lying, on side, sleeping
+# 侧躺睡着
+lying, on stomach, looking at viewer
+# 趴着抬头看镜头
+kneeling, sitting on heels, looking at viewer
+# 正坐/跪坐
+wariza, sitting, looking at viewer
+# 女式跪坐（跪坐盘腿变体）
+seiza, sitting, hands on lap
+# 正跪，手搁膝上
+squatting, looking at viewer
+# 蹲着看镜头，无骑乘含义
+standing, reaching towards viewer, smile
+# 伸手朝镜头
+from side, standing, profile
+# 站立侧面
+upper body, looking at viewer, smile
+# 半身看镜头，不指定姿势让模型自己摆
+cowboy shot, hand on hip, looking at viewer
+# 七分身叉腰
+twirl, dress lift, smile
+# 转圈、裙摆扬起，婚纱/连衣裙用
+holding bouquet, standing, looking at viewer
+# 捧花站立，配婚纱
+adjusting hair, looking at viewer
+# 整理头发
+covering own mouth, shy, blush
+# 捂嘴害羞
+peace sign, looking at viewer, smile
+# 比耶
+hug, own arms, looking at viewer
+# 抱着自己的胳膊
+sitting on stairs, looking at viewer
+# 坐在台阶上
+against wall, standing, looking at viewer
+# 靠墙站
+window, sitting, looking outside
+# 坐在窗边向外看
+backlighting, from behind, looking back
+# 逆光回看，SFW 全身/半身都可用
