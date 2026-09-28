@@ -167,6 +167,10 @@ internal const val GENERATE_MIN_STEPS = 1
 internal const val GENERATE_MAX_STEPS = 150
 internal const val GENERATE_MAX_SEED = 4_294_967_295L
 
+/** Job modes as api.py writes them: one ad-hoc image, or one image per sample set. */
+internal const val JOB_MODE_SINGLE = "single"
+internal const val JOB_MODE_SETS = "sets"
+
 /**
  * Null when the form can be submitted, otherwise the message shown in the panel. Mirrors the
  * validation api.py repeats, so a rejected request costs no GPU time.
@@ -258,6 +262,20 @@ internal fun generatedJobProgress(job: GeneratedSampleJob?): String? {
     return "denoising ${job.currentStep.coerceAtMost(total)}/$total"
 }
 
+/**
+ * Progress of a whole-set pass: `set 2/6 · image 3/12 · denoising 12/35`, or null when the job is
+ * a single image or no longer running.
+ */
+internal fun generatedJobSetProgress(job: GeneratedSampleJob?): String? {
+    if (job == null || job.state != JOB_RUNNING) return null
+    if (job.mode != JOB_MODE_SETS) return null
+    val parts = mutableListOf<String>()
+    if (job.totalSets > 0 && job.currentSet > 0) parts += "set ${job.currentSet}/${job.totalSets}"
+    parts += "image ${job.imagesDone.coerceAtMost(job.totalImages)}/${job.totalImages}"
+    generatedJobProgress(job)?.let { parts += it }
+    return parts.joinToString(" · ")
+}
+
 private fun formatCfg(value: Float): String {
     val rounded = (value * 10).roundToInt() / 10f
     return if (rounded % 1f == 0f) rounded.toInt().toString() else rounded.toString()
@@ -303,18 +321,46 @@ internal fun generatedJobsForStep(jobs: List<GeneratedSampleJob>, step: Int?): L
     if (step == null) {
         emptyList()
     } else {
-        jobs.filter { it.step == step && it.state == JOB_DONE && !it.imagePath.isNullOrBlank() }
+        jobs.filter { it.step == step && it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() }
     }
+
+/** The pass still rendering for [checkpoint], matched on its path (the job records it). */
+internal fun runningJobForCheckpoint(
+    jobs: List<GeneratedSampleJob>,
+    checkpoint: CheckpointItem?,
+): GeneratedSampleJob? {
+    val path = checkpoint?.path ?: return null
+    return jobs.firstOrNull { it.state == JOB_RUNNING && it.checkpoint == path }
+}
 
 /** The generation still denoising, if any: the panel shows its progress and keeps polling for it. */
 internal fun runningJob(jobs: List<GeneratedSampleJob>): GeneratedSampleJob? =
     jobs.firstOrNull { it.state == JOB_RUNNING }
 
-/** A generated job as a panel slot; null while it has no image yet. */
-internal fun generatedSampleItem(job: GeneratedSampleJob): SampleItem? {
-    val path = job.imagePath?.takeIf { it.isNotBlank() } ?: return null
-    return SampleItem(filename = path.substringAfterLast('/'), setIndex = -1, repeatIdx = -1, path = path)
+/** A generated job as panel slots; empty while it has no image yet. */
+internal fun generatedSampleItems(job: GeneratedSampleJob): List<SampleItem> {
+    if (job.mode == JOB_MODE_SETS) {
+        return job.files.mapNotNull { path ->
+            path.takeIf { it.isNotBlank() }?.let { sampleItemForGeneratedFile(path) }
+        }
+    }
+    val path = job.imagePath?.takeIf { it.isNotBlank() } ?: return emptyList()
+    return listOf(SampleItem(filename = path.substringAfterLast('/'), setIndex = -1, repeatIdx = -1, path = path))
 }
+
+/**
+ * `{job_id}_p{set}_{repeat}.png`: the set the pass rendered, counted from zero like the run's own
+ * samples, so the thumbnail carries the same `Pn` badge a training sample would.
+ */
+private fun sampleItemForGeneratedFile(path: String): SampleItem {
+    val name = path.substringAfterLast('/')
+    val match = GENERATED_SET_NAME.find(name)
+    val setIndex = match?.groupValues?.get(1)?.toIntOrNull() ?: -1
+    val repeat = match?.groupValues?.get(2)?.toIntOrNull() ?: -1
+    return SampleItem(filename = name, setIndex = setIndex, repeatIdx = repeat, path = path)
+}
+
+private val GENERATED_SET_NAME = Regex("""_p(\d+)_(\d+)\.png$""")
 
 /**
  * `P2` marker for an image that came from a `[[validation.samples]]` entry, numbered from one
@@ -343,8 +389,8 @@ internal fun sampleSlots(
     sessionJobIds: Set<String>,
 ): List<SampleSlot> {
     val trainingSlots = training.map { SampleSlot(it, job = null, isNew = false) }
-    val generatedSlots = jobs.asReversed().mapNotNull { job ->
-        generatedSampleItem(job)?.let { SampleSlot(it, job = job, isNew = job.id in sessionJobIds) }
+    val generatedSlots = jobs.asReversed().flatMap { job ->
+        generatedSampleItems(job).map { item -> SampleSlot(item, job = job, isNew = job.id in sessionJobIds) }
     }
     return trainingSlots + generatedSlots
 }

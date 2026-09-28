@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollbarAdapter
@@ -95,10 +94,12 @@ import coil3.compose.AsyncImage
 import com.acite.axlranko.model.ChartPickState
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.DashboardUiState
+import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.ChartCard
 import com.acite.axlranko.pages.components.ChartPickMarkers
+import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
 import com.acite.axlranko.pages.components.HardwareSection
@@ -117,11 +118,15 @@ import com.acite.axlranko.pages.components.SAMPLE_THUMB_ASPECT
 import com.acite.axlranko.pages.components.SampleSlot
 import com.acite.axlranko.pages.components.TrainControlCard
 import com.acite.axlranko.pages.components.checkpointPanelWidth
+import com.acite.axlranko.pages.components.checkpointRowKey
+import com.acite.axlranko.pages.components.checkpointRowLabel
+import com.acite.axlranko.pages.components.checkpointRows
 import com.acite.axlranko.pages.components.clampPanelOrigin
 import com.acite.axlranko.pages.components.clampPanelSize
 import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generatedJobCaption
 import com.acite.axlranko.pages.components.generatedJobProgress
+import com.acite.axlranko.pages.components.generatedJobSetProgress
 import com.acite.axlranko.pages.components.generatedJobsForStep
 import com.acite.axlranko.pages.components.nearestSampledStep
 import com.acite.axlranko.pages.components.placePanelOrigin
@@ -144,6 +149,7 @@ import com.acite.axlranko.util.formatFourDecimals
 import com.acite.axlranko.util.formatScientificTwoDecimals
 import dev.zacsweers.metrox.viewmodel.metroViewModel
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -220,6 +226,13 @@ fun DashboardScreen(
                             commandInFlight = uiState.commandInFlight,
                             controlsEnabled = trainingControlsEnabled(uiState),
                             pendingCommand = uiState.pendingCommand,
+                            settingsEnabled = liveSettingsEnabled(uiState),
+                            settingsInFlight = uiState.settingsInFlight,
+                            settingsError = uiState.settingsError,
+                            // With no live run the row describes what Start would use.
+                            configSaveEveryNSteps = uiState.config.int("save_every_n_steps"),
+                            configSamplingEnabled = uiState.config.flag("sampling_enabled"),
+                            onApplySettings = viewModel::applyTrainSettings,
                             shownRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId),
                             outputDir = uiState.config.string("output_dir"),
                             loggingDir = uiState.config.string("logging_dir"),
@@ -258,30 +271,39 @@ fun DashboardScreen(
                     }
 
                     item {
-                        DashboardSectionHeader("Generated Samples")
+                        DashboardSectionHeader("Checkpoints")
+                        Spacer(Modifier.height(4.dp))
                     }
 
-                    val grouped = uiState.samples.entries
-                        .sortedByDescending { it.key.toIntOrNull() ?: Int.MIN_VALUE }
+                    val checkpointCards = checkpointRows(
+                        checkpoints = uiState.checkpoints,
+                        samples = uiState.samples,
+                        jobs = uiState.generatedJobs,
+                    )
+                    val gpuFree = generationAllowed(uiState.trainStatus)
+                    val showSetBadges = showsSampleSetBadges(uiState.samples)
 
-                    if (grouped.isEmpty()) {
-                        item {
-                            PorcelainCard {
-                                Text(
-                                    "No sample images generated yet.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = rankoColors.textDim,
-                                )
-                            }
-                        }
+                    uiState.generatedError?.let { message ->
+                        item { GenerationErrorLine(message) }
+                    }
+
+                    if (checkpointCards.isEmpty()) {
+                        item { CheckpointsEmptyCard() }
                     } else {
-                        items(grouped, key = { it.key }) { (stepStr, samples) ->
-                            SampleGroup(
-                                stepStr = stepStr,
-                                samples = samples,
+                        // One lazy item per checkpoint: a finished run can hold dozens, and each
+                        // card asks for its own thumbnails.
+                        items(checkpointCards, key = { checkpointRowKey(it) }) { row ->
+                            CheckpointRowCard(
+                                row = row,
                                 thumbSize = uiState.sampleThumbSize,
-                                showSetBadges = showsSampleSetBadges(uiState.samples),
+                                showSetBadges = showSetBadges,
+                                newJobIds = uiState.sessionJobIds,
+                                gpuFree = gpuFree,
+                                starting = uiState.isGeneratingCheckpoint == row.checkpoint?.path,
+                                busyElsewhere = uiState.isGeneratingCheckpoint != null &&
+                                    uiState.isGeneratingCheckpoint != row.checkpoint?.path,
                                 onOpen = { viewModel.openPreview(it) },
+                                onGenerate = viewModel::generateCheckpointSamples,
                             )
                         }
                     }
@@ -310,6 +332,8 @@ fun DashboardScreen(
                 pick = pick,
                 metrics = uiState.metrics,
                 samples = uiState.samples,
+                generatedJobs = uiState.generatedJobs,
+                generatedError = uiState.generatedError,
                 originInRoot = dashboardOrigin,
                 userSize = uiState.chartPanelSize,
                 previewOpen = uiState.previewIndex != null,
@@ -327,7 +351,7 @@ fun DashboardScreen(
 
         val previewIndex = uiState.previewIndex
         if (previewIndex != null) {
-            val previewSamples = previewSamples(uiState.samples, uiState.chartPick?.generatedJobs.orEmpty())
+            val previewSamples = previewSamples(uiState.samples, uiState.generatedJobs)
             if (previewSamples.isNotEmpty()) {
                 SamplePreviewOverlay(
                     samples = previewSamples,
@@ -613,81 +637,176 @@ private fun HeaderSlider(
     }
 }
 
+/** The Checkpoints section with nothing to list: no run, or a run that wrote nothing yet. */
 @Composable
-private fun SampleGroup(
-    stepStr: String,
-    samples: List<SampleItem>,
+internal fun CheckpointsEmptyCard() {
+    PorcelainCard {
+        Text(
+            "No checkpoints or sample images for this run yet.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = rankoColors.textDim,
+        )
+    }
+}
+
+/** A failed generation, above the section it belongs to. */
+@Composable
+internal fun GenerationErrorLine(message: String) {
+    Text(
+        text = "Generation failed: $message",
+        style = MaterialTheme.typography.labelSmall,
+        color = rankoColors.qualityRed,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * One card per LoRA checkpoint of the run being shown, with the images written at its step (the
+ * training ones and any generated pass). A checkpoint with no images yet is still listed — that is
+ * the point of a retunable cadence and an optional sampling switch — and can be sampled from here
+ * whenever nothing else is using the GPU.
+ */
+@Composable
+internal fun CheckpointRowCard(
+    row: CheckpointRow,
     thumbSize: Float,
     showSetBadges: Boolean,
+    newJobIds: Set<String>,
+    gpuFree: Boolean,
+    starting: Boolean,
+    busyElsewhere: Boolean,
     onOpen: (SampleItem) -> Unit,
+    onGenerate: (CheckpointItem) -> Unit,
 ) {
-    val stepLabel = if (stepStr == "-1") "Other / Unknown Step" else "Step $stepStr"
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(bottom = 10.dp)
-        ) {
-            Text(
-                text = stepLabel,
-                fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.titleSmall
-            )
-            Text(
-                text = "(${samples.size} images)",
-                style = MaterialTheme.typography.labelSmall,
-                color = rankoColors.textDim
-            )
-        }
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-            items(samples, key = { it.path }) { sample ->
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+    val colors = rankoColors
+    val checkpoint = row.checkpoint
+    val slots = sampleSlots(row.samples, row.generated, newJobIds)
+    val thumbWidth = thumbSize.dp
+    val thumbHeight = thumbWidth * SAMPLE_THUMB_ASPECT
+
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
                     modifier = Modifier
-                        .clip(rankoTokens.card)
-                        .background(rankoColors.bgCard.copy(alpha = 0.72f))
-                        .pointerHoverIcon(pointerIconHand)
-                        .clickable { onOpen(sample) }
-                        .padding(bottom = 8.dp)
+                        .clip(rankoTokens.capsule)
+                        .background(colors.accentPink.copy(alpha = if (checkpoint == null) 0.4f else 1f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
                 ) {
-                    Box(modifier = Modifier.height(thumbSize.dp)) {
-                        AsyncImage(
-                            model = BlobRef(sample.path, maxEdge = 256, quality = LocalThumbnailQuality.current),
-                            contentDescription = sample.filename,
-                            contentScale = ContentScale.FillHeight,
-                            filterQuality = FilterQuality.Low,
-                            modifier = Modifier
-                                .height(thumbSize.dp)
-                                .clip(rankoTokens.panel)
-                        )
-                        val badge = if (showSetBadges) sampleSetBadge(sample.setIndex) else null
-                        if (badge != null) {
-                            Text(
-                                text = badge,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White,
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(4.dp)
-                                    .clip(rankoTokens.panel)
-                                    .background(rankoColors.accentLilac.copy(alpha = 0.85f))
-                                    .padding(horizontal = 6.dp, vertical = 1.dp),
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = sample.filename,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = rankoColors.textDim,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .padding(horizontal = 8.dp)
-                            .width(thumbSize.dp)
+                        text = checkpointRowLabel(row),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
                     )
                 }
+                Text(
+                    text = checkpoint?.dir ?: "samples only",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (checkpoint != null) {
+                    val label = if (starting) "Starting…" else "Generate samples"
+                    CapsuleButton(
+                        text = label,
+                        onClick = { onGenerate(checkpoint) },
+                        enabled = gpuFree && !starting && !busyElsewhere,
+                        compact = true,
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            if (checkpoint != null) {
+                Text(
+                    text = checkpointSubtitle(checkpoint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.text,
+                )
+                Text(
+                    text = checkpoint.path,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (slots.isEmpty()) {
+                Text(
+                    text = if (checkpoint != null) {
+                        "No sample images for this checkpoint."
+                    } else {
+                        "No sample images left for this step."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textDim,
+                )
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    slots.forEach { slot ->
+                        SampleSlotCard(
+                            slot = slot,
+                            width = thumbWidth,
+                            height = thumbHeight,
+                            setBadge = if (showSetBadges) sampleSetBadge(slot.item.setIndex) else null,
+                            onOpen = { onOpen(slot.item) },
+                        )
+                    }
+                }
+            }
+
+            val running = row.running
+            generatedJobSetProgress(running)?.let { progress ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    val total = running?.totalImages ?: 0
+                    LinearProgressIndicator(
+                        progress = {
+                            if (total > 0) {
+                                (running?.imagesDone ?: 0).toFloat().coerceAtMost(total.toFloat()) / total
+                            } else {
+                                0f
+                            }
+                        },
+                        modifier = Modifier.weight(1f).height(4.dp),
+                    )
+                    Text(progress, style = MaterialTheme.typography.labelSmall, color = colors.accentPink)
+                }
+            }
+
+            if (checkpoint != null && slots.isEmpty() && !gpuFree) {
+                Text(
+                    text = "Pause or stop the run to render this checkpoint's sample sets.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textDim,
+                )
+            }
+            if (busyElsewhere) {
+                Text(
+                    text = "Another generation is using the GPU.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textDim,
+                )
             }
         }
     }
@@ -704,6 +823,8 @@ private fun CheckpointPanelOverlay(
     pick: ChartPickState,
     metrics: Map<String, List<MetricPoint>>,
     samples: Map<String, List<SampleItem>>,
+    generatedJobs: List<GeneratedSampleJob>,
+    generatedError: String?,
     originInRoot: Offset,
     userSize: DpSize?,
     previewOpen: Boolean,
@@ -732,7 +853,7 @@ private fun CheckpointPanelOverlay(
     // Generated images join the row they belong to, so they sit next to the step's own samples.
     val slots = sampleSlots(
         trainingSamples,
-        generatedJobsForStep(pick.generatedJobs, shownStep),
+        generatedJobsForStep(generatedJobs, shownStep),
         newJobIds,
     )
 
@@ -821,6 +942,8 @@ private fun CheckpointPanelOverlay(
                     CheckpointPanelBody(
                         pick = pick,
                         metrics = metrics,
+                        generatedJobs = generatedJobs,
+                        generatedError = generatedError,
                         shownStep = shownStep,
                         slots = slots,
                         fallbackFromStep = fallbackStep?.let { checkpointStep },
@@ -901,6 +1024,8 @@ private fun ResizeGrip(
 private fun CheckpointPanelBody(
     pick: ChartPickState,
     metrics: Map<String, List<MetricPoint>>,
+    generatedJobs: List<GeneratedSampleJob>,
+    generatedError: String?,
     shownStep: Int?,
     slots: List<SampleSlot>,
     fallbackFromStep: Int?,
@@ -1019,6 +1144,8 @@ private fun CheckpointPanelBody(
     if (pick.isFormOpen) {
         GenerateSamplePanel(
             pick = pick,
+            generatedJobs = generatedJobs,
+            generatedError = generatedError,
             trainerAlive = trainerAlive,
             onUpdateForm = onUpdateForm,
             onGenerate = { onGenerate(shownStep) },
@@ -1163,12 +1290,14 @@ private fun TrainingInfoChips(metrics: Map<String, List<MetricPoint>>, step: Flo
 @Composable
 private fun GenerateSamplePanel(
     pick: ChartPickState,
+    generatedJobs: List<GeneratedSampleJob>,
+    generatedError: String?,
     trainerAlive: Boolean,
     onUpdateForm: (ChartPickState.() -> ChartPickState) -> Unit,
     onGenerate: () -> Unit,
 ) {
     val colors = rankoColors
-    val running = runningJob(pick.generatedJobs)
+    val running = runningJob(generatedJobs)
     val busy = pick.isGenerating || running != null
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1251,7 +1380,7 @@ private fun GenerateSamplePanel(
         pick.formError?.let { message ->
             Text(message, style = MaterialTheme.typography.labelSmall, color = colors.qualityRed)
         }
-        pick.generatedError?.let { message ->
+        generatedError?.let { message ->
             Text(
                 text = "Generation failed: $message",
                 style = MaterialTheme.typography.labelSmall,
@@ -1464,5 +1593,12 @@ private fun JsonObject.string(key: String): String {
     val value = this[key]?.jsonPrimitive?.content
     return if (value.isNullOrBlank()) "N/A" else value
 }
+
+/** Flattened config value, or null when the helper has not answered yet. */
+private fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
+
+/** Flattened config flag; a hand-edited `0`/`1` reads as a boolean too. */
+private fun JsonObject.flag(key: String): Boolean? =
+    this[key]?.jsonPrimitive?.let { it.booleanOrNull ?: (it.intOrNull?.let { value -> value != 0 }) }
 
 private val PANEL_GAP = 16.dp

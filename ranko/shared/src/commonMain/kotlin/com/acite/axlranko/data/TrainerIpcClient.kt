@@ -158,6 +158,24 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /**
+     * Retune the checkpoint cadence / sampling switch of the run in progress. The trainer adopts
+     * the request at its next optimizer step, so the reply still carries the old effective values.
+     */
+    suspend fun trainSettings(
+        saveEveryNSteps: Int? = null,
+        samplingEnabled: Boolean? = null,
+    ): TrainStatus {
+        val result = call(
+            "train_settings",
+            buildJsonObject {
+                saveEveryNSteps?.let { put("save_every_n_steps", it) }
+                samplingEnabled?.let { put("sampling_enabled", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     suspend fun datasetTag(
         directory: String,
         threshold: Float,
@@ -222,6 +240,26 @@ class TrainerIpcClient {
                 put("steps", steps)
                 put("seed", seed)
                 step?.let { put("step", it) }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * Render this checkpoint's `[[validation.samples]]` sets as one detached job (one image per
+     * set and repeat). Refused while a live trainer is using the GPU.
+     */
+    suspend fun generateCheckpointSamples(
+        checkpoint: String,
+        name: String? = null,
+        runId: String? = null,
+    ): GenerateSampleResponse {
+        val result = call(
+            "generate_checkpoint_samples",
+            buildJsonObject {
+                put("checkpoint", checkpoint)
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

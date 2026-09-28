@@ -121,6 +121,67 @@ class DashboardIpcTest {
     }
 
     @Test
+    fun trainStatusParsesTheLiveSettings() {
+        val raw = """
+            {
+              "status": "training",
+              "settings": { "save_every_n_steps": 50, "sampling_enabled": false, "next_save_step": 1250 }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(TrainStatus.serializer(), raw)
+        assertEquals(50, parsed.settings.saveEveryNSteps)
+        assertFalse(parsed.settings.samplingEnabled)
+        assertEquals(1250, parsed.settings.nextSaveStep)
+
+        // An older helper (or a run that has not published anything yet) keeps the defaults.
+        val bare = json.decodeFromString(TrainStatus.serializer(), """{"status": "idle"}""")
+        assertEquals(0, bare.settings.saveEveryNSteps)
+        assertTrue(bare.settings.samplingEnabled)
+        assertEquals(0, bare.settings.nextSaveStep)
+    }
+
+    @Test
+    fun generatedSampleJobParsesASetsPass() {
+        val raw = """
+            {
+              "id": "rein_s003050_sets_gen_20260929_031500",
+              "state": "running",
+              "mode": "sets",
+              "step": 3050,
+              "checkpoint": "/out/rein_20260911_120000/rein_s003050/rein.safetensors",
+              "files": [
+                "/out/rein_20260911_120000/rein_samples/generated/rein_s003050_sets_gen_20260929_031500_p0_0.png"
+              ],
+              "images_done": 1,
+              "total_images": 6,
+              "current_set": 1,
+              "total_sets": 6,
+              "current_step": 12,
+              "total_steps": 35
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(
+            com.acite.axlranko.model.GeneratedSampleJob.serializer(),
+            raw,
+        )
+        assertEquals("sets", parsed.mode)
+        assertEquals(1, parsed.files.size)
+        assertEquals(1, parsed.imagesDone)
+        assertEquals(6, parsed.totalImages)
+        assertEquals(1, parsed.currentSet)
+        assertEquals(6, parsed.totalSets)
+
+        // A job file written before the sets mode reads as one image with no files.
+        val old = json.decodeFromString(
+            com.acite.axlranko.model.GeneratedSampleJob.serializer(),
+            """{"id": "rein_s000100_gen", "state": "done", "image_path": "/out/x.png"}""",
+        )
+        assertEquals("single", old.mode)
+        assertTrue(old.files.isEmpty())
+        assertEquals(1, old.totalImages)
+    }
+
+    @Test
     fun runsResponseParsesTheHistoryList() {
         val raw = """
             {

@@ -84,12 +84,16 @@ data class RunsResponse(
 /**
  * One "generate a sample with this checkpoint" job. Mirrored by the JSON file the generator writes
  * next to its PNG, so the panel can list jobs from disk and follow a run in progress.
+ *
+ * [mode] `single` is one image with its own prompt, `sets` one image per `[[validation.samples]]`
+ * set and repeat (recorded in [files], with the set index in the file name).
  */
 @Serializable
 data class GeneratedSampleJob(
     val id: String = "",
     /** `running` while the generator works, then `done` or `error`. */
     val state: String = "running",
+    val mode: String = "single",
     val step: Int? = null,
     val prompt: String = "",
     @SerialName("negative_prompt") val negativePrompt: String = "",
@@ -98,6 +102,12 @@ data class GeneratedSampleJob(
     val seed: Long? = null,
     val checkpoint: String = "",
     @SerialName("image_path") val imagePath: String? = null,
+    /** Every image a `sets` job wrote, in render order. */
+    val files: List<String> = emptyList(),
+    @SerialName("images_done") val imagesDone: Int = 0,
+    @SerialName("total_images") val totalImages: Int = 1,
+    @SerialName("current_set") val currentSet: Int = 0,
+    @SerialName("total_sets") val totalSets: Int = 0,
     val error: String? = null,
     @SerialName("current_step") val currentStep: Int = 0,
     @SerialName("total_steps") val totalSteps: Int = 0,
@@ -170,6 +180,18 @@ data class TrainSampling(
     /** Which `[[validation.samples]]` entry the pass is on, 1-based; 0 when the run has no sets. */
     @SerialName("prompt_set") val promptSet: Int = 0,
     @SerialName("prompt_sets") val promptSets: Int = 0,
+)
+
+/**
+ * The cadence and sampling switch the run in progress is actually using (`state.json`'s
+ * `settings` block, published by the trainer). [nextSaveStep] is the step the next checkpoint
+ * is written at.
+ */
+@Serializable
+data class TrainSettings(
+    @SerialName("save_every_n_steps") val saveEveryNSteps: Int = 0,
+    @SerialName("sampling_enabled") val samplingEnabled: Boolean = true,
+    @SerialName("next_save_step") val nextSaveStep: Int = 0,
 )
 
 @Serializable
@@ -257,6 +279,7 @@ data class TrainStatus(
     val encoding: TrainEncoding = TrainEncoding(),
     val training: TrainTrainingProgress = TrainTrainingProgress(),
     val sampling: TrainSampling = TrainSampling(),
+    val settings: TrainSettings = TrainSettings(),
     val swap: TrainSwap? = null,
     val error: String? = null,
     val detail: String? = null,
@@ -287,9 +310,6 @@ data class ChartPickState(
     val seed: String = "0",
     val formError: String? = null,
     val isGenerating: Boolean = false,
-    /** Newest first, as stored under the run's `{name}_samples/generated/`. */
-    val generatedJobs: List<GeneratedSampleJob> = emptyList(),
-    val generatedError: String? = null,
 )
 
 data class DashboardUiState(
@@ -310,6 +330,11 @@ data class DashboardUiState(
     val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
     val samples: Map<String, List<SampleItem>> = emptyMap(),
+    /** The displayed run's LoRA checkpoints, newest step first. */
+    val checkpoints: List<CheckpointItem> = emptyList(),
+    /** Its one-off generation jobs, newest first, as stored under `{name}_samples/generated/`. */
+    val generatedJobs: List<GeneratedSampleJob> = emptyList(),
+    val generatedError: String? = null,
     val chartPick: ChartPickState? = null,
     /** Panel size the user dragged to, `null` while the content-derived default applies. */
     val chartPanelSize: DpSize? = null,
@@ -318,6 +343,11 @@ data class DashboardUiState(
     val trainStatus: TrainStatus = TrainStatus(),
     val commandInFlight: Boolean = false,
     val pendingCommand: String? = null,
+    /** True while a cadence / sampling-switch change is on its way to the trainer. */
+    val settingsInFlight: Boolean = false,
+    val settingsError: String? = null,
+    /** Checkpoint path whose whole-set sample pass is being started, if any. */
+    val isGeneratingCheckpoint: String? = null,
     val hardware: HardwareStatus = HardwareStatus(),
     val hardwareHistory: HardwareHistory = HardwareHistory(),
 )

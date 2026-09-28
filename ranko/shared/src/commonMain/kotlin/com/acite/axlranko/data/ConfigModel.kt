@@ -74,6 +74,8 @@ data class TrainingConfig(
     val epoch: Int,
     @SerialName("save_every_n_epochs") val saveEveryNEpochs: Int,
     @SerialName("save_every_n_steps") val saveEveryNSteps: Int,
+    /** Render the validation samples at every checkpoint. Optional: older files have no such key. */
+    @SerialName("sampling_enabled") val samplingEnabled: Boolean = true,
     @SerialName("resume_lora_path") val resumeLoraPath: String = ""
 )
 

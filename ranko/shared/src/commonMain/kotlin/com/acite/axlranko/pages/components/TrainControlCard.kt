@@ -25,8 +25,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,10 +46,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.RunSummary
+import com.acite.axlranko.model.TrainSettings
 import com.acite.axlranko.model.TrainStatus
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.PorcelainCard
+import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
+import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.formatFourDecimals
 import kotlin.math.roundToInt
 
@@ -62,6 +67,14 @@ fun TrainControlCard(
     outputDir: String,
     loggingDir: String,
     resumeFrom: String? = null,
+    /** True while the card may retune the live run's cadence / sampling switch. */
+    settingsEnabled: Boolean = false,
+    settingsInFlight: Boolean = false,
+    settingsError: String? = null,
+    /** `[training]` values a run would start with, shown while no run is live. */
+    configSaveEveryNSteps: Int? = null,
+    configSamplingEnabled: Boolean? = null,
+    onApplySettings: (saveEveryNSteps: Int?, samplingEnabled: Boolean?) -> Unit = { _, _ -> },
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -199,6 +212,16 @@ fun TrainControlCard(
                 detail = samplingDetail(status),
                 active = phase == "sampling" || status.sampling.active,
                 pulsing = swapping,
+            )
+
+            LiveSettingsRow(
+                settings = status.settings,
+                enabled = settingsEnabled,
+                inFlight = settingsInFlight,
+                error = settingsError,
+                configSaveEveryNSteps = configSaveEveryNSteps,
+                configSamplingEnabled = configSamplingEnabled,
+                onApply = onApplySettings,
             )
 
             if (!controlsEnabled) {
@@ -346,6 +369,126 @@ fun TrainControlCard(
             }
         )
     }
+}
+
+/**
+ * The live cadence and sampling switch of the run in progress. Both are requests: the trainer
+ * adopts them at its next optimizer step, so the summary says what is in force and what is next.
+ *
+ * With no live run there is nothing to retune, so the row shows what the next Start would use
+ * (`config.toml`) instead of the `settings` block — that block describes the run that published
+ * it, and a runtime directory with no run on it carries the placeholder `0`, which means
+ * "no checkpoints" rather than "the configuration says so".
+ */
+@Composable
+private fun LiveSettingsRow(
+    settings: TrainSettings,
+    enabled: Boolean,
+    inFlight: Boolean,
+    error: String?,
+    configSaveEveryNSteps: Int?,
+    configSamplingEnabled: Boolean?,
+    onApply: (saveEveryNSteps: Int?, samplingEnabled: Boolean?) -> Unit,
+) {
+    val colors = rankoColors
+    var draft by remember(settings.saveEveryNSteps) {
+        mutableStateOf(settings.saveEveryNSteps.toString())
+    }
+    val parsed = draft.trim().toIntOrNull()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (enabled) {
+                Text(
+                    text = "Save every",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textDim,
+                )
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { text -> draft = text.filter { it.isDigit() }.take(6) },
+                    singleLine = true,
+                    modifier = Modifier.width(96.dp),
+                    label = { Text("steps") },
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    colors = rankoFieldColors(),
+                    shape = rankoTokens.panel,
+                )
+                CapsuleButton(
+                    text = "Apply",
+                    onClick = { parsed?.let { onApply(it, null) } },
+                    enabled = !inFlight && parsed != null && parsed >= 1,
+                    compact = true,
+                ) {
+                    Text("Apply", fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "Sampling",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textDim,
+                )
+                Switch(
+                    checked = settings.samplingEnabled,
+                    enabled = !inFlight,
+                    onCheckedChange = { on -> onApply(null, on) },
+                )
+            }
+        }
+        val summary = if (enabled) {
+            settingsSummary(settings) + " · changes apply at the next step"
+        } else {
+            nextRunSummary(configSaveEveryNSteps, configSamplingEnabled)
+        }
+        summary?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.textDim,
+            )
+        }
+        error?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.qualityRed,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * `Save every 100 steps · next at step 200 · sampling on` for the run in progress, whose values
+ * are what the trainer published.
+ */
+internal fun settingsSummary(settings: TrainSettings): String {
+    val sampling = if (settings.samplingEnabled) "on" else "off"
+    if (settings.saveEveryNSteps <= 0) return "Checkpoints off · sampling $sampling"
+    val parts = mutableListOf("Save every ${settings.saveEveryNSteps} steps")
+    if (settings.nextSaveStep > 0) parts += "next at step ${settings.nextSaveStep}"
+    parts += "sampling $sampling"
+    return parts.joinToString(" · ")
+}
+
+/**
+ * `Next run · save every 100 steps · sampling on`, from `config.toml` — what pressing Start would
+ * use. Null when the config has not loaded, so the row stays empty rather than guessing.
+ */
+internal fun nextRunSummary(saveEveryNSteps: Int?, samplingEnabled: Boolean?): String? {
+    if (saveEveryNSteps == null && samplingEnabled == null) return null
+    val parts = mutableListOf("Next run")
+    when {
+        saveEveryNSteps == null -> Unit
+        saveEveryNSteps <= 0 -> parts += "no checkpoints"
+        else -> parts += "save every $saveEveryNSteps steps"
+    }
+    samplingEnabled?.let { parts += "sampling ${if (it) "on" else "off"}" }
+    return parts.joinToString(" · ")
 }
 
 @Composable

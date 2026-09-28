@@ -89,6 +89,8 @@ data class TrainingConfigForm(
     val epoch: String = "",
     val saveEveryNEpochs: String = "",
     val saveEveryNSteps: String = "",
+    /** Whether a checkpoint save also renders the validation samples. Changeable mid-run. */
+    val samplingEnabled: Boolean = true,
 
     val resumeLoraPath: String = "",
 
@@ -380,6 +382,7 @@ data class TrainingConfigForm(
                 "epoch" to n(epoch),
                 "save_every_n_epochs" to n(saveEveryNEpochs),
                 "save_every_n_steps" to n(saveEveryNSteps),
+                "sampling_enabled" to b(samplingEnabled),
                 "resume_lora_path" to q(resumeLoraPath.trim())
             ),
             "network" to mapOf(
@@ -541,6 +544,7 @@ data class TrainingConfigForm(
                 epoch = train.epoch.toString(),
                 saveEveryNEpochs = train.saveEveryNEpochs.toString(),
                 saveEveryNSteps = train.saveEveryNSteps.toString(),
+                samplingEnabled = train.samplingEnabled,
                 resumeLoraPath = train.resumeLoraPath,
                 networkType = net.networkType.trim().lowercase().ifBlank { "standard" },
                 networkDim = net.networkDim.toString(),

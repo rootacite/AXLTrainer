@@ -998,10 +998,19 @@ private fun TrainingFields(
             label = "Save every N steps",
             value = form.saveEveryNSteps,
             error = errors["save_every_n_steps"],
+            supporting = "Start value; the Dashboard can retune it for the run in progress",
             onValueChange = { viewModel.updateForm { copy(saveEveryNSteps = it) } },
             modifier = Modifier.weight(1f)
         )
     }
+    ConfigSwitch(
+        label = "Sampling",
+        checked = form.samplingEnabled,
+        description = "Render the validation samples at every checkpoint save " +
+            "(off = checkpoints only; the Dashboard can flip it mid-run, and any checkpoint " +
+            "can be sampled later, one pass per checkpoint)",
+        onChecked = { viewModel.updateForm { copy(samplingEnabled = it) } }
+    )
     ResumeCheckpointCard(form, errors, viewModel)
 }
 

@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.RunSummary
+import com.acite.axlranko.model.TrainSettings
 import com.acite.axlranko.model.TrainStatus
 import com.acite.axlranko.model.TrainTrainingProgress
 import com.acite.axlranko.ui.theme.RankoTheme
@@ -92,6 +93,21 @@ class DashboardRunHistoryTest {
         try {
             var selected by mutableStateOf<RunSummary?>(null)
             var controlsEnabled by mutableStateOf(true)
+            // The live cadence / sampling controls, with the states a request goes through.
+            var settingsEnabled by mutableStateOf(false)
+            var settingsInFlight by mutableStateOf(false)
+            var settingsError by mutableStateOf<String?>(null)
+            var status by mutableStateOf(
+                TrainStatus(
+                    status = "finished",
+                    runId = runs.first().runId,
+                    outputName = "Tsukuyomi",
+                    pid = 4242,
+                    startedAt = 1_790_580_000.0,
+                    settings = TrainSettings(saveEveryNSteps = 100, samplingEnabled = true, nextSaveStep = 0),
+                    training = TrainTrainingProgress(step = 4500, totalSteps = 4500, epoch = 16, epochs = 16),
+                ),
+            )
             val window = onEdtGetResult {
                 ComposeWindow().apply {
                     setLocation(-3200, -3200)
@@ -124,22 +140,15 @@ class DashboardRunHistoryTest {
                                     )
                                 }
                                 TrainControlCard(
-                                    status = TrainStatus(
-                                        status = "finished",
-                                        runId = runs.first().runId,
-                                        outputName = "Tsukuyomi",
-                                        pid = 4242,
-                                        startedAt = 1_790_580_000.0,
-                                        training = TrainTrainingProgress(
-                                            step = 4500,
-                                            totalSteps = 4500,
-                                            epoch = 16,
-                                            epochs = 16,
-                                        ),
-                                    ),
+                                    status = status,
                                     shownRun = selected ?: runs.first(),
                                     commandInFlight = false,
                                     controlsEnabled = controlsEnabled,
+                                    settingsEnabled = settingsEnabled,
+                                    settingsInFlight = settingsInFlight,
+                                    settingsError = settingsError,
+                                    configSaveEveryNSteps = 100,
+                                    configSamplingEnabled = false,
                                     outputDir = "/out",
                                     loggingDir = "/logs",
                                     onStart = {},
@@ -165,6 +174,39 @@ class DashboardRunHistoryTest {
             onEdtGet {
                 selected = null
                 controlsEnabled = true
+            }
+            pumpFor(600)
+
+            // A live run: the cadence field, Apply and the sampling switch are laid out, then the
+            // in-flight and failed states, then a paused run (still retunable) and the read-only
+            // summary a finished run keeps.
+            onEdtGet {
+                status = status.copy(
+                    status = "training",
+                    alive = true,
+                    settings = TrainSettings(saveEveryNSteps = 100, samplingEnabled = true, nextSaveStep = 250),
+                )
+                settingsEnabled = true
+            }
+            pumpFor(600)
+            onEdtGet {
+                settingsInFlight = true
+                settingsError = "no running training process"
+            }
+            pumpFor(600)
+            onEdtGet {
+                status = status.copy(status = "paused")
+                settingsInFlight = false
+                settingsError = null
+            }
+            pumpFor(600)
+            onEdtGet {
+                status = status.copy(
+                    status = "finished",
+                    alive = false,
+                    settings = TrainSettings(saveEveryNSteps = 0, samplingEnabled = false, nextSaveStep = 0),
+                )
+                settingsEnabled = false
             }
             pumpFor(600)
 
@@ -212,6 +254,9 @@ class DashboardRunHistoryTest {
                                     shownRun = bare,
                                     commandInFlight = false,
                                     controlsEnabled = false,
+                                    // The read-only row a stopped card shows: the next run's values.
+                                    configSaveEveryNSteps = 100,
+                                    configSamplingEnabled = true,
                                     outputDir = "/out",
                                     loggingDir = "/logs",
                                     onStart = {},

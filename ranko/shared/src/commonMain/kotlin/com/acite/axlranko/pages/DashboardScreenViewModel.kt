@@ -19,9 +19,10 @@ import com.acite.axlranko.pages.components.JOB_DONE
 import com.acite.axlranko.pages.components.JOB_ERROR
 import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.checkpointsForRun
+import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
-import com.acite.axlranko.pages.components.generatedSampleItem
+import com.acite.axlranko.pages.components.generatedSampleItems
 import com.acite.axlranko.pages.components.nearestCheckpoint
 import com.acite.axlranko.util.PathPicker
 import com.acite.axlranko.util.checkpointSaveName
@@ -60,9 +61,7 @@ class DashboardScreenViewModel(
     private var hardwareStep = 0
     private var entered = false
 
-    // Reading every checkpoint's safetensors header costs ~2 s on a finished run, so the list is
-    // scanned on demand and reused while a fresh scan runs in the background.
-    private var checkpointCache: List<CheckpointItem> = emptyList()
+    /** Guards a second checkpoint scan while the first is still reading safetensors headers. */
     private var checkpointScanInFlight = false
 
     /** Jobs started in this session, which the panel highlights as new. */
@@ -138,8 +137,8 @@ class DashboardScreenViewModel(
     }
 
     /**
-     * Ctrl+click on the Avg Loss chart: resolve the checkpoint nearest to [step] from whatever is
-     * already cached, then rescan in the background and re-resolve in place.
+     * Ctrl+click on the Avg Loss chart: resolve the checkpoint nearest to [step] from the list the
+     * page already polls, then rescan in the background and re-resolve in place.
      */
     fun pickCheckpointAt(step: Float, anchor: Offset) {
         val previous = _uiState.value.chartPick
@@ -149,8 +148,8 @@ class DashboardScreenViewModel(
                 chartPick = ChartPickState(
                     step = step,
                     anchor = anchor,
-                    checkpoint = nearestCheckpoint(checkpointsForRun(checkpointCache, it.runId), step),
-                    isLoading = true,
+                    checkpoint = nearestCheckpoint(it.checkpoints, step),
+                    isLoading = it.checkpoints.isEmpty(),
                     // A prompt typed for an earlier pick survives; an untouched form is re-seeded
                     // from config.toml's sample settings.
                     prompt = previous?.prompt?.takeIf { text -> text.isNotBlank() } ?: defaults.prompt,
@@ -172,17 +171,24 @@ class DashboardScreenViewModel(
         checkpointScanInFlight = true
         viewModelScope.launch {
             try {
-                val name = _uiState.value.selectedRun?.outputName
+                val shown = displayedRun(
+                    _uiState.value.runs,
+                    _uiState.value.selectedRun,
+                    _uiState.value.runId,
+                )
+                val name = shown?.outputName ?: _uiState.value.selectedRun?.outputName
                 val response = withContext(IoDispatcher) { ipc.listCheckpoints(name = name) }
-                checkpointCache = response.checkpoints
                 _uiState.update { state ->
-                    val pick = state.chartPick ?: return@update state
+                    val found = if (shown == null) {
+                        emptyList()
+                    } else {
+                        checkpointsForRun(response.checkpoints, shown.runId)
+                    }
+                    val pick = state.chartPick ?: return@update state.copy(checkpoints = found)
                     state.copy(
+                        checkpoints = found,
                         chartPick = pick.copy(
-                            checkpoint = nearestCheckpoint(
-                                checkpointsForRun(checkpointCache, state.runId),
-                                pick.step,
-                            ),
+                            checkpoint = nearestCheckpoint(found, pick.step),
                             isLoading = false,
                             error = null,
                         ),
@@ -232,12 +238,7 @@ class DashboardScreenViewModel(
         if (runId.isNullOrBlank()) return
         viewModelScope.launch {
             val jobs = fetchGeneratedJobs(runId, selected?.outputName)
-            if (jobs.isNotEmpty()) {
-                _uiState.update { state ->
-                    val pick = state.chartPick ?: return@update state
-                    state.copy(chartPick = pick.copy(generatedJobs = jobs))
-                }
-            }
+            _uiState.update { state -> state.copy(generatedJobs = jobs) }
             if (jobs.any { it.state == JOB_RUNNING }) startGeneratedPolling()
         }
     }
@@ -260,7 +261,7 @@ class DashboardScreenViewModel(
             return
         }
 
-        updateChartPickForm { copy(isGenerating = true, generatedError = null) }
+        updateChartPickForm { copy(isGenerating = true) }
         viewModelScope.launch {
             try {
                 val selected = _uiState.value.selectedRun
@@ -279,25 +280,57 @@ class DashboardScreenViewModel(
                 }
                 sessionJobIds += response.job.id
                 _uiState.update { state ->
-                    val current = state.chartPick ?: return@update state
                     state.copy(
                         sessionJobIds = sessionJobIds.toSet(),
-                        chartPick = current.copy(
-                            isGenerating = false,
-                            generatedJobs = (listOf(response.job) + current.generatedJobs)
-                                .distinctBy { it.id },
-                        ),
+                        generatedJobs = (listOf(response.job) + state.generatedJobs).distinctBy { it.id },
+                        generatedError = null,
+                        chartPick = state.chartPick?.copy(isGenerating = false),
                     )
                 }
                 startGeneratedPolling()
             } catch (e: Exception) {
                 _uiState.update { state ->
-                    val current = state.chartPick ?: return@update state
                     state.copy(
-                        chartPick = current.copy(
-                            isGenerating = false,
-                            generatedError = e.message ?: e.toString(),
-                        ),
+                        generatedError = e.message ?: e.toString(),
+                        chartPick = state.chartPick?.copy(isGenerating = false),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * "Generate samples" for one checkpoint: the config's whole `[[validation.samples]]` list,
+     * rendered detached into the run's `_samples/generated/`. Only offered while the GPU is free
+     * (the run is paused, stopped or over) — api.py refuses it otherwise.
+     */
+    fun generateCheckpointSamples(checkpoint: CheckpointItem) {
+        if (_uiState.value.isGeneratingCheckpoint != null) return
+        _uiState.update { it.copy(isGeneratingCheckpoint = checkpoint.path, generatedError = null) }
+        viewModelScope.launch {
+            try {
+                val selected = _uiState.value.selectedRun
+                val response = withContext(IoDispatcher) {
+                    ipc.generateCheckpointSamples(
+                        checkpoint = checkpoint.path,
+                        name = selected?.outputName,
+                        runId = selected?.runId ?: _uiState.value.runId,
+                    )
+                }
+                sessionJobIds += response.job.id
+                _uiState.update { state ->
+                    state.copy(
+                        sessionJobIds = sessionJobIds.toSet(),
+                        isGeneratingCheckpoint = null,
+                        generatedJobs = (listOf(response.job) + state.generatedJobs).distinctBy { it.id },
+                    )
+                }
+                startGeneratedPolling()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isGeneratingCheckpoint = null,
+                        generatedError = e.message ?: e.toString(),
                     )
                 }
             }
@@ -326,12 +359,9 @@ class DashboardScreenViewModel(
                 _uiState.update { current ->
                     // A switch to another run under the poll must not inject the old run's jobs.
                     if ((current.selectedRun?.runId ?: current.runId) != runId) return@update current
-                    val pick = current.chartPick ?: return@update current
                     current.copy(
-                        chartPick = pick.copy(
-                            generatedJobs = jobs,
-                            generatedError = failed ?: pick.generatedError,
-                        ),
+                        generatedJobs = jobs,
+                        generatedError = failed ?: current.generatedError,
                     )
                 }
                 if (jobs.none { it.state == JOB_RUNNING }) return@launch
@@ -404,8 +434,29 @@ class DashboardScreenViewModel(
         viewModelScope.launch { fetchHardwareOnce() }
     }
 
-    fun startTraining() = runTrainCommand { ipc.trainStart() }
+    /**
+     * Retunes the run in progress: the checkpoint cadence, the sampling switch, or both. The
+     * trainer adopts the request at its next optimizer step, so the status still reports the old
+     * values until then and the card says so.
+     */
+    fun applyTrainSettings(saveEveryNSteps: Int? = null, samplingEnabled: Boolean? = null) {
+        if (_uiState.value.settingsInFlight) return
+        _uiState.update { it.copy(settingsInFlight = true, settingsError = null) }
+        viewModelScope.launch {
+            try {
+                val status = withContext(IoDispatcher) {
+                    ipc.trainSettings(saveEveryNSteps = saveEveryNSteps, samplingEnabled = samplingEnabled)
+                }
+                _uiState.update { it.copy(settingsInFlight = false, trainStatus = status) }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(settingsInFlight = false, settingsError = e.message ?: e.toString())
+                }
+            }
+        }
+    }
 
+    fun startTraining() = runTrainCommand { ipc.trainStart() }
     fun pauseTraining() = runTrainCommand(pending = "pause") { ipc.trainPause() }
 
     fun resumeTraining() = runTrainCommand(pending = "resume") { ipc.trainResume() }
@@ -535,9 +586,23 @@ class DashboardScreenViewModel(
             val samples = withContext(IoDispatcher) {
                 ipc.listSamples(name = selected?.outputName, runId = selected?.runId)
             }
+            // The Checkpoints section follows the run the page shows, so it needs that run's own
+            // name even when the trainer is on a run created under a different `output_name`.
+            // Neither list may take the dashboard down: a broken checkpoint file or a job record
+            // the generator is rewriting leaves the charts and controls alone.
+            val shown = displayedRun(runs, selected, dashboard.runId)
+            val shownName = shown?.outputName ?: selected?.outputName
+            val checkpoints = runCatching {
+                withContext(IoDispatcher) { ipc.listCheckpoints(name = shownName) }.checkpoints
+            }.getOrDefault(emptyList())
+            val generatedJobs = runCatching {
+                withContext(IoDispatcher) {
+                    ipc.listGeneratedSamples(name = shownName, runId = shown?.runId)
+                }.jobs
+            }.getOrDefault(emptyList())
             val trainStatus = withContext(IoDispatcher) { ipc.trainStatus() }
             _uiState.update { state ->
-                val generated = state.chartPick?.generatedJobs.orEmpty()
+                val generated = generatedJobs
                 val previewPath = state.previewIndex
                     ?.let { previewSamples(state.samples, generated).getOrNull(it)?.path }
                 val newList = previewSamples(samples.samples, generated)
@@ -555,6 +620,8 @@ class DashboardScreenViewModel(
                     latestStats = dashboard.latestStats,
                     metrics = dashboard.metrics,
                     samples = samples.samples,
+                    checkpoints = if (shown == null) emptyList() else checkpointsForRun(checkpoints, shown.runId),
+                    generatedJobs = generated,
                     previewIndex = newPreview,
                     trainStatus = trainStatus,
                     pendingCommand = resolvedPending(state.pendingCommand, trainStatus.status),
@@ -582,9 +649,9 @@ class DashboardScreenViewModel(
         _uiState.update { it.copy(previewIndex = next) }
     }
 
-    /** What the fullscreen preview cycles through: the run's samples plus the panel's generated ones. */
+    /** What the fullscreen preview cycles through: the run's samples plus the generated ones. */
     private fun currentPreviewList(state: DashboardUiState = _uiState.value): List<SampleItem> =
-        previewSamples(state.samples, state.chartPick?.generatedJobs.orEmpty())
+        previewSamples(state.samples, state.generatedJobs)
 }
 
 /**
@@ -595,6 +662,31 @@ internal fun trainingControlsEnabled(state: DashboardUiState): Boolean {
     val pinned = state.selectedRun ?: return true
     return pinned.runId == state.trainStatus.runId
 }
+
+/**
+ * The live cadence / sampling controls act on the run the trainer is on, so they follow the same
+ * rule as the Start/Pause buttons and additionally need a run that is actually live.
+ */
+internal fun liveSettingsEnabled(state: DashboardUiState): Boolean =
+    trainingControlsEnabled(state) && state.trainStatus.status in LIVE_TRAIN_STATUSES
+
+/**
+ * Whether a one-off generation may start: only while no live trainer is using the GPU. A paused
+ * run is fine (pause has offloaded every module); api.py enforces the same rule.
+ */
+internal fun generationAllowed(status: TrainStatus): Boolean =
+    !status.alive || status.status !in GPU_BUSY_STATUSES
+
+/** Statuses in which the trainer holds the GPU (a paused one has given it back). */
+internal val GPU_BUSY_STATUSES = setOf(
+    "starting",
+    "encoding",
+    "training",
+    "sampling",
+    "pausing",
+    "resuming",
+    "stopping",
+)
 
 internal fun resolvedPending(pending: String?, status: String): String? {
     if (status in setOf("idle", "finished", "error")) return null
@@ -638,7 +730,8 @@ internal fun previewSamples(
 
     val steps = (samples.keys.mapNotNull { it.toIntOrNull() } + generatedByStep.keys).distinct()
     return steps.sortedDescending().flatMap { step ->
-        val generated = generatedByStep[step].orEmpty().asReversed().mapNotNull { generatedSampleItem(it) }
+        // A whole-set pass is one job with several images: every one of them belongs in the list.
+        val generated = generatedByStep[step].orEmpty().asReversed().flatMap { generatedSampleItems(it) }
         samples[step.toString()].orEmpty() + generated
     }
 }
