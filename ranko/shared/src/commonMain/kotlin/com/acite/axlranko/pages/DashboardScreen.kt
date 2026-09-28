@@ -110,6 +110,7 @@ import com.acite.axlranko.pages.components.PANEL_MAX_HEIGHT
 import com.acite.axlranko.pages.components.PANEL_MAX_WIDTH
 import com.acite.axlranko.pages.components.PANEL_MIN_HEIGHT
 import com.acite.axlranko.pages.components.PathChip
+import com.acite.axlranko.pages.components.RunSelector
 import com.acite.axlranko.pages.components.SAMPLES_PER_ROW
 import com.acite.axlranko.pages.components.SAMPLE_SLOT_SPACING
 import com.acite.axlranko.pages.components.SAMPLE_THUMB_ASPECT
@@ -216,6 +217,7 @@ fun DashboardScreen(
                         TrainControlCard(
                             status = uiState.trainStatus,
                             commandInFlight = uiState.commandInFlight,
+                            controlsEnabled = trainingControlsEnabled(uiState),
                             pendingCommand = uiState.pendingCommand,
                             outputDir = uiState.config.string("output_dir"),
                             loggingDir = uiState.config.string("logging_dir"),
@@ -397,6 +399,20 @@ private fun DashboardHeader(
                     Text("Refresh", fontWeight = FontWeight.SemiBold)
                 }
             }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            RunSelector(
+                runs = uiState.runs,
+                selected = uiState.selectedRun,
+                resolvedRunId = uiState.runId,
+                onSelect = viewModel::selectRun,
+                modifier = Modifier.weight(1f),
+            )
         }
 
         Row(

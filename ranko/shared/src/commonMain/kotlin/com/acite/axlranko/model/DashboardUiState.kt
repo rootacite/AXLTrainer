@@ -57,6 +57,31 @@ data class CheckpointsResponse(
 )
 
 /**
+ * One run in the dashboard's history list, whatever `output_name` it was created with.
+ * [current] is the run `state.json` is on — the only one the training controls act on —
+ * and [live] that its process is still running.
+ */
+@Serializable
+data class RunSummary(
+    @SerialName("run_id") val runId: String = "",
+    @SerialName("output_name") val outputName: String = "",
+    @SerialName("has_output") val hasOutput: Boolean = false,
+    @SerialName("has_log") val hasLog: Boolean = false,
+    @SerialName("last_step") val lastStep: Int? = null,
+    val samples: Int = 0,
+    val checkpoints: Int = 0,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    val modified: Double = 0.0,
+    val current: Boolean = false,
+    val live: Boolean = false,
+)
+
+@Serializable
+data class RunsResponse(
+    val runs: List<RunSummary> = emptyList(),
+)
+
+/**
  * One "generate a sample with this checkpoint" job. Mirrored by the JSON file the generator writes
  * next to its PNG, so the panel can list jobs from disk and follow a run in progress.
  */
@@ -278,6 +303,10 @@ data class DashboardUiState(
     val previewIndex: Int? = null,
     val config: JsonObject = JsonObject(emptyMap()),
     val runId: String? = null,
+    /** The training history, newest first, as reported by `list_runs`. */
+    val runs: List<RunSummary> = emptyList(),
+    /** The run the user pinned in the run selector; `null` follows the current one. */
+    val selectedRun: RunSummary? = null,
     val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
     val samples: Map<String, List<SampleItem>> = emptyMap(),

@@ -54,6 +54,7 @@ import com.acite.axlranko.data.ConfigProfile
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
 import com.acite.axlranko.model.ModelSpecCatalog
+import com.acite.axlranko.model.OUTPUT_NAME_HINT
 import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
 import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TRAIN_DATA_ERROR_PREFIX
@@ -510,7 +511,7 @@ private fun EnvironmentFields(
         label = "Output name",
         value = form.outputName,
         error = errors["output_name"],
-        supporting = "LoRA filename stem written under the output directory",
+        supporting = "LoRA filename stem written under the output directory; $OUTPUT_NAME_HINT",
         onValueChange = { viewModel.updateForm { copy(outputName = it) } }
     )
     ConfigPathField(

@@ -6,6 +6,7 @@ import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.GenerateSampleResponse
 import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
+import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
@@ -112,6 +113,12 @@ class TrainerIpcClient {
                 outputDir?.let { put("output_dir", it) }
             },
         )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** The training history: every run directory under the output / log roots, newest first. */
+    suspend fun listRuns(): RunsResponse {
+        val result = call("list_runs", JsonObject(emptyMap()))
         return json.decodeFromJsonElement(result)
     }
 

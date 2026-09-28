@@ -6,10 +6,12 @@ import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.HardwareStatus
+import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -116,6 +118,50 @@ class DashboardIpcTest {
         val parsed = json.decodeFromString(TrainStatus.serializer(), """{"status": "idle"}""")
         assertEquals(null, parsed.runId)
         assertEquals(null, parsed.resume)
+    }
+
+    @Test
+    fun runsResponseParsesTheHistoryList() {
+        val raw = """
+            {
+              "runs": [
+                {
+                  "run_id": "Tsukuyomi_20260928_110928",
+                  "output_name": "Tsukuyomi",
+                  "output_dir": "/out/Tsukuyomi_20260928_110928",
+                  "log_dir": "/logs/Tsukuyomi_20260928_110928",
+                  "has_output": true,
+                  "has_log": false,
+                  "last_step": 4500,
+                  "samples": 12,
+                  "checkpoints": 46,
+                  "size_bytes": 11172201792,
+                  "modified": 1790587779.5,
+                  "current": true,
+                  "live": true
+                },
+                { "run_id": "Kirika_20260927_225224", "output_name": "Kirika" }
+              ]
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(RunsResponse.serializer(), raw)
+        assertEquals(2, parsed.runs.size)
+        val live = parsed.runs.first()
+        assertEquals("Tsukuyomi_20260928_110928", live.runId)
+        assertEquals("Tsukuyomi", live.outputName)
+        assertTrue(live.hasOutput)
+        assertFalse(live.hasLog)
+        assertEquals(4500, live.lastStep)
+        assertEquals(12, live.samples)
+        assertEquals(46, live.checkpoints)
+        assertEquals(11172201792L, live.sizeBytes)
+        assertTrue(live.current)
+        assertTrue(live.live)
+        // The second run omits the optional figures; they default instead of failing the parse.
+        assertEquals("Kirika_20260927_225224", parsed.runs[1].runId)
+        assertEquals(null, parsed.runs[1].lastStep)
+        assertFalse(parsed.runs[1].live)
+        assertFalse(parsed.runs[1].current)
     }
 
     @Test

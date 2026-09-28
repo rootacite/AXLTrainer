@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 import kotlin.time.Duration.Companion.milliseconds
 
 @Inject
@@ -76,6 +77,28 @@ class DashboardScreenViewModel(
         } else {
             refreshNow()
         }
+    }
+
+    /**
+     * Pins the dashboard to one run of the history list; `null` follows the current run.
+     *
+     * A pinned run brings its own samples, charts and checkpoints, so the previous run's
+     * pick panel and preview are dropped rather than left pointing at another run's images.
+     */
+    fun selectRun(runId: String?) {
+        val run = runId?.let { id -> _uiState.value.runs.firstOrNull { it.runId == id } }
+        _uiState.update {
+            it.copy(
+                selectedRun = run,
+                runId = run?.runId ?: it.runId,
+                chartPick = null,
+                previewIndex = null,
+                samples = emptyMap(),
+                latestStats = JsonObject(emptyMap()),
+                metrics = emptyMap(),
+            )
+        }
+        refreshNow()
     }
 
     fun toggleAutoRefresh(enabled: Boolean) {
@@ -147,7 +170,8 @@ class DashboardScreenViewModel(
         checkpointScanInFlight = true
         viewModelScope.launch {
             try {
-                val response = withContext(IoDispatcher) { ipc.listCheckpoints() }
+                val name = _uiState.value.selectedRun?.outputName
+                val response = withContext(IoDispatcher) { ipc.listCheckpoints(name = name) }
                 checkpointCache = response.checkpoints
                 _uiState.update { state ->
                     val pick = state.chartPick ?: return@update state
@@ -197,12 +221,15 @@ class DashboardScreenViewModel(
         updateChartPickForm { copy(isFormOpen = !isFormOpen) }
     }
 
-    /** Loads the run's generated samples from disk; a job still running keeps the poll loop alive. */
+    /**
+     * Loads the run's generated samples from disk; a job still running keeps the poll loop alive.
+     */
     fun loadGeneratedSamples() {
-        val runId = _uiState.value.runId
+        val selected = _uiState.value.selectedRun
+        val runId = selected?.runId ?: _uiState.value.runId
         if (runId.isNullOrBlank()) return
         viewModelScope.launch {
-            val jobs = fetchGeneratedJobs(runId)
+            val jobs = fetchGeneratedJobs(runId, selected?.outputName)
             if (jobs.isNotEmpty()) {
                 _uiState.update { state ->
                     val pick = state.chartPick ?: return@update state
@@ -234,6 +261,7 @@ class DashboardScreenViewModel(
         updateChartPickForm { copy(isGenerating = true, generatedError = null) }
         viewModelScope.launch {
             try {
+                val selected = _uiState.value.selectedRun
                 val response = withContext(IoDispatcher) {
                     ipc.generateSample(
                         checkpoint = checkpoint.path,
@@ -243,7 +271,8 @@ class DashboardScreenViewModel(
                         steps = pick.steps.trim().toInt(),
                         seed = pick.seed.trim().toLong(),
                         step = rowStep ?: checkpoint.step,
-                        runId = _uiState.value.runId,
+                        name = selected?.outputName,
+                        runId = selected?.runId ?: _uiState.value.runId,
                     )
                 }
                 sessionJobIds += response.job.id
@@ -273,9 +302,9 @@ class DashboardScreenViewModel(
         }
     }
 
-    private suspend fun fetchGeneratedJobs(runId: String): List<GeneratedSampleJob> =
+    private suspend fun fetchGeneratedJobs(runId: String, name: String? = null): List<GeneratedSampleJob> =
         try {
-            withContext(IoDispatcher) { ipc.listGeneratedSamples(runId = runId) }.jobs
+            withContext(IoDispatcher) { ipc.listGeneratedSamples(name = name, runId = runId) }.jobs
         } catch (_: Exception) {
             emptyList()
         }
@@ -286,13 +315,17 @@ class DashboardScreenViewModel(
         generatedPollJob = viewModelScope.launch {
             while (isActive) {
                 delay(GENERATED_POLL_MILLIS.milliseconds)
-                val runId = _uiState.value.runId ?: return@launch
-                val jobs = fetchGeneratedJobs(runId)
+                val state = _uiState.value
+                val selected = state.selectedRun
+                val runId = selected?.runId ?: state.runId ?: return@launch
+                val jobs = fetchGeneratedJobs(runId, selected?.outputName)
                 if (jobs.isEmpty()) return@launch
                 val failed = jobs.firstOrNull { it.state == JOB_ERROR }?.error
-                _uiState.update { state ->
-                    val pick = state.chartPick ?: return@update state
-                    state.copy(
+                _uiState.update { current ->
+                    // A switch to another run under the poll must not inject the old run's jobs.
+                    if ((current.selectedRun?.runId ?: current.runId) != runId) return@update current
+                    val pick = current.chartPick ?: return@update current
+                    current.copy(
                         chartPick = pick.copy(
                             generatedJobs = jobs,
                             generatedError = failed ?: pick.generatedError,
@@ -490,8 +523,16 @@ class DashboardScreenViewModel(
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         }
         try {
-            val dashboard = withContext(IoDispatcher) { ipc.getDashboard() }
-            val samples = withContext(IoDispatcher) { ipc.listSamples() }
+            val pinned = _uiState.value.selectedRun
+            val runs = withContext(IoDispatcher) { ipc.listRuns() }.runs
+            // Re-read the pinned entry so its badge and figures follow the live list.
+            val selected = pinned?.let { run -> runs.firstOrNull { it.runId == run.runId } ?: run }
+            val dashboard = withContext(IoDispatcher) {
+                ipc.getDashboard(name = selected?.outputName, runId = selected?.runId)
+            }
+            val samples = withContext(IoDispatcher) {
+                ipc.listSamples(name = selected?.outputName, runId = selected?.runId)
+            }
             val trainStatus = withContext(IoDispatcher) { ipc.trainStatus() }
             _uiState.update { state ->
                 val generated = state.chartPick?.generatedJobs.orEmpty()
@@ -507,6 +548,8 @@ class DashboardScreenViewModel(
                     connected = true,
                     config = dashboard.config,
                     runId = dashboard.runId,
+                    runs = runs,
+                    selectedRun = selected,
                     latestStats = dashboard.latestStats,
                     metrics = dashboard.metrics,
                     samples = samples.samples,
@@ -540,6 +583,15 @@ class DashboardScreenViewModel(
     /** What the fullscreen preview cycles through: the run's samples plus the panel's generated ones. */
     private fun currentPreviewList(state: DashboardUiState = _uiState.value): List<SampleItem> =
         previewSamples(state.samples, state.chartPick?.generatedJobs.orEmpty())
+}
+
+/**
+ * Start / Pause / Resume / Early Stop / Reset act on the run `state.json` is on. A run the
+ * user pinned in the history list is a past run: the page shows it, the controls stay off.
+ */
+internal fun trainingControlsEnabled(state: DashboardUiState): Boolean {
+    val pinned = state.selectedRun ?: return true
+    return pinned.runId == state.trainStatus.runId
 }
 
 internal fun resolvedPending(pending: String?, status: String): String? {

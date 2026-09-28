@@ -24,6 +24,17 @@ const val TRAIN_DATA_ERROR_PREFIX = "train_data."
 val TRAIN_DATA_REPEAT_RANGE = 1..512
 
 /**
+ * The characters a run name may hold, mirroring `trainer/runs.py::validate_output_name`: the name
+ * becomes a run id and the artifact directory names, so a space or a slash would make the id
+ * (`re_in_…`) disagree with the directories (`re in_samples`) and a run could not be found again.
+ */
+internal fun isValidOutputName(value: String): Boolean =
+    value.isNotEmpty() && value.all { it.isLetterOrDigit() || it in "-_." }
+
+/** Shown under the field; the trainer refuses the same value again at startup. */
+const val OUTPUT_NAME_HINT = "Letters, digits, '-', '_' and '.' only"
+
+/**
  * One dataset folder as editable text. `repeat` is how often its images are drawn inside a single
  * epoch; the trainer reads the same range and refuses the value again before training starts.
  */
@@ -214,6 +225,9 @@ data class TrainingConfigForm(
         requireText("output_dir", outputDir)
         requireText("logging_dir", loggingDir)
         requireText("output_name", outputName)
+        if (outputName.isNotEmpty() && !isValidOutputName(outputName)) {
+            errors["output_name"] = OUTPUT_NAME_HINT
+        }
 
         if (trainDataDirs.isEmpty()) {
             errors[TRAIN_DATA_ERROR_PREFIX + "0.path"] = "At least one dataset folder"

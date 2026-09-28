@@ -54,6 +54,7 @@ import kotlin.math.roundToInt
 fun TrainControlCard(
     status: TrainStatus,
     commandInFlight: Boolean,
+    controlsEnabled: Boolean = true,
     pendingCommand: String? = null,
     outputDir: String,
     loggingDir: String,
@@ -81,11 +82,11 @@ fun TrainControlCard(
         (!terminal && pendingCommand != null && pendingCommand != "stop") ||
         phase == "starting"
     val running = phase == "encoding" || phase == "training" || phase == "sampling"
-    val canStart = !commandInFlight && terminal && !status.alive
-    val canPause = !runLocked && running
-    val canResume = !runLocked && phase == "paused"
-    val canStop = !runLocked && (running || phase == "paused")
-    val canReset = !commandInFlight && actual in setOf("idle", "finished", "error", "stopping")
+    val canStart = controlsEnabled && !commandInFlight && terminal && !status.alive
+    val canPause = controlsEnabled && !runLocked && running
+    val canResume = controlsEnabled && !runLocked && phase == "paused"
+    val canStop = controlsEnabled && !runLocked && (running || phase == "paused")
+    val canReset = controlsEnabled && !commandInFlight && actual in setOf("idle", "finished", "error", "stopping")
     val runName = status.outputName?.takeIf { it.isNotBlank() } ?: "—"
 
     PorcelainCard {
@@ -194,6 +195,15 @@ fun TrainControlCard(
                 pulsing = swapping,
             )
 
+            if (!controlsEnabled) {
+                Text(
+                    text = "Viewing a past run from the history list, so these controls are off. " +
+                        "Pick \"Current run\" there to control training.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = rankoColors.qualityOrange,
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth().then(if (runLocked) Modifier.alpha(0.45f) else Modifier),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -289,7 +299,8 @@ fun TrainControlCard(
                     Text(
                         if (runId != null) {
                             "Clears the Finished / Error state so Start can launch a new run. " +
-                                "Sample images and TensorBoard logs of run \"$runId\" will be deleted."
+                                "Run \"$runId\" stays in the run history: its samples and " +
+                                "TensorBoard logs are kept."
                         } else {
                             "Clears the Finished / Error state so Start can launch a new run. " +
                                 "There is no run directory to delete."
@@ -297,8 +308,8 @@ fun TrainControlCard(
                     )
                     if (runId != null) {
                         Text(
-                            "Logs: $loggingDir/$runId\n" +
-                                "Samples: $outputDir/$runId/${runName}_samples",
+                            "Kept logs: $loggingDir/$runId\n" +
+                                "Kept samples: $outputDir/$runId/${runName}_samples",
                             style = MaterialTheme.typography.bodySmall,
                             color = rankoColors.textDim
                         )
