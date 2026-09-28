@@ -77,7 +77,7 @@ run_id = {output_name}_{YYYYMMDD_HHMMSS}
 | Latent cache | one per dataset folder: `<folder>/.latents_cache/<sha1(abs_path::bucket::fit geometry)>.pt` |
 | Runtime state / commands / lock / log | `$AXL_RUNTIME_DIR` → `$XDG_RUNTIME_DIR/axltrainer` → `/tmp/axltrainer-$UID` (`state.json`, `command.json`, `train.lock`, `train.log`) |
 
-`state.json` carries the current `run_id`, and the dashboard / `list_samples` / `train_reset` resolve a run as: explicit `run_id` argument → `state.json`'s `run_id` → the newest `{name}_<timestamp>` directory under `logging_dir`. Runs created before this layout (flat `{output_dir}/{name}_s000010/`, `{logging_dir}/{name}/`) are **not** resolved anymore; their files stay on disk and can be cleaned with `python clean.py --legacy-flat`.
+`state.json` carries the current `run_id`, and the dashboard / `list_samples` / `train_reset` resolve a run as: explicit `run_id` argument → `state.json`'s `run_id` → the newest run directory of the configured `output_name` under `output_dir` or `logging_dir` → the newest run directory overall. `run_id` alone is enough: when `name` is not passed, the name the run id was built from is used. Runs created before this layout (flat `{output_dir}/{name}_s000010/`, `{logging_dir}/{name}/`) are **not** resolved anymore; their files stay on disk and can be cleaned with `python clean.py --legacy-flat`.
 
 **Checkpoint format:** PEFT state dicts are remapped to kohya keys (`lora_unet_*`, `lora_te1_*`, `lora_te2_*`), converted to bf16, and saved with alpha scalars plus `modelspec.*` and `ss_*` metadata — directly loadable in ComfyUI or with kohya sd-scripts.
 
@@ -114,7 +114,9 @@ Rules and failure modes:
 
 ## Cleanup
 
-A run leaves samples, TensorBoard logs, and checkpoints behind. Two ways to clean up (same targets, same underlying helper `trainer/cleanup.py`), both scoped to **one run**:
+A run leaves samples, TensorBoard logs, and checkpoints behind. The dashboard's **Reset** button only clears the `finished`/`error` state so a new run can start: the run keeps its sample images and TensorBoard logs, which is what makes it browsable in the run history afterwards. Its optional checkbox deletes that run's LoRA checkpoints and nothing else.
+
+Deleting a run's artifacts is `clean.py`, scoped to **one run**:
 
 ```bash
 python clean.py                    # interactive: lists run directories, asks which to clean
@@ -122,9 +124,9 @@ python clean.py --run rein_20260911_120000
 python clean.py --legacy-flat      # old flat layout ({output_dir}/{name}_*, {logging_dir}/{name})
 ```
 
-Or the dashboard's **Reset** button, which additionally clears the `finished`/`error` state so a new run can start. Both delete:
+It removes (same helper as Reset, `trainer/cleanup.py`):
 
-1. `{output_dir}/{run_id}/{name}_samples/`
+1. `{output_dir}/{run_id}/{name}_samples/` (generated samples included)
 2. `{logging_dir}/{run_id}/`
 3. Optionally (with confirmation / `delete_weights`) all `{output_dir}/{run_id}/{name}_*` checkpoint dirs.
 

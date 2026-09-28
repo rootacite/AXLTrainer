@@ -68,7 +68,7 @@ Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, dataset
                                       +--> output_dir/{run_id}/{name}_*   checkpoints + samples
 ```
 
-`run_id` = `{output_name}_{YYYYMMDD_HHMMSS}`, created by `trainer/main.py` through `trainer/runs.py` (`create_run_dirs`). Every run gets its own pair of directories, so a later run (whose step counter restarts at 0) never overwrites an earlier one. `api.py` resolves the run for `dashboard` / `list_samples` / `train_reset` as: explicit `run_id` param → `state.json`'s `run_id` → newest `{name}_<timestamp>` under `logging_dir`.
+`run_id` = `{output_name}_{YYYYMMDD_HHMMSS}`, created by `trainer/main.py` through `trainer/runs.py` (`create_run_dirs`). Every run gets its own pair of directories, so a later run (whose step counter restarts at 0) never overwrites an earlier one. `output_name` must be filename-safe — letters and digits (any script), `-`, `_`, `.` — because it becomes the run id **and** the artifact directory names: `validate_output_name` (`trainer/runs.py`) refuses a space or a slash, and it is called from `TrainConfig.__post_init__` (so the trainer and `train_start` refuse such a config at startup) and from `fsrpc.config_save` (so a hand-written one cannot be saved); the Utils form mirrors the same rule and shows `OUTPUT_NAME_HINT`. `api.py` resolves the run for `dashboard` / `list_samples` / `train_reset` / `list_runs` as: explicit `run_id` param → `state.json`'s `run_id` → newest run directory of the configured `output_name` under `output_dir` or `logging_dir` → newest run directory overall. Passing `run_id` alone is enough: `trainer/runs.py` `run_output_name` recovers the name the run id was built from, which is how a run created under another `output_name` (or one whose `logging_dir` directory is gone) still resolves its `{name}_samples` and weight dirs.
 
 Hard rules:
 
@@ -102,7 +102,7 @@ idle → starting → encoding → training → sampling → finished
                               ↓
                            stopping → finished
 dead PID while "live" → error   (reconcile)
-reset (PID dead)      → idle    (also deletes samples + TB logs; optional weights)
+reset (PID dead)      → idle    (keeps samples + TB logs; optional weight delete)
 ```
 
 `LIVE_STATUSES`: starting, encoding, training, sampling, pausing, paused, resuming, stopping.
@@ -246,8 +246,8 @@ Entry: `bash start_train.sh` → `python -u trainer/main.py` with ROCm log filte
 | `trainer/control.py` | State machine, atomic JSON, lock, command poll. |
 | `trainer/device_swap.py` | GPU↔CPU offload; `at_safe_point`. |
 | `trainer/loss_log.py` | Kohya-style `Train/Avg_Loss` window (`LossRecorder`). |
-| `trainer/cleanup.py` | Discover/delete one run's samples, TB logs, optional weight dirs. Shared by `api.py` `train_reset` and `clean.py`. |
-| `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs`. torch-free. |
+| `trainer/cleanup.py` | Discover/delete one run's samples, TB logs, optional weight dirs (`delete_samples` / `delete_logs` default True). `clean.py` uses the defaults; `api.py` `train_reset` passes both off, so a reset run keeps everything but the weights it was asked to delete. |
+| `trainer/runs.py` | Run id naming (`{name}_{YYYYMMDD_HHMMSS}`), `create_run_dirs`, `find_latest_run`, `list_runs` (name-scoped, or every run with `output_name=None` plus per-run `output_name`/`samples`/`last_step`/`checkpoints`), `run_output_name`. torch-free. |
 | `trainer/orphans.py` | Reaps what a signal-killed trainer leaves behind: `start_train.sh` starts it detached before `exec`ing the trainer, it waits for that PID (start-time guarded, zombies count as gone) and then kills the trainer's session, or the forkservers matching a `trainer/main.py` path when it is not the session leader. torch-free. |
 | `trainer/checkpoints.py` | `resolve_resume_path`, `read_lora_metadata`, `discover_checkpoints` (run-scoped) for resume + the Ranko picker. |
 | `trainer/genjob.py` | Job records for one-off sample generation (`{name}_samples/generated/*.json`): naming, request validation, atomic write, listing. torch-free. |
@@ -329,12 +329,13 @@ Handlers (`_HANDLERS` — add here **and** in `API.md` **and** `TrainerIpcClient
 | --- | --- |
 | `ping` | none |
 | `dashboard` | read TB scalars + flattened config (run-scoped: `run_id`) |
+| `list_runs` | every run directory under `output_dir` / `logging_dir` (any `output_name`) with brief figures + `current` / `live`; backs the Dashboard run history |
 | `list_samples` | scan the run's sample PNGs (`path` is a blob key) |
 | `list_checkpoints` | list LoRA files under `output_dir/{name}_<timestamp>/` (read-only) |
 | `train_status` | `control.status_payload()` + dead-PID reconcile |
 | `train_start` | spawn `start_train.sh` (rejects a bad `resume_lora_path` up front) |
 | `train_pause` / `train_resume` / `train_stop` | write `command.json` |
-| `train_reset` | `run_cleanup` (resolved run) + `reset_to_idle` |
+| `train_reset` | `run_cleanup` (samples + logs kept) + `reset_to_idle` |
 | `dataset_tag` | spawn `tagger/main.py` (GPU ONNX); overwrites sidecar `.txt` |
 | `generate_sample` | spawn `trainer/generate_sample.py` **detached** (returns immediately; refuses while any trainer PID is alive, and while another job is running) |
 | `list_generated_samples` | read-only: the run's `generated/*.json` jobs, newest first; a `running` job whose PID died is rewritten to `error` |
@@ -400,6 +401,8 @@ User-facing look-and-feel (background: Solid / Glow / Image, independent card vs
 Screens: `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum).
 
 Path pickers go through `PathPicker`. Desktop (`JvmPathPicker`) is FileKit (XDG portal on Linux). Web (`WasmPathPicker`) is an in-app porcelain dialog over `fs_listdir` / `fs_roots`, because the browser cannot return a POSIX path the trainer can open. Do not reintroduce `JFileChooser`. `initialDirectoryFor` seeds FileKit from the current field value; Save As on desktop may create a 0-byte placeholder that `deleteEmptyPlaceholder` removes.
+
+Dashboard run history: `RunSelector` (`pages/components/DashboardWidgets.kt`, with the `runStampLabel` / `runDetailLabel` / `runStateLabel` helpers it renders) lists `list_runs` newest first and is what the whole page follows. Its first entry, **Current run**, clears the pin (`selectedRun = null`) so the page follows `state.json`; every other entry pins `DashboardUiState.selectedRun`. While following, the collapsed box keeps the title `Current run` and shows the run it resolved to underneath; a pinned entry titles that run's id instead. The only badge vocabulary is `runStateLabel`: **Live** while that run's process is running, **Stopped** otherwise, nothing at all when no run resolves (a `current` run is *not* labelled — it is Live or Stopped like any other). `fetchOnce` passes the shown run's `name` + `run_id` to `dashboard` / `list_samples` / `list_checkpoints` / `list_generated_samples` so charts, thumbnails and the checkpoint panel all come from that run. `trainingControlsEnabled` (`DashboardScreenViewModel.kt`) is the rule behind the control bar: the five buttons act on the run `state.json` is on, so they are all off while a past run is pinned (`TrainControlCard(controlsEnabled = …)`). Selecting a run drops the previous run's `chartPick` / `previewIndex`.
 
 Dashboard charts: the five training charts draw an always-on hover cursor with the exact step under the pointer, and mark the clicked step (dashed) plus the step a pick matched (bold, flagged). The **Train / Avg Loss** card additionally owns the checkpoint panel, opened by `Ctrl`+left click or by a left double click — the pick fires on the *picking* click, so a double click anchors at the second click, and the 400 ms window rule lives in `completesDoubleClick` (`pages/components/ChartPick.kt`). The panel shows the matched checkpoint highlighted, the clicked step's `Avg Loss`/`Loss`/UNet+TE LR, that step's samples with any generated ones, and can be dismissed by a click outside / close / `Esc`. It is resizable by dragging its bottom-right grip: placement is decided once from the click and the *default* size so a drag can never move the panel (`placePanelOrigin`/`clampPanelOrigin`), and the slots fill the dragged width (`sampleSlotWidth`, no 400 dp cap) with extra images wrapping instead of scrolling. `Save As` asks the OS for a dest path then calls `checkpoint_export`; `Generate sample` renders one extra image per §5. Sample and dataset images load through `blob_batch` (Coil `BlobRef`), never `java.io.File`.
 
@@ -467,7 +470,7 @@ Only `trainer/device_swap.py` + call sites of `at_safe_point`. Iterate `SwapCont
 
 ### Change cleanup targets
 
-Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `run_id=None` meaning the legacy flat layout. `clean.py` is the interactive CLI (`--run`, `--legacy-flat`); `train_reset` is the API and does nothing when no run resolves. Keep them identical.
+Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `run_id=None` meaning the legacy flat layout. `clean.py` is the interactive CLI (`--run`, `--legacy-flat`) and deletes samples + logs; `train_reset` is the API and does nothing when no run resolves — it calls the same helper with `delete_samples=False, delete_logs=False`, because a reset run stays in the Dashboard's history list with its charts and samples.
 
 ### Change resume / checkpoint loading
 
@@ -479,16 +482,16 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 
 | Suite | Command | Covers |
 | --- | --- | --- |
-| IPC | `python -m unittest discover -s test -p 'test_api_ipc.py'` | ping, dashboard empty logs, sample grouping (incl. `_p{set}_` names), avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset, `sample_sets` payload |
-| Blob / FS RPC | `python -m unittest discover -s test -p 'test_blob_ipc.py'` | encode params, cache hit, hash, LRU cap, process pool, dataset list/shuffle/drop/mask/config/profile, WS ping |
+| IPC | `python -m unittest discover -s test -p 'test_api_ipc.py'` | ping, dashboard empty logs, sample grouping (incl. `_p{set}_` names), avg-loss, dataset_tag, hardware_status, run-scoped dashboard/samples/checkpoints/reset (reset keeps samples + logs), `list_runs` history (brief figures, `current`/`live`, another `output_name`, a run with no logs resolving by id), `sample_sets` payload |
+| Blob / FS RPC | `python -m unittest discover -s test -p 'test_blob_ipc.py'` | encode params, cache hit, hash, LRU cap, process pool, dataset list/shuffle/drop/mask/config/profile (incl. `config_save` refusing a non-filename-safe `output_name`), WS ping |
 | Validation sets | `python -m unittest discover -s test -p 'test_validation.py'` | `resolve_sample_sets`: no entries → one set from the scalars, per-key fallback, name defaulting, ranges with the entry index, matching seed sequences. `tracker_hparams` against a real `SummaryWriter` (a list-valued key must not reach `add_hparams`) |
 | Tagger | `python -m unittest discover -s test -p 'test_tagger.py'` | CLI parse, dummy-session sidecar writes |
 | Control | `python -m unittest discover -s test -p 'test_train_control.py'` | runtime dir, atomic state, commands, lock, swap tensors, run_id/resume state |
-| Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing |
+| Runs | `python -m unittest discover -s test -p 'test_runs.py'` | run id format/collision, run dir creation, latest-run lookup, run listing, `run_output_name`, `validate_output_name`, sample-dir lookup by name or fallback, all-names listing with per-run samples / newest step / checkpoints |
 | Orphans | `python -m unittest discover -s test -p 'test_orphans.py'` | start-time identity, an unreaped child counting as gone, session membership, reaping a session, watching a leader die, the forkserver command-line fallback (no GPU) |
 | Gen jobs | `python -m unittest discover -s test -p 'test_genjob.py'` | job naming/stem, request validation ranges, atomic write, listing order, done/error transitions (no GPU) |
 | Automation | `python -m unittest discover -s test -p 'test_automation.py'` | ComfyUI client (proxy bypass, queue/poll/download, cancel), discovery (port scan, signature check, `$AXL_COMFY_URL`), workflow validation + both combo schemas of the model pre-check, settings/prompt-set stores, job records and dead-PID reconcile, the real runner against a stub ComfyUI (images + sidecars, seeds, batch size, one failing prompt, consecutive-failure stop, `--only-failed`, SIGTERM), the `automation_*` handlers through `api.dispatch` (including that a job's image passes `blob_stat`), and two read-only checks against the machine's own ComfyUI when one is listening (no GPU work) |
-| Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, v-pred metadata, TE checkpoint helper, resume key map / round trip |
+| Family | `python -m unittest discover -s test -p 'test_family.py'` | catalog, spec mismatch, SD 3.5 refuse, `TrainConfig` refusing an unusable `output_name`, v-pred metadata, TE checkpoint helper, resume key map / round trip |
 | Sample offload | `python -m unittest discover -s test -p 'test_sampling_offload.py'` | S1/S2 device helpers, restore-after-sample, pause/resume re-offload |
 | GPU smoke | `python -m unittest discover -s test -p 'test_vram_gpu.py'` | TE LoRA backward with checkpointing; sample offload on ROCm (conda `axl`) |
 | Latent cache | `python test/test_warm_latent_cache.py` | pipelined vs serial; a cache file that is not the keyed latent is re-encoded; `--real` needs a VAE |
@@ -498,7 +501,7 @@ Single helper: `trainer/cleanup.py`, always scoped to one run (`run_id`), with `
 | Masked loss GPU | `python -m unittest discover -s test -p 'test_masked_loss_gpu.py'` | real SDXL encode+loss on a 2-image clone of `train_data_dir` (skipped without CUDA) |
 | Mask blur | `python -m unittest discover -s test -p 'test_mask_blur.py'` | sidecar naming/extensions, alpha extraction (RGBA/LA/palette), uniform-alpha skips, blur written at the source size with the `axl_mask_blur` marker and a monotone ramp, training image untouched, hand-painted sidecar protected vs `--overwrite`, rerun replaces its own output, `--dry-run`, worker-pool vs in-process runs agreeing byte for byte and keeping the input order, CLI end to end, one masked loader check (skipped without torch) |
 | Mask verifier | `python test/verify_mask_pipeline.py --tiers all` | closed loop for masks: CPU plumbing (sidecar pairing, crop/bucket geometry, cache independence), exact loss identities on GPU (all-ones == no mask, all-black == zero grads, mask linearity, coverage→loss), then real `trainer/main.py` runs (masked vs unmasked, 2 seeds, duplicate-run noise floor, resume) with per-region error probes. Report in `<report-dir>/mask_verify_report.md`; run it in the env `environment.yml` names (`axl`), ~41 min measured (52 checks, 0 failed on 2026-09-15). Its children are the runs the gfx1201 fault used to kill; it retries and escalates to `PYTORCH_NO_HIP_MEMORY_CACHING=1` if one dies. Refuses to start while a training run looks live; results, cost and the two deliberately unresolved observations: `doc/mask-verification.md` |
-| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models, TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display), dataset shuffle (mask/caption pairing, padded renumbering, seeded order, untouched directories and foreign files, orphan refusal, rollback on a failed rename), the prompt port (matrix/profile/generator/wizard/manifest) against the repo's own `input_matrix.txt` and `prompt_profiles/`, the Automation IPC payloads, and a render smoke test that composes each Automation pane in a real window with fixture state (it catches the layout crash class that only shows up at measurement time; needs a display) |
+| Ranko | `cd ranko && ./gradlew :shared:jvmTest` | IPC models (incl. the `list_runs` history payload), run-history labels (stamp, step/sample/checkpoint/size line, `Live`/`Stopped`), the control-bar rule for a pinned past run, the output-name rule (`OutputNameTest`), TOML patch (incl. `[[validation.samples]]` blocks), catalog form, sample-set form/labels, image headers, mask sidecar names, `MaskCanvas` stroke math, `MaskBrush` falloff/cursor radii/wheel nudge, AWT mask input (buttons, hover, Alt+wheel; needs a display), dataset shuffle (mask/caption pairing, padded renumbering, seeded order, untouched directories and foreign files, orphan refusal, rollback on a failed rename), the prompt port (matrix/profile/generator/wizard/manifest) against the repo's own `input_matrix.txt` and `prompt_profiles/`, the Automation IPC payloads, and a render smoke test that composes each Automation pane in a real window with fixture state (it catches the layout crash class that only shows up at measurement time; needs a display) |
 
 Python suites live in `test/` — a plain namespace directory, deliberately **without**
 `__init__.py`, so `import test` still resolves to the standard library package. Run them from the
