@@ -76,6 +76,7 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 | `SYSFS_MISSING_WARNED: AtomicBool` | `peralloc.rs` | amdgpu `mem_info_vram_*` 读不到时只打一次 warn，之后仍跳过保留检查 |
 | `INSTALL: LazyLock<()>` | `logging.rs` | 装 logger 并设级别 |
 | `LOGGER` | `logging.rs` | 无状态 sink |
+| `EARLY_TOUCH: unsafe extern "C" fn(i32, *mut *mut c_char, *mut *mut c_char)` | `early.rs` | `.init_array` 项，glibc 在载入本对象时调用一次：一次 `hipGetDeviceCount`（D7 的例外）。是一个只读的代码指针，不是状态，也没有第二处可变全局 |
 
 对照 C 版：12 个计数器 + `g_fb_names` + `g_disabled_reason` + 表 + 一把跨调用的非递归锁 +
 一对重入闩。
@@ -91,11 +92,22 @@ stderr 实现，一条记录一次 `write(2)`，无锁。`AMDFQ_LOG_LEVEL`（`of
 内部 abort 时不存在「状态没来得及打出来」的问题；没有需要按顺序执行的生命周期，也就没有第二个可以
 出错的地方。
 
+唯一的例外是 `early.rs` 的 `.init_array` 构造函数。它为 ROCr 的一次空转而存在：本机的 ROCR 1.21
+在任何 GPU 工作之后会让 `AsyncEventsLoop` 占满一个 CPU 核，直到进程结束；唯一能止住它的时机是
+**载入期**——早于 torch 自己的 `libtorch_cpu.so` 被映射，也就早于应用能调用的任何东西（实测分离表在
+`early.rs` 头部，`import torch` 期间连一次 HIP 调用都没有发生）。它不是生命周期：只跑一次、不记状态、
+失败只留一条日志、没有 teardown，所以「按顺序执行的生命周期」这条理由没有被推翻。它同时是 crate 里
+唯一一处 `dlopen`（D8）。
+
 ## D8 真符号解析只有一处
 
 `real.rs` 是 crate 里唯一出现 `dlsym`、`RTLD_NEXT` 和符号名字符串的文件，每个符号一个
 `LazyLock<Option<F>>`（比 C 版 `if (real == NULL)` 的首次调用多线程安全）。想加一个门：`hooks.rs`
 里一个函数 + `real.rs` 里一行 `LazyLock`，别的地方不碰符号名。`hipMemGetInfo` 是第三个门：拦截给上层看的账面；保留检查读 `/sys/class/drm/cardN/device/mem_info_vram_{used,total}`。
+
+同一文件里还有唯一一处**不走 `resolve`** 的符号操作：`early_touch`，用 `dlopen` 打开调用方点名的
+那个路径、再在这个 handle 上取 `hipGetDeviceCount`（D7 的例外）。它不能走 `resolve`——`RTLD_NEXT`
+找的是进程全局作用域里的名字，而载入期那里还没有运行时；路径由 `early.rs` 从正在跑的解释器推出来。
 
 ## D9 map 里的值必须 `Send + Sync`
 

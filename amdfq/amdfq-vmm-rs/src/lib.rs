@@ -39,9 +39,18 @@
 //! `AMDFQ_POOL_SIZE` is the pool size in bytes (default `0`, off), which is also the size of one
 //! `hipMemCreate` for everything small enough to be carved out of that pool.
 //!
+//! One thing here is not an allocation gate: on this box's ROCR, any GPU work leaves the runtime's
+//! `AsyncEventsLoop` spinning a whole CPU core for the rest of the process, and the only thing that
+//! stops it is touching the runtime from a load-time constructor — before torch's own
+//! `libtorch_cpu.so` is mapped, which is earlier than any call the application makes. That
+//! warm-up is `early.rs`; `AMDFQ_EARLY_HIP` (`0` to switch it off, default on) and `AMDFQ_HIP_LIB`
+//! (an explicit runtime path, for when the interpreter's own one is not what you want touched)
+//! drive it. It is the crate's only `init`, and DESIGN.md D7 says why it is allowed to be.
+//!
 //! | module | role |
 //! | --- | --- |
 //! | `hooks.rs` | the C symbols themselves: `#[unsafe(no_mangle)] pub unsafe extern "C" fn` (`hipMalloc` / `hipFree` / `hipMemGetInfo`) |
+//! | `early.rs` | the load-time HIP warm-up that stops the ROCr `AsyncEventsLoop` spin, and where it finds the runtime |
 //! | `peralloc.rs` | the VMM route: `serve` / `release`, the per-device state, the mapped-span (or never-reused) VA set |
 //! | `pool.rs` | the allocation pool: `PoolSize` from `AMDFQ_POOL_SIZE`, the table of live pools, carving one request out of a pool, giving a pool back when its last block goes |
 //! | `real.rs` | the only place a real symbol is resolved: next-object lookup, then cached |
@@ -52,6 +61,7 @@
 //! The design rules this crate follows — where state lives, how concurrency is treated, what may
 //! become a global — are in `DESIGN.md`.
 
+mod early;
 mod hip;
 mod hooks;
 mod logging;

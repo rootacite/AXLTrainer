@@ -30,7 +30,11 @@ environment: AXL_PYTHON (interpreter for test, default python3; for train its di
              takes this from config.toml via start_train.sh), AMDFQ_VA_NEVER_REUSE (0 = a freed span
              gives its VA back, 1 = keeps it for the process lifetime; default 0, train also takes
              this from config.toml), AMDFQ_POOL_SIZE (pool size in bytes, default 0 = off, clamp
-             16 MiB..512 MiB; train also takes this from config.toml's amdfq_pool_mib)
+             16 MiB..512 MiB; train also takes this from config.toml's amdfq_pool_mib), AMDFQ_EARLY_HIP
+             (0 = do not touch the runtime from the load-time constructor, default is to touch it —
+             that is what keeps the ROCr AsyncEventsLoop from spinning a whole core, see src/early.rs),
+             AMDFQ_HIP_LIB (the runtime to touch, when the interpreter's own bundled one is not the
+             one you want)
 EOF
 }
 

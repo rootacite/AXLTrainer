@@ -2,8 +2,8 @@
  * or calls dlsym (DESIGN.md D8). Each symbol is cached on its own, so a runtime that lacks only some
  * of them still gets the rest. */
 
-use crate::hip::{AccessDesc, AllocationProp, HipError};
-use std::ffi::{CStr, c_char, c_void};
+use crate::hip::{AccessDesc, AllocationProp, HIP_SUCCESS, HipError};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::mem::{size_of, transmute_copy};
 use std::sync::LazyLock;
 
@@ -75,6 +75,7 @@ const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
 
 unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void;
 }
 
 /* The only dlsym in this crate. A symbol this runtime does not export resolves to None, and the
@@ -129,3 +130,31 @@ pub(crate) static HIP_DEVICE_SYNCHRONIZE: LazyLock<Option<HipDeviceSynchronizeFn
     LazyLock::new(|| resolve(c"hipDeviceSynchronize"));
 pub(crate) static HIP_MEM_GET_INFO: LazyLock<Option<HipMemGetInfoFn>> =
     LazyLock::new(|| resolve(c"hipMemGetInfo"));
+
+/* RTLD_NOW | RTLD_GLOBAL: the flags the process preloads the ROCm runtime with anyway, so this
+ * object joins the global scope here rather than a few milliseconds later. */
+const RTLD_NOW_GLOBAL: c_int = 0x2 | 0x100;
+
+/* The one library this crate opens itself, and the only call it makes on it (early.rs). Nothing
+ * here goes through `resolve`: that looks the runtime up in the process's global scope, and at
+ * load time it is not there yet — so the caller names the file, and a miss is not an error. */
+pub(crate) fn early_touch(path: &CStr) -> Option<i32> {
+    let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW_GLOBAL) };
+    if handle.is_null() {
+        return None;
+    }
+    let symbol = unsafe { dlsym(handle, c"hipGetDeviceCount".as_ptr()) };
+    if symbol.is_null() {
+        return None;
+    }
+    const {
+        assert!(
+            size_of::<HipGetDeviceCountFn>() == size_of::<*mut c_void>(),
+            "resolved symbols are function pointers"
+        )
+    };
+    let get_device_count: HipGetDeviceCountFn = unsafe { transmute_copy(&symbol) };
+    let mut count = 0;
+    let ret = unsafe { get_device_count(&mut count) };
+    (ret == HIP_SUCCESS).then_some(count)
+}

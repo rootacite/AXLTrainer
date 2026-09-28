@@ -15,6 +15,10 @@
 # A second, built-in pass runs the same tiny torch workload with AMDFQ_POOL_SIZE set (default
 # 16 MiB, AMDFQ_POOL_CHECK=0 to skip), because the pool's own path — carve, give back, release the
 # pool when its last block goes — needs the knob on to be covered at all.
+#
+# A third pass covers the load-time warm-up (early.rs, the one thing here that is not an allocation
+# gate): it names the runtime it touched, and measures that no thread of a settled process burns a
+# core. AMDFQ_EARLY_HIP=0 skips it.
 set -u
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -28,6 +32,29 @@ failed=0
 report() { # report <label> <ok|FAIL> [detail]
     if [[ $2 == ok ]]; then printf 'ok    %s%s\n' "$1" "${3:+ — $3}"
     else printf 'FAIL  %s%s\n' "$1" "${3:+ — $3}"; failed=1; fi
+}
+
+thread_ticks() { # thread_ticks <pid> — one "tid utime+stime" line per thread, for the deltas below
+    for task in /proc/$1/task/*; do
+        awk -v tid="${task##*/}" '{print tid, $14+$15}' "$task/stat" 2>/dev/null
+    done
+}
+
+busiest_ticks() { # busiest_ticks <run_log> [environment assignments...] — ticks a thread used in 5s
+    local run_log=$1; shift
+    env "$@" LD_PRELOAD=$so "${AXL_PYTHON:-python3}" -c 'import torch, time
+torch.cuda.init()
+x = torch.ones(8, 8, device="cuda"); torch.cuda.synchronize()
+print("ready", flush=True); time.sleep(14)' >"$run_log" 2>&1 &
+    local pid=$!
+    sleep 6
+    thread_ticks "$pid" >"$run_log.before" 2>/dev/null
+    sleep 5
+    thread_ticks "$pid" >"$run_log.after" 2>/dev/null
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    join <(sort -n "$run_log.before") <(sort -n "$run_log.after") |
+        awk '{delta = $3 - $2; if (delta > worst) worst = delta} END {print worst + 0}'
 }
 
 if [[ ! -f $so ]]; then
@@ -214,6 +241,38 @@ torch.cuda.synchronize(); del x, y; torch.cuda.empty_cache()'
             "duplicate $pool_duplicates, untracked $pool_untracked"
     [[ $pool_rc -eq 0 ]] ||
         echo "amdfq-rs: the pool pass exited $pool_rc" >&2
+fi
+
+# == early touch pass
+# On this box's ROCR the runtime's AsyncEventsLoop spins a whole CPU core from the first GPU op on,
+# for the life of the process, and the crate's load-time warm-up (early.rs) is what stops it. Two
+# things are worth checking and neither is the allocation path: that what it touched is the
+# interpreter's own runtime and not the system one under /opt/rocm (touching that one kills
+# `import torch`), and that a settled process has no thread burning a core. Measured the way the
+# spin was found: the busiest thread of the process, 5s window, in ticks (100/s).
+if [[ ${AMDFQ_EARLY_HIP:-} == 0 ]]; then
+    echo
+    echo "== early touch pass skipped (AMDFQ_EARLY_HIP=0 turns the warm-up off)"
+else
+    echo
+    echo "== early touch pass"
+    early_logs="$log.early"
+    warmed=$(busiest_ticks "$early_logs")
+    plain=$(busiest_ticks "$early_logs.off" AMDFQ_EARLY_HIP=0)
+    printf 'busiest thread  %s ticks/5s with the warm-up, %s with AMDFQ_EARLY_HIP=0\n' "$warmed" "$plain"
+    [[ $plain -ge 100 ]] ||
+        echo "note  AMDFQ_EARLY_HIP=0 shows $plain ticks/5s: this ROCR does not spin anyway, so the number above proves nothing either way"
+
+    early_line=$(grep -m1 'amdfq_vmm_rs::early early touch' "$early_logs" || true)
+    if [[ $early_line == *" via "* && $early_line != *"/opt/rocm/core/lib/"* ]]; then
+        report "the warm-up touched the interpreter's own runtime" ok "${early_line##* via }"
+    else
+        report "the warm-up touched the interpreter's own runtime" FAIL \
+            "${early_line:-no early touch line in $early_logs}"
+    fi
+    [[ $warmed -lt 100 ]] &&
+        report "no thread burns a core under the hook" ok "$warmed ticks/5s" ||
+        report "no thread burns a core under the hook" FAIL "$warmed ticks/5s (one core is 500)"
 fi
 
 [[ $failed -eq 0 ]] && exit $rc || exit 1
