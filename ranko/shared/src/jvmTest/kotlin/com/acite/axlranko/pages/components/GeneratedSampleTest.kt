@@ -1,8 +1,9 @@
 package com.acite.axlranko.pages.components
 
+import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.SampleItem
-import com.acite.axlranko.pages.previewSamples
+import com.acite.axlranko.pages.previewList
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -20,6 +21,7 @@ class GeneratedSampleTest {
         cfg: Float? = 5f,
         steps: Int? = 20,
         seed: Long? = 12345,
+        checkpoint: String = checkpoint(3050).path,
     ) = GeneratedSampleJob(
         id = id,
         state = state,
@@ -28,8 +30,17 @@ class GeneratedSampleTest {
         steps = steps,
         seed = seed,
         imagePath = imagePath,
+        checkpoint = checkpoint,
         currentStep = currentStep,
         totalSteps = totalSteps,
+    )
+
+    private fun checkpoint(step: Int) = CheckpointItem(
+        path = "/out/run/rein_s$step/rein.safetensors",
+        runId = "rein_20260911_120000",
+        dir = "rein_s$step",
+        filename = "rein.safetensors",
+        step = step,
     )
 
     private fun sample(step: Int, index: Int = 0) = SampleItem(
@@ -49,6 +60,26 @@ class GeneratedSampleTest {
         assertEquals(listOf("done"), generatedJobsForStep(jobs, 3050).map { it.id })
         assertTrue(generatedJobsForStep(jobs, null).isEmpty())
         assertTrue(generatedJobsForStep(jobs, 999).isEmpty())
+    }
+
+    @Test
+    fun thePanelRowShowsThePassItsCheckpointOwns() {
+        val target = checkpoint(3050)
+        val jobs = listOf(
+            job(id = "at-step", step = 3050),
+            job(id = "legacy-no-step", step = null, checkpoint = target.path),
+            job(id = "other-checkpoint", step = 3050, checkpoint = "/elsewhere/rein.safetensors"),
+        )
+        // Every job recorded at the step (that rule is unchanged, whichever checkpoint it came
+        // from), plus the pass recorded without a step that names this checkpoint.
+        assertEquals(
+            listOf("at-step", "other-checkpoint", "legacy-no-step"),
+            panelJobsForStep(jobs, 3050, target).map { it.id },
+        )
+        assertEquals(
+            listOf("at-step", "other-checkpoint"),
+            panelJobsForStep(jobs, 3050, null).map { it.id },
+        )
     }
 
     @Test
@@ -79,10 +110,15 @@ class GeneratedSampleTest {
         assertEquals(listOf(0, 2), items.map { it.setIndex })
         assertEquals(listOf(0, 1), items.map { it.repeatIdx })
         assertTrue(items.all { it.path.endsWith(".png") })
+    }
 
-        // A single-image job carries no files; its one image is the old `image_path`.
-        assertEquals(1, generatedSampleItems(job(id = "x", imagePath = "/out/generated/x.png")).size)
+    @Test
+    fun aJobWithoutAnImageHasNoSampleItem() {
         assertTrue(generatedSampleItems(job(state = JOB_RUNNING, imagePath = null)).isEmpty())
+        val item = generatedSampleItems(job(id = "x", imagePath = "/out/generated/x.png")).single()
+        assertEquals("x.png", item.filename)
+        assertEquals("/out/generated/x.png", item.path)
+        assertEquals(-1, item.repeatIdx)
     }
 
     @Test
@@ -105,31 +141,6 @@ class GeneratedSampleTest {
         assertNull(generatedJobSetProgress(running.copy(state = JOB_DONE)))
         assertNull(generatedJobSetProgress(running.copy(mode = JOB_MODE_SINGLE)))
         assertNull(generatedJobSetProgress(null))
-    }
-
-    @Test
-    fun slidingImagesOfASetPassJoinTheirStepInThePreviewList() {
-        val samples = mapOf("3050" to listOf(sample(3050, 0)))
-        val pass = GeneratedSampleJob(
-            id = "pass",
-            state = JOB_DONE,
-            mode = JOB_MODE_SETS,
-            step = 3050,
-            files = listOf("/out/generated/pass_p0_0.png", "/out/generated/pass_p1_0.png"),
-        )
-        val list = previewSamples(samples, listOf(pass))
-        assertEquals(3, list.size)
-        assertEquals(sample(3050, 0).path, list[0].path)
-        assertEquals(listOf(0, 1), list.drop(1).map { it.setIndex })
-    }
-
-    @Test
-    fun aJobWithoutAnImageHasNoSampleItem() {
-        assertTrue(generatedSampleItems(job(state = JOB_RUNNING, imagePath = null)).isEmpty())
-        val item = generatedSampleItems(job(id = "x", imagePath = "/out/generated/x.png")).single()
-        assertEquals("x.png", item.filename)
-        assertEquals("/out/generated/x.png", item.path)
-        assertEquals(-1, item.repeatIdx)
     }
 
     @Test
@@ -161,14 +172,17 @@ class GeneratedSampleTest {
     }
 
     @Test
-    fun thePreviewListSlotsGeneratedImagesAfterTheirOwnStep() {
-        val samples = mapOf(
-            "3000" to listOf(sample(3000, 0)),
-            "3050" to listOf(sample(3050, 0), sample(3050, 1)),
+    fun thePreviewListIsTheSectionOrder() {
+        // The page draws the checkpoints newest first, each card's training samples then the images
+        // of the pass that joined it; the fullscreen preview cycles exactly that list.
+        val list = previewList(
+            checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+            samples = mapOf(
+                "3050" to listOf(sample(3050, 0), sample(3050, 1)),
+                "3000" to listOf(sample(3000, 0)),
+            ),
+            jobs = listOf(job(id = "gen", step = 3050)),
         )
-        val list = previewSamples(samples, listOf(job(id = "gen", step = 3050)))
-
-        // Newest step first (3050 then 3000), and the generated image closes its own step's group.
         assertEquals(4, list.size)
         assertEquals(sample(3050, 0).path, list[0].path)
         assertEquals(sample(3050, 1).path, list[1].path)
@@ -177,23 +191,72 @@ class GeneratedSampleTest {
     }
 
     @Test
-    fun thePreviewListKeepsAStepThatOnlyHasGeneratedImages() {
-        val samples = mapOf("3050" to listOf(sample(3050, 0)))
-        val list = previewSamples(samples, listOf(job(id = "gen", step = 3100), job(id = "other", step = 3000)))
-
-        assertEquals(listOf("gen.png", "run_003050_0.png", "other.png"), list.map { it.filename })
+    fun everyImageOfASetPassIsInThePreviewList() {
+        val pass = GeneratedSampleJob(
+            id = "pass",
+            state = JOB_DONE,
+            mode = JOB_MODE_SETS,
+            step = 3050,
+            checkpoint = checkpoint(3050).path,
+            files = listOf("/out/generated/pass_p0_0.png", "/out/generated/pass_p1_0.png"),
+        )
+        val list = previewList(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = mapOf("3050" to listOf(sample(3050, 0))),
+            jobs = listOf(pass),
+        )
+        assertEquals(3, list.size)
+        assertEquals(sample(3050, 0).path, list[0].path)
+        assertEquals(listOf(0, 1), list.drop(1).map { it.setIndex })
     }
 
     @Test
-    fun withoutGeneratedImagesThePreviewListIsUnchanged() {
-        val samples = mapOf("3050" to listOf(sample(3050, 0)), "3000" to listOf(sample(3000, 1)))
+    fun aPassWithNoStepIsStillInThePreviewList() {
+        // The reported bug: the card showed the images (it matches them by checkpoint path) while
+        // the preview, built by step alone, did not — so clicking a thumbnail did nothing.
+        val target = checkpoint(3050)
+        val list = previewList(
+            checkpoints = listOf(target),
+            samples = emptyMap(),
+            jobs = listOf(
+                GeneratedSampleJob(
+                    id = "legacy_sets_gen_1",
+                    state = JOB_DONE,
+                    mode = JOB_MODE_SETS,
+                    step = null,
+                    checkpoint = target.path,
+                    files = listOf("/out/generated/legacy_sets_gen_1_p0_0.png"),
+                ),
+            ),
+        )
+        assertEquals(listOf("legacy_sets_gen_1_p0_0.png"), list.map { it.filename })
+    }
+
+    @Test
+    fun aStepWithoutACheckpointKeepsItsImagesInThePreviewList() {
+        val list = previewList(
+            checkpoints = emptyList(),
+            samples = mapOf("3000" to listOf(sample(3000, 0))),
+            jobs = listOf(job(id = "orphan", step = 3100)),
+        )
+        // Newest leftover step first: the orphaned pass's own row, then the step that only has
+        // training samples left.
         assertEquals(
-            listOf(sample(3050, 0).path, sample(3000, 1).path),
-            previewSamples(samples, emptyList()).map { it.path },
+            listOf("orphan.png", sample(3000, 0).filename),
+            list.map { it.filename },
+        )
+    }
+
+    @Test
+    fun withoutGeneratedImagesThePreviewListIsTheRunsSamples() {
+        val list = previewList(
+            checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+            samples = mapOf("3050" to listOf(sample(3050, 0)), "3000" to listOf(sample(3000, 1))),
+            jobs = listOf(job(state = JOB_RUNNING, imagePath = null)),
         )
         assertEquals(
             listOf(sample(3050, 0).path, sample(3000, 1).path),
-            previewSamples(samples, listOf(job(state = JOB_RUNNING, imagePath = null))).map { it.path },
+            list.map { it.path },
         )
     }
 }

@@ -127,8 +127,8 @@ import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generatedJobCaption
 import com.acite.axlranko.pages.components.generatedJobProgress
 import com.acite.axlranko.pages.components.generatedJobSetProgress
-import com.acite.axlranko.pages.components.generatedJobsForStep
 import com.acite.axlranko.pages.components.nearestSampledStep
+import com.acite.axlranko.pages.components.panelJobsForStep
 import com.acite.axlranko.pages.components.placePanelOrigin
 import com.acite.axlranko.pages.components.runningJob
 import com.acite.axlranko.pages.components.sampleColumns
@@ -351,11 +351,12 @@ fun DashboardScreen(
 
         val previewIndex = uiState.previewIndex
         if (previewIndex != null) {
-            val previewSamples = previewSamples(uiState.samples, uiState.generatedJobs)
-            if (previewSamples.isNotEmpty()) {
+            // The section's own list, so a thumbnail the page drew always resolves to an index.
+            val previewImages = previewList(uiState.checkpoints, uiState.samples, uiState.generatedJobs)
+            if (previewImages.isNotEmpty()) {
                 SamplePreviewOverlay(
-                    samples = previewSamples,
-                    index = previewIndex.coerceIn(previewSamples.indices),
+                    samples = previewImages,
+                    index = previewIndex.coerceIn(previewImages.indices),
                     onClose = viewModel::closePreview,
                     onPrev = viewModel::previewPrev,
                     onNext = viewModel::previewNext,
@@ -853,7 +854,7 @@ private fun CheckpointPanelOverlay(
     // Generated images join the row they belong to, so they sit next to the step's own samples.
     val slots = sampleSlots(
         trainingSamples,
-        generatedJobsForStep(generatedJobs, shownStep),
+        panelJobsForStep(generatedJobs, shownStep, pick.checkpoint),
         newJobIds,
     )
 

@@ -324,6 +324,25 @@ internal fun generatedJobsForStep(jobs: List<GeneratedSampleJob>, step: Int?): L
         jobs.filter { it.step == step && it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() }
     }
 
+/**
+ * The finished jobs the panel's row for [step] shows: [generatedJobsForStep]'s list — every job
+ * recorded at that step — plus any pass rendered from [checkpoint] whatever step its record
+ * carries, which is what keeps a job that names no step from going missing for the very checkpoint
+ * it belongs to.
+ */
+internal fun panelJobsForStep(
+    jobs: List<GeneratedSampleJob>,
+    step: Int?,
+    checkpoint: CheckpointItem?,
+): List<GeneratedSampleJob> {
+    val path = checkpoint?.path
+    val own = jobs.filter {
+        it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() &&
+            path != null && it.checkpoint == path
+    }
+    return (generatedJobsForStep(jobs, step) + own).distinctBy { it.id }
+}
+
 /** The pass still rendering for [checkpoint], matched on its path (the job records it). */
 internal fun runningJobForCheckpoint(
     jobs: List<GeneratedSampleJob>,

@@ -15,15 +15,15 @@ import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.model.TrainStatus
-import com.acite.axlranko.pages.components.JOB_DONE
 import com.acite.axlranko.pages.components.JOB_ERROR
 import com.acite.axlranko.pages.components.JOB_RUNNING
+import com.acite.axlranko.pages.components.checkpointRows
 import com.acite.axlranko.pages.components.checkpointsForRun
 import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
-import com.acite.axlranko.pages.components.generatedSampleItems
 import com.acite.axlranko.pages.components.nearestCheckpoint
+import com.acite.axlranko.pages.components.sectionImages
 import com.acite.axlranko.util.PathPicker
 import com.acite.axlranko.util.checkpointSaveName
 import com.acite.axlranko.util.ensureSafetensorsExtension
@@ -603,9 +603,17 @@ class DashboardScreenViewModel(
             val trainStatus = withContext(IoDispatcher) { ipc.trainStatus() }
             _uiState.update { state ->
                 val generated = generatedJobs
-                val previewPath = state.previewIndex
-                    ?.let { previewSamples(state.samples, generated).getOrNull(it)?.path }
-                val newList = previewSamples(samples.samples, generated)
+                // The preview list is the section's own images in the section's own order, so the
+                // path a click opened is looked up in the very rows the page drew.
+                val shownCheckpoints = if (shown == null) {
+                    emptyList()
+                } else {
+                    checkpointsForRun(checkpoints, shown.runId)
+                }
+                val previewPath = state.previewIndex?.let { index ->
+                    previewList(state.checkpoints, state.samples, state.generatedJobs).getOrNull(index)?.path
+                }
+                val newList = previewList(shownCheckpoints, samples.samples, generated)
                 val newPreview = previewPath?.let { path ->
                     newList.indexOfFirst { it.path == path }.takeIf { it >= 0 }
                 }
@@ -620,7 +628,7 @@ class DashboardScreenViewModel(
                     latestStats = dashboard.latestStats,
                     metrics = dashboard.metrics,
                     samples = samples.samples,
-                    checkpoints = if (shown == null) emptyList() else checkpointsForRun(checkpoints, shown.runId),
+                    checkpoints = shownCheckpoints,
                     generatedJobs = generated,
                     previewIndex = newPreview,
                     trainStatus = trainStatus,
@@ -649,9 +657,9 @@ class DashboardScreenViewModel(
         _uiState.update { it.copy(previewIndex = next) }
     }
 
-    /** What the fullscreen preview cycles through: the run's samples plus the generated ones. */
+    /** What the fullscreen preview cycles through: every image the Checkpoints section shows. */
     private fun currentPreviewList(state: DashboardUiState = _uiState.value): List<SampleItem> =
-        previewSamples(state.samples, state.generatedJobs)
+        previewList(state.checkpoints, state.samples, state.generatedJobs)
 }
 
 /**
@@ -709,32 +717,15 @@ internal val LIVE_TRAIN_STATUSES = setOf(
     "stopping",
 )
 
-internal fun flattenSamples(samples: Map<String, List<SampleItem>>): List<SampleItem> {
-    return samples.entries
-        .sortedByDescending { it.key.toIntOrNull() ?: Int.MIN_VALUE }
-        .flatMap { it.value }
-}
-
 /**
- * The list the fullscreen preview cycles through: the run's samples, with the panel's generated
- * images slotted in right after their own step (newest first), so `←`/`→` stays in step order.
+ * The images a page state shows, in the order the Checkpoints section shows them. `openPreview`
+ * resolves a clicked thumbnail in this same list, so anything the section draws can be opened.
  */
-internal fun previewSamples(
+internal fun previewList(
+    checkpoints: List<CheckpointItem>,
     samples: Map<String, List<SampleItem>>,
     jobs: List<GeneratedSampleJob>,
-): List<SampleItem> {
-    val generatedByStep = jobs.filter { it.state == JOB_DONE }
-        .mapNotNull { job -> job.step?.let { it to job } }
-        .groupBy({ it.first }, { it.second })
-    if (generatedByStep.isEmpty()) return flattenSamples(samples)
-
-    val steps = (samples.keys.mapNotNull { it.toIntOrNull() } + generatedByStep.keys).distinct()
-    return steps.sortedDescending().flatMap { step ->
-        // A whole-set pass is one job with several images: every one of them belongs in the list.
-        val generated = generatedByStep[step].orEmpty().asReversed().flatMap { generatedSampleItems(it) }
-        samples[step.toString()].orEmpty() + generated
-    }
-}
+): List<SampleItem> = sectionImages(checkpointRows(checkpoints, samples, jobs))
 
 private const val HARDWARE_HISTORY_CAP = 360
 private const val BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0
