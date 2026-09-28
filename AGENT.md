@@ -372,6 +372,8 @@ Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:w
 
 User-facing look-and-feel (background: Solid / Glow / Image, independent card vs background blur, font/icon scale, thumbnail JPEG quality) lives in the **Appearance** section of the Utils tab and is persisted by `AppearanceRepository` (Java Preferences, key `com/acite/axlranko/appearance`). `App.kt` consumes it and feeds `LocalDensity` so **font scale only affects sp** and **icon scale only affects dp** (`density * iconScale`, `fontScale * font / iconScale`). `RankoBackdrop` renders glow orbs for `Glow` and a cropped, dimmed photo for `Image`. A full-window haze layer uses `backgroundBlurRadiusDp` (gaps); `PorcelainCard` / `FrostedSurface` use `cardBlurRadiusDp`.
 
+The Utils **WM** tab is the same kind of UI-only section (no config key) and is desktop-only by construction: `App.kt` provides `LocalAppWindow` (`util/AppWindow.kt`) from its `appWindow` argument, the desktop entry point passes `DesktopAppWindow` (`util/AppWindow.jvm.kt`) — Maximize applies the screen's own bounds to the window and remembers what it had, Restore puts that back, and Exit calls the entry point's own quit lambda, i.e. `ProcessExitGuard.armOnce()` plus `exitApplication()`, the same two steps the close request takes — and the wasm entry point passes nothing, so `visibleSections` (`pages/UtilsScreen.kt`) leaves the tab out of the web build. It exists for a session whose compositor draws no decorations (cage): there is no title bar to maximize or close from, and no window manager to act on a maximize request either, which is why the size is applied rather than asked for.
+
 | Path | Role |
 | --- | --- |
 | `ranko/desktopApp/…/main.kt` | Window; `createGraph<AppGraph>()` |
