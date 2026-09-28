@@ -291,6 +291,12 @@ overwritten and a `Pn` badge can be shown. The job record is the same shape as `
 with `mode: "sets"`, a `sample_sets` copy of what is being rendered, and `total_images` =
 Σ `repeat`.
 
+The job records the checkpoint's own `step` — its artifact directory name, or `ss_steps` from its
+metadata — because that is what attaches the rendered images to that checkpoint in the Dashboard's
+Checkpoints section. Counters (`current_step`, `total_steps`, `images_done`, `total_images`) are
+always integers, never `null`: the client declares them as such, and an explicit `null` would fail
+its decode and take the whole generated-samples list down with it.
+
 Refused under the same GPU rules as `generate_sample`, plus when `config.toml` has no usable
 `[[validation.samples]]` set.
 

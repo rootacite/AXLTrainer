@@ -21,6 +21,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 from trainer.amdfq_patch import resolve_preload
 from trainer.checkpoints import (
     discover_checkpoints,
+    parse_checkpoint_dir,
     read_lora_metadata,
     require_resume_network_type,
     resolve_resume_path,
@@ -567,6 +568,22 @@ def _output_dir(cfg: dict[str, Any]) -> Path:
     return Path(str(cfg.get("output_dir") or ".")).expanduser()
 
 
+def _checkpoint_step(checkpoint: Path, output_name: str) -> Optional[int]:
+    """The step a checkpoint was saved at: its directory name, else its own kohya metadata.
+
+    The step is what attaches a generated image to a checkpoint in the Dashboard's Checkpoints
+    section, so a job without one would render into the run's `generated/` directory and never be
+    shown anywhere.
+    """
+    parsed = parse_checkpoint_dir(checkpoint.parent.name, output_name)
+    if parsed.get("step") is not None:
+        return int(parsed["step"])
+    try:
+        return genjob.checkpoint_step(read_lora_metadata(checkpoint))
+    except ValueError:
+        return None
+
+
 def _running_generation(output_dir: Path) -> Optional[dict[str, Any]]:
     """Any generation job still running under `output_dir`, whatever run it belongs to.
 
@@ -698,6 +715,9 @@ def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
         },
     )
 
+    if request.get("step") is None:
+        request["step"] = _checkpoint_step(checkpoint, output_name)
+
     generated.mkdir(parents=True, exist_ok=True)
     job = genjob.new_job(
         request,
@@ -726,7 +746,7 @@ def handle_generate_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]
 
     generated.mkdir(parents=True, exist_ok=True)
     job = genjob.new_job(
-        {},
+        {"step": _checkpoint_step(checkpoint, output_name)},
         run_id=run_id,
         output_name=output_name,
         checkpoint=str(checkpoint),

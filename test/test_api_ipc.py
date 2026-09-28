@@ -800,6 +800,40 @@ class GeneratedSampleIpcTest(unittest.TestCase):
         self.assertEqual(result["job"]["id"], stored["id"])
         self.popen.assert_called_once()
 
+    def test_a_sets_job_carries_its_step_and_no_null_counters(self):
+        """Both halves of one bug: a null counter fails the client's decode, and a null step
+        leaves the rendered images on no checkpoint card at all."""
+        self.cfg["samples"] = [{"prompt": "set one", "steps": 9, "repeat": 2}]
+        api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual(stored["step"], 3050)
+        for key in ("current_step", "total_steps", "images_done", "total_images"):
+            self.assertIsInstance(stored[key], int, f"{key} must be an int, not {stored[key]!r}")
+        self.assertEqual(stored["total_steps"], 0)
+
+    def test_a_single_job_fills_the_step_from_the_checkpoint(self):
+        # The panel sends the row it is showing; a client that sends nothing (or null) still gets a
+        # job the Checkpoints section can place.
+        self._spawn({"step": None})
+        self.assertEqual(self._spec_written_by_last_spawn()["step"], 3050)
+
+    def test_the_checkpoint_step_falls_back_to_its_metadata(self):
+        # A directory name that carries no step (a copied or renamed checkpoint) reads `ss_steps`.
+        from safetensors.torch import save_file
+
+        import torch
+
+        target = self.run_dir / "rein_something" / "rein.safetensors"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(target),
+            metadata={"ss_steps": "4242"},
+        )
+        self.cfg["samples"] = [{"prompt": "set one", "steps": 9, "repeat": 1}]
+        api.handle_generate_checkpoint_samples({"checkpoint": str(target)})
+        self.assertEqual(self._spec_written_by_last_spawn()["step"], 4242)
+
     def test_checkpoint_samples_refuse_a_busy_gpu_and_a_second_job(self):
         from trainer import control
 

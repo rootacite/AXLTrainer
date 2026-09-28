@@ -78,6 +78,28 @@ class SetsJobTest(unittest.TestCase):
         self.assertEqual(job["sample_sets"], [{"name": "a"}])
         self.assertIn("_sets_gen_", job["id"])
 
+    def test_no_counter_is_ever_null(self):
+        """An explicit null where the client declares an Int fails its decode; a `sets` job has no
+        per-image `steps`, so the record must still say `total_steps = 0`."""
+        single = genjob.new_job(
+            {"prompt": "p", "steps": 12},
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+        )
+        self.assertEqual(single["total_steps"], 12)
+
+        sets = genjob.new_job(
+            {},
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+            mode=genjob.MODE_SETS,
+            total_images=6,
+        )
+        for key in ("current_step", "total_steps", "images_done", "total_images"):
+            self.assertIsInstance(sets[key], int)
+
     def test_an_unknown_mode_is_refused(self):
         with self.assertRaises(ValueError):
             genjob.new_job(

@@ -261,7 +261,11 @@ def new_job(
         "height": request.get("height"),
         "step": request.get("step"),
         "current_step": 0,
-        "total_steps": request.get("steps"),
+        # Never null: the client declares this an Int, and an explicit null is not a missing key
+        # for it (the reply of a `sets` job, which has no per-image `steps`, would fail to parse
+        # and take the whole generated-samples list down with it). A `single` job sets it below
+        # through `normalize_request`'s validated step count.
+        "total_steps": int(request.get("steps") or 0),
         "image_path": None,
         # A `sets` job writes one image per (set, repeat); a `single` job one, recorded in
         # `image_path` as before so a job file from the old build still reads.
