@@ -3,6 +3,11 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+try:
+    from runs import validate_output_name
+except ImportError:
+    from trainer.runs import validate_output_name
+
 def _load_toml_config(file_path: str = "config.toml") -> dict:
     try:
         with open(file_path, "rb") as f:
@@ -369,6 +374,11 @@ class TrainConfig:
     _current_epoch: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
+        # Every artifact path is built from the name, so a hand-edited config with a space
+        # or a slash in it fails here — at startup, before the GPU is touched.
+        output_name_error = validate_output_name(self.output_name)
+        if output_name_error:
+            raise ValueError(output_name_error)
         try:
             from family import require_matching_spec
         except ImportError:

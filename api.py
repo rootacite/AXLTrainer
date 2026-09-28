@@ -29,6 +29,7 @@ from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets, 
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
+    LIVE_STATUSES,
     is_pid_alive,
     log_path,
     mark_starting,
@@ -38,7 +39,7 @@ from trainer.control import (
     status_payload,
 )
 from trainer.hardware import collect_hardware_status
-from trainer.runs import find_latest_run
+from trainer.runs import find_samples_dir, list_runs, run_output_name, safe_name
 from trainer import automation, blobcodec, comfy, fsrpc, genjob
 
 _TAG_BLOCKED = frozenset(
@@ -110,11 +111,44 @@ def _get_tensorboard_metrics(
 
 
 def _run_name(params: dict[str, Any], cfg: dict[str, Any]) -> str:
-    return str(params.get("name") or cfg.get("output_name") or "default")
+    """The name a request asks for, before the run itself is resolved."""
+    explicit = params.get("name")
+    if explicit:
+        return str(explicit)
+    run_id = params.get("run_id")
+    if run_id:
+        derived = run_output_name(str(run_id))
+        if derived:
+            return derived
+    return str(cfg.get("output_name") or "default")
+
+
+def _resolve_run(params: dict[str, Any], cfg: dict[str, Any]) -> tuple[Optional[str], str]:
+    """(run_id, output_name) for this request.
+
+    The resolved run's own name wins over the config's: a run directory is only ever
+    scanned once, and its `{name}_samples` lives under the name it was created with.
+    The config's spelling is kept when it is that name, because artifact directories
+    are written with the raw name while a run id carries the sanitized one.
+    """
+    run_id = _resolve_run_id(params, cfg)
+    explicit = params.get("name")
+    if explicit:
+        return run_id, str(explicit)
+    derived = run_output_name(run_id or "")
+    configured = str(cfg.get("output_name") or "")
+    if derived and (not configured or safe_name(configured) == derived):
+        return run_id, configured or derived
+    return run_id, derived or configured or "default"
 
 
 def _resolve_run_id(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[str]:
-    """Explicit param → the run recorded in state.json → the newest run directory."""
+    """Explicit param → the run recorded in state.json → the newest run directory.
+
+    The run directories of both roots count, so a run whose TensorBoard directory is
+    gone (Reset used to delete it, or the config's `logging_dir` moved since) is still
+    resolved and its sample images stay visible.
+    """
     explicit = params.get("run_id")
     if explicit:
         return str(explicit)
@@ -123,10 +157,11 @@ def _resolve_run_id(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[str
     state_run = current.get("run_id")
     if state_run and str(current.get("output_name") or name) == name:
         return str(state_run)
-    logging_dir = cfg.get("logging_dir")
-    if not logging_dir:
+    runs = list_runs(cfg.get("output_dir", "./output"), cfg.get("logging_dir", "./logs"), None)
+    if not runs:
         return None
-    return find_latest_run(str(logging_dir), name)
+    known = next((run for run in runs if run["output_name"] == name), None)
+    return str((known or runs[0])["run_id"])
 
 
 def handle_ping(_params: dict[str, Any]) -> dict[str, str]:
@@ -177,6 +212,53 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
         "metrics": metrics,
         "sample_sets": sample_sets,
     }
+
+
+def _state_run_entry(
+    cfg: dict[str, Any],
+    current: dict[str, Any],
+    run_id: str,
+    live: bool,
+) -> dict[str, Any]:
+    """The run `state.json` is on, for a root that holds no directory for it."""
+    name = str(current.get("output_name") or "") or run_output_name(run_id) or run_id
+    return {
+        "run_id": run_id,
+        "output_name": name,
+        "output_dir": os.path.join(str(cfg.get("output_dir") or "./output"), run_id),
+        "log_dir": os.path.join(str(cfg.get("logging_dir") or "./logs"), run_id),
+        "has_output": False,
+        "has_log": False,
+        "modified": float(current.get("started_at") or current.get("updated_at") or 0.0),
+        "size_bytes": 0,
+        "samples": 0,
+        "last_step": None,
+        "checkpoints": 0,
+        "current": True,
+        "live": live,
+    }
+
+
+def handle_list_runs(_params: dict[str, Any]) -> dict[str, Any]:
+    """Every run directory under `output_dir` / `logging_dir`, newest first.
+
+    `current` marks the run `state.json` is on and `live` that its PID still holds it,
+    which is what tells a stopped run from the running one in the dashboard's history
+    list. Runs are listed whatever `output_name` they were created with; each entry
+    carries the name its run id was built from, so samples and checkpoints resolve.
+    """
+    cfg = _train_config_dict()
+    current = reconcile()
+    current_run = str(current.get("run_id") or "")
+    live = bool(current_run) and is_pid_alive(current.get("pid")) and current.get("status") in LIVE_STATUSES
+
+    runs: list[dict[str, Any]] = []
+    for run in list_runs(cfg.get("output_dir", "./output"), cfg.get("logging_dir", "./logs"), None):
+        is_current = run["run_id"] == current_run
+        runs.append({**run, "current": is_current, "live": is_current and live})
+    if current_run and not any(run["run_id"] == current_run for run in runs):
+        runs.insert(0, _state_run_entry(cfg, current, current_run, live))
+    return {"runs": runs}
 
 
 # `{name}_{step:06d}_p{set}_{repeat}.png` (multi-prompt runs); the two-number form is
@@ -320,19 +402,27 @@ _RESET_BLOCKED = frozenset(
 
 
 def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
+    """Clear the run's state so Start can launch a new one.
+
+    Sample images and TensorBoard logs stay on disk: they are what the dashboard's run
+    history shows afterwards. Only the LoRA weight directories are removable
+    (`delete_weights`), and `python clean.py` remains the tool for wiping a run.
+    """
     current = reconcile()
     if current.get("status") in _RESET_BLOCKED and is_pid_alive(current.get("pid")):
         raise ValueError("cannot reset while training is running")
     cfg = _train_config_dict()
-    run_id = _resolve_run_id(params, cfg)
+    run_id, output_name = _resolve_run(params, cfg)
     delete_weights = bool(params.get("delete_weights"))
     if run_id:
         cleanup: dict[str, Any] = run_cleanup(
             cfg.get("output_dir", "./output"),
             cfg.get("logging_dir", "./logs"),
-            _run_name(params, cfg),
+            output_name,
             run_id=run_id,
             delete_weights=delete_weights,
+            delete_samples=False,
+            delete_logs=False,
         )
     else:
         # No run directory to clean: legacy flat artifacts are only reachable
@@ -344,6 +434,8 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
             "log_dir": None,
             "weight_dirs": [],
             "delete_weights": delete_weights,
+            "delete_samples": False,
+            "delete_logs": False,
             "removed": [],
             "skipped": [],
             "errors": [],
@@ -357,19 +449,18 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
 
 def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
     cfg = _train_config_dict()
-    output_dir = cfg.get("output_dir", "./output")
-    run_id = _resolve_run_id(params, cfg)
+    run_id, output_name = _resolve_run(params, cfg)
     if not run_id:
         return {"run_id": None, "samples": {}}
-    sample_dir = Path(str(output_dir)) / str(run_id) / f"{_run_name(params, cfg)}_samples"
-    return {"run_id": run_id, "samples": scan_samples(sample_dir)}
+    return {"run_id": run_id, "samples": scan_samples(_samples_dir(cfg, run_id, output_name))}
 
 
 def handle_list_checkpoints(params: dict[str, Any]) -> dict[str, Any]:
     cfg = _train_config_dict()
     output_dir = params.get("output_dir") or cfg.get("output_dir", "./output")
+    _run_id, output_name = _resolve_run(params, cfg)
     return {
-        "checkpoints": discover_checkpoints(str(output_dir), _run_name(params, cfg)),
+        "checkpoints": discover_checkpoints(str(output_dir), output_name),
     }
 
 
@@ -423,15 +514,14 @@ def handle_hardware_status(_params: dict[str, Any]) -> dict[str, Any]:
 
 def _samples_dir(cfg: dict[str, Any], run_id: str, output_name: str) -> Path:
     output_dir = Path(str(cfg.get("output_dir") or ".")).expanduser()
-    return output_dir / str(run_id) / f"{output_name}_samples"
+    return find_samples_dir(output_dir / str(run_id), output_name)
 
 
 def _generated_dir(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[tuple[str, str, Path]]:
     """(run_id, output_name, generated dir) for the resolved run, or None when no run exists."""
-    run_id = _resolve_run_id(params, cfg)
+    run_id, output_name = _resolve_run(params, cfg)
     if not run_id:
         return None
-    output_name = _run_name(params, cfg)
     return run_id, output_name, genjob.generated_dir(_samples_dir(cfg, run_id, output_name))
 
 
@@ -1131,6 +1221,7 @@ def handle_automation_job_delete(params: dict[str, Any]) -> dict[str, Any]:
 _HANDLERS = {
     "ping": handle_ping,
     "dashboard": handle_dashboard,
+    "list_runs": handle_list_runs,
     "list_samples": handle_list_samples,
     "list_checkpoints": handle_list_checkpoints,
     "train_status": handle_train_status,

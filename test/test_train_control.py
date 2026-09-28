@@ -195,7 +195,7 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(sampling["prompt_set"], 0)
         self.assertEqual(sampling["prompt_sets"], 0)
 
-    def test_reset_clears_finished_and_logs(self):
+    def test_reset_clears_finished_and_keeps_artifacts(self):
         out = Path(self.tmp.name) / "out"
         logs = Path(self.tmp.name) / "logs"
         run_id = "rein_20260911_120000"
@@ -231,10 +231,12 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(result["status"], "idle")
         self.assertIsNone(result.get("pid"))
         self.assertEqual(result["run_id"], run_id)
-        self.assertFalse(samples.exists())
-        self.assertFalse(tb.exists())
+        # Samples and logs stay: the run is still browsable in the dashboard's history.
+        self.assertTrue(samples.exists())
+        self.assertTrue(tb.exists())
         self.assertTrue(weights.exists())
         self.assertIn(str(weights), result["cleanup"]["weight_dirs"])
+        self.assertEqual(result["cleanup"]["removed"], [])
 
     def test_reset_can_delete_weights(self):
         out = Path(self.tmp.name) / "out"
@@ -258,6 +260,7 @@ class ControlTest(unittest.TestCase):
         finally:
             api._train_config_dict = orig
         self.assertFalse(weights.exists())
+        # Nothing was kept, so the now-empty run directory is still pruned.
         self.assertFalse((out / run_id).exists())
 
     def test_reset_refuses_live_pid(self):

@@ -76,7 +76,7 @@ Params:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string \| null | No | Overrides `output_name` from config. |
-| `run_id` | string \| null | No | Run directory to read. Defaults to `state.json`'s `run_id`, then the newest `{output_name}_<timestamp>` directory under `logging_dir`. |
+| `run_id` | string \| null | No | Run directory to read. Defaults to `state.json`'s `run_id`, then the newest run directory of the configured `output_name` under either root, then the newest run overall — which is what keeps a run whose `logging_dir` directory is gone (Reset used to delete it) readable. |
 | `start_step` | integer \| null | No | Inclusive lower bound on metric steps. |
 | `end_step` | integer \| null | No | Inclusive upper bound on metric steps. |
 
@@ -122,9 +122,54 @@ Result:
 
 `config` is the flattened `TrainConfig` plus a fresh read of `config.toml` (TOML wins). `run_id` is `null` when no run directory can be resolved; metrics / `latest_stats` are then empty rather than an error. Flat artifacts from before the run-directory layout are not resolved.
 
+`run_id` alone is enough to read any run: every run-scoped method falls back to the name the run id was built from when `name` is omitted, which is how a client opens a run from `list_runs` that was created with a different `output_name` than the config now says.
+
 `sample_sets` is `resolve_sample_sets` over that config: one entry per `[[validation.samples]]` block, or a single entry built from the flat `sample_*` scalars when the file has none. The flat `sample_prompts` / `sample_negative` / `sample_width` / `sample_height` / `sample_steps` / `sample_seed` / `sample_repeat` / `guidance_scale` keys in `config` mirror the first entry, so a client that only reads those keeps working. A block that fails validation is reported on stderr and yields `[]` rather than an IPC error, so the dashboard keeps rendering.
 
 Training logs `Train/Loss` (per-step) and `Train/Avg_Loss` (Kohya-style epoch-window mean). If TensorBoard only has `Train/Loss` (older runs), `dashboard` synthesizes `Train/Avg_Loss` as a Kohya `LossRecorder` over a window of `min(n, 100)` points.
+
+### `list_runs`
+
+The dashboard's run history: every run directory under `output_dir` and `logging_dir`, whatever `output_name` it was created with, newest first.
+
+Params: `{}`
+
+Result:
+
+```json
+{
+  "runs": [
+    {
+      "run_id": "Tsukuyomi_20260928_110928",
+      "output_name": "Tsukuyomi",
+      "output_dir": "/home/acite/LLM/axltrainer/outputs/Tsukuyomi_20260928_110928",
+      "log_dir": "/home/acite/LLM/axltrainer/logs/Tsukuyomi_20260928_110928",
+      "has_output": true,
+      "has_log": false,
+      "last_step": 4500,
+      "samples": 12,
+      "checkpoints": 46,
+      "size_bytes": 11172201792,
+      "modified": 1790587779.53,
+      "current": true,
+      "live": true
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `output_name` | The name the run id was built from, so a client that only carries the run id can still resolve that run's `{output_name}_samples` and weight directories. |
+| `has_output` / `has_log` | Whether that run has a directory under each root. A run whose TensorBoard directory is gone is still listed. |
+| `last_step` | The newest step any artifact of the run carries (a sample filename, a `{name}_sNNNNNN` or `{name}_eEEE_sNNNNNN` directory). No event file is read, so a run without logs reports how far it got. `null` when the run never wrote one. |
+| `samples` | Sample PNGs directly in `{output_dir}/{run_id}/{output_name}_samples/`; `generated/` is not counted. |
+| `checkpoints` | `.safetensors` files in the run's weight directories. |
+| `size_bytes` / `modified` | Size of the output directory and its mtime (the log directory's when there is no output). |
+| `current` | This is the run `state.json` is on — the only one the training controls act on. |
+| `live` | That run's PID is alive and its status is a live one. `current` without `live` is a run that finished or died. |
+
+The run `state.json` is on is prepended (with `has_output` / `has_log` false) when neither root holds a directory for it, so a client can always show what the trainer is doing.
 
 ### `list_samples`
 
@@ -317,19 +362,19 @@ Pause offloads UNet / text encoders / optimizer state / VAE to CPU and `empty_ca
 
 ### `train_reset`
 
-Clears the on-disk trainer state back to `idle` and deletes the resolved run's sample images and TensorBoard logs (same targets as `clean.py`). Optional weight deletion.
+Clears the on-disk trainer state back to `idle` so `train_start` can launch a new run. **Sample images and TensorBoard logs are kept** — they are what the dashboard's run history shows afterwards; only the LoRA weight directories are removable.
 
 Params:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string \| null | No | Overrides `output_name`. |
-| `run_id` | string \| null | No | Run to clean. Resolved like `dashboard`. |
+| `run_id` | string \| null | No | Run to clear. Resolved like `dashboard`. |
 | `delete_weights` | bool | No | If true, also remove the run's `{output_name}_*` checkpoint dirs. Default false. |
 
-The result carries `run_id` and `cleanup` (`run_dir`, `samples_dir`, `log_dir`, `weight_dirs`, `removed`, `skipped`, `errors`). The run directory is removed when it becomes empty. When no run directory resolves, `run_id` is `null` and **nothing is deleted** — legacy flat artifacts are only reachable via `python clean.py --legacy-flat`.
+The result carries `run_id` and `cleanup` (`run_dir`, `samples_dir`, `log_dir`, `weight_dirs`, `delete_samples`, `delete_logs`, `removed`, `skipped`, `errors`); `delete_samples` / `delete_logs` are always `false` here, so both paths land in `skipped`. When no run directory resolves, `run_id` is `null` and **nothing is deleted** — legacy flat artifacts are only reachable via `python clean.py --legacy-flat`.
 
-Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper.
+Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper — it is the tool that deletes a run's samples and logs.
 
 ### `dataset_tag`
 
@@ -418,7 +463,7 @@ Result:
 
 After connect Ranko does not open trainer files. Paths in these methods are allowlisted (`config.toml`, `<repo>/configs/`, `[[environment.train_data]]` folders, `output_dir`, and — for images only — the `automation/` tree plus the automation `output_dir`).
 
-- `config_get` `{}` → `{path, text}`. `config_save` `{text}` parse-checks then atomic-writes.
+- `config_get` `{}` → `{path, text}`. `config_save` `{text}` parse-checks then atomic-writes; a text whose `[environment].output_name` is not filename-safe (letters and digits, `-`, `_`, `.`) is refused, because the trainer would refuse to start with it.
 - `profile_list` / `profile_get` `{name}` / `profile_save` `{name, text, overwrite}` / `profile_delete` `{name}`.
 - `prompt_matrix` `{}` → `{path, text}` of repo-root `input_matrix.txt` (read-only). `prompt_profile_list` `{}` → `{profiles: [{name, version, modified, size, error}]}` for repo-root `prompt_profiles/*.json`; `version` is `null` when the file has no `version` key and `error` carries the reason an unreadable entry cannot be used. `prompt_profile_get` `{name}` → `{name, text}`; `prompt_profile_save` `{name, text, overwrite}` parse-checks that `text` is a JSON object with a `spec` object, then atomic-writes `<repo>/prompt_profiles/<name>.json`; `prompt_profile_delete` `{name}`. The version upgrades (v1 → v2 → v3) happen in the client, so the store never rewrites a profile.
 - `dataset_list` `{directory}` → `{items: [{stem, image, txt, mask, width, height, tags, has_sidecar_mask, has_alpha}], orphans}`. Non-recursive. Orphan `.txt` names are listed; Statistics aborts when `orphans` is non-empty.

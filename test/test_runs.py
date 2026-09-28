@@ -13,10 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trainer.runs import (
     create_run_dirs,
     find_latest_run,
+    find_samples_dir,
     list_runs,
     make_run_id,
     run_id_re,
+    run_output_name,
     safe_name,
+    validate_output_name,
 )
 
 
@@ -141,6 +144,151 @@ class ListRunsTest(unittest.TestCase):
         self.assertFalse(second["has_output"])
         self.assertTrue(second["has_log"])
         self.assertTrue(re.match(r"rein_\d{8}_\d{6}$", second["run_id"]))
+
+    def test_scoped_listing_reports_the_name(self):
+        (self.out / "rein_20260911_120000").mkdir(parents=True)
+        runs = list_runs(self.out, self.logs, "rein")
+        self.assertEqual(runs[0]["output_name"], "rein")
+
+
+class RunOutputNameTest(unittest.TestCase):
+    def test_strips_the_stamp(self):
+        self.assertEqual(run_output_name("rein_20260911_120000"), "rein")
+
+    def test_strips_a_collision_suffix(self):
+        self.assertEqual(run_output_name("rein_20260911_120000_2"), "rein")
+
+    def test_a_name_with_a_stamp_inside_keeps_it(self):
+        self.assertEqual(run_output_name("rein_20260911_120000_20260912_130000"), "rein_20260911_120000")
+
+    def test_underscores_survive(self):
+        self.assertEqual(run_output_name("towa_2_20260911_120000"), "towa_2")
+
+    def test_non_run_names_are_empty(self):
+        self.assertEqual(run_output_name("rein_s000100"), "")
+        self.assertEqual(run_output_name("rein"), "")
+        self.assertEqual(run_output_name(""), "")
+
+
+class ValidateOutputNameTest(unittest.TestCase):
+    def test_plain_names_pass(self):
+        for name in ("rein", "towa_2", "babara-v2", "a.b", "月子"):
+            self.assertIsNone(validate_output_name(name), name)
+
+    def test_spaces_are_refused(self):
+        for name in ("re in", " rein", "rein ", "rein\tv2"):
+            self.assertIn("must be letters, digits", validate_output_name(name) or "")
+
+    def test_slashes_and_other_characters_are_refused(self):
+        for name in ("re/in", "re\\in", "rein:v2", "rein·v2", 're"in'):
+            self.assertIsNotNone(validate_output_name(name), name)
+
+    def test_empty_is_refused(self):
+        self.assertEqual(validate_output_name(""), "output_name is empty")
+        self.assertEqual(validate_output_name("   "), "output_name is empty")
+        self.assertEqual(validate_output_name(None), "output_name is empty")
+
+
+class FindSamplesDirTest(unittest.TestCase):
+    """Artifact dirs use the raw name while a run id carries the sanitized one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.run = Path(self.tmp.name) / "re_in_20260911_120000"
+        self.run.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_prefers_the_named_directory(self):
+        (self.run / "re in_samples").mkdir()
+        self.assertEqual(find_samples_dir(self.run, "re in"), self.run / "re in_samples")
+
+    def test_falls_back_to_the_only_sample_directory(self):
+        (self.run / "re in_samples").mkdir()
+        self.assertEqual(find_samples_dir(self.run, "re_in"), self.run / "re in_samples")
+
+    def test_missing_directory_is_still_named(self):
+        self.assertEqual(find_samples_dir(self.run, "rein"), self.run / "rein_samples")
+        self.assertFalse(find_samples_dir(Path(self.tmp.name) / "nope", "rein").is_dir())
+
+
+class ListAllRunsTest(unittest.TestCase):
+    """`list_runs(..., output_name=None)` backs the dashboard's run history list."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name) / "out"
+        self.logs = Path(self.tmp.name) / "logs"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_lists_every_output_name_with_its_own(self):
+        (self.out / "konomi_20260910_120000").mkdir(parents=True)
+        (self.out / "towa_20260911_120000").mkdir(parents=True)
+        runs = list_runs(self.out, self.logs, None)
+        self.assertEqual(
+            {run["run_id"]: run["output_name"] for run in runs},
+            {"konomi_20260910_120000": "konomi", "towa_20260911_120000": "towa"},
+        )
+
+    def test_ignores_flat_legacy_and_plain_dirs(self):
+        for name in ("rein", "rein_s000100", "rein_samples", "random"):
+            (self.out / name).mkdir(parents=True)
+        self.assertEqual(list_runs(self.out, self.logs, None), [])
+
+    def test_summarises_samples_steps_and_checkpoints(self):
+        run = self.out / "rein_20260911_120000"
+        samples = run / "rein_samples"
+        samples.mkdir(parents=True)
+        for name in ("rein_000100_0.png", "rein_000100_1.png", "rein_000200_p0_0.png"):
+            (samples / name).write_bytes(b"x")
+        # A generated sample and its job record stay out of the count.
+        (samples / "generated").mkdir()
+        (samples / "generated" / "p0001_01.png").write_bytes(b"x")
+        (samples / "notes.txt").write_text("x")
+        for step in (100, 200):
+            weight_dir = run / f"rein_s{step:06d}"
+            weight_dir.mkdir()
+            (weight_dir / "rein.safetensors").write_bytes(b"w")
+        (run / "rein_final").mkdir()
+        (run / "rein_final" / "rein.safetensors").write_bytes(b"w")
+
+        run_info = list_runs(self.out, self.logs, None)[0]
+        self.assertEqual(run_info["samples"], 3)
+        self.assertEqual(run_info["last_step"], 200)
+        self.assertEqual(run_info["checkpoints"], 3)
+        self.assertTrue(run_info["has_output"])
+        self.assertFalse(run_info["has_log"])
+
+    def test_a_weight_dir_lifts_the_step_when_samples_are_gone(self):
+        run = self.out / "rein_20260911_120000"
+        (run / "rein_samples").mkdir(parents=True)
+        (run / "rein_e002_s000450").mkdir()
+        (run / "rein_e002_s000450" / "rein.safetensors").write_bytes(b"w")
+        run_info = list_runs(self.out, self.logs, None)[0]
+        self.assertEqual(run_info["last_step"], 450)
+        self.assertEqual(run_info["samples"], 0)
+        self.assertEqual(run_info["checkpoints"], 1)
+
+    def test_log_only_run_is_listed(self):
+        (self.logs / "rein_20260911_120000").mkdir(parents=True)
+        run_info = list_runs(self.out, self.logs, None)[0]
+        self.assertFalse(run_info["has_output"])
+        self.assertTrue(run_info["has_log"])
+        self.assertEqual(run_info["output_name"], "rein")
+        self.assertEqual(run_info["samples"], 0)
+        self.assertIsNone(run_info["last_step"])
+
+    def test_counts_samples_under_the_raw_name(self):
+        # `re in` becomes `re_in` in the run id, while the sample dir keeps the raw name.
+        run = self.out / "re_in_20260911_120000"
+        (run / "re in_samples").mkdir(parents=True)
+        (run / "re in_samples" / "re in_000100_0.png").write_bytes(b"x")
+        run_info = list_runs(self.out, self.logs, None)[0]
+        self.assertEqual(run_info["samples"], 1)
+        self.assertEqual(run_info["last_step"], 100)
 
 
 if __name__ == "__main__":

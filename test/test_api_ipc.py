@@ -312,7 +312,7 @@ class RunScopedIpcTest(unittest.TestCase):
     def test_list_checkpoints_empty_output_dir(self):
         self.assertEqual(api.dispatch("list_checkpoints", {})["checkpoints"], [])
 
-    def test_reset_cleans_run_dir(self):
+    def test_reset_keeps_samples_and_logs(self):
         run_dir = self._make_run()
         (run_dir / "rein_samples" / "a.png").write_bytes(b"x")
         (self.logs / self.RUN_ID / "events.out.tfevents.1").write_bytes(b"e")
@@ -323,12 +323,18 @@ class RunScopedIpcTest(unittest.TestCase):
         result = api.dispatch("train_reset", {})
         self.assertEqual(result["status"], "idle")
         self.assertEqual(result["run_id"], self.RUN_ID)
-        self.assertFalse((run_dir / "rein_samples").exists())
-        self.assertFalse((self.logs / self.RUN_ID).exists())
+        self.assertTrue((run_dir / "rein_samples" / "a.png").exists())
+        self.assertTrue((self.logs / self.RUN_ID / "events.out.tfevents.1").exists())
         self.assertTrue(weights.exists())
-        self.assertEqual(result["cleanup"]["weight_dirs"], [str(weights)])
+        self.assertEqual(result["cleanup"]["removed"], [])
+        self.assertFalse(result["cleanup"]["delete_samples"])
+        self.assertFalse(result["cleanup"]["delete_logs"])
+        # The run it just cleared is still part of the history, logs and all.
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertEqual([run["run_id"] for run in runs], [self.RUN_ID])
+        self.assertTrue(runs[0]["has_log"])
 
-    def test_reset_can_delete_weights_and_run_dir(self):
+    def test_reset_can_delete_weights(self):
         run_dir = self._make_run()
         weights = run_dir / "rein_final"
         weights.mkdir(parents=True)
@@ -336,7 +342,8 @@ class RunScopedIpcTest(unittest.TestCase):
 
         result = api.dispatch("train_reset", {"delete_weights": True})
         self.assertFalse(weights.exists())
-        self.assertFalse(run_dir.exists())
+        # The run directory itself stays: its samples are what the history list shows.
+        self.assertTrue((run_dir / "rein_samples").is_dir())
         self.assertEqual(result["cleanup"]["run_id"], self.RUN_ID)
 
     def test_reset_without_run_leaves_legacy_alone(self):
@@ -349,6 +356,144 @@ class RunScopedIpcTest(unittest.TestCase):
         self.assertIsNone(result["run_id"])
         self.assertTrue(legacy_samples.exists())
         self.assertTrue((self.logs / "rein").exists())
+
+
+class ListRunsIpcTest(unittest.TestCase):
+    """list_runs: the dashboard's run history (every output name, live vs stopped)."""
+
+    RUN_ID = "rein_20260911_120000"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+
+        self.out = Path(self.tmp.name) / "out"
+        self.logs = Path(self.tmp.name) / "logs"
+        self.cfg = {
+            "output_dir": str(self.out),
+            "logging_dir": str(self.logs),
+            "output_name": "rein",
+        }
+        self._orig_config = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+
+    def tearDown(self):
+        from trainer import control
+
+        api._train_config_dict = self._orig_config
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _make_run(self, run_id: str, name: str = "rein", samples: tuple[str, ...] = ()) -> Path:
+        run_dir = self.out / run_id
+        samples_dir = run_dir / f"{name}_samples"
+        samples_dir.mkdir(parents=True)
+        for filename in samples:
+            (samples_dir / filename).write_bytes(b"x")
+        return run_dir
+
+    def test_lists_runs_newest_first_with_brief_data(self):
+        older = self._make_run("rein_20260910_120000")
+        newer = self._make_run(
+            self.RUN_ID, samples=("rein_000200_0.png", "rein_000300_p0_1.png")
+        )
+        weights = newer / "rein_s000300"
+        weights.mkdir()
+        (weights / "rein.safetensors").write_bytes(b"w")
+        (self.logs / self.RUN_ID).mkdir(parents=True)
+        os.utime(older, (1_700_000_000, 1_700_000_000))
+        os.utime(newer, (1_700_000_100, 1_700_000_100))
+
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertEqual([run["run_id"] for run in runs], [self.RUN_ID, "rein_20260910_120000"])
+        first = runs[0]
+        self.assertEqual(first["output_name"], "rein")
+        self.assertEqual(first["samples"], 2)
+        self.assertEqual(first["last_step"], 300)
+        self.assertEqual(first["checkpoints"], 1)
+        self.assertTrue(first["has_log"])
+        self.assertFalse(first["current"])
+        self.assertFalse(first["live"])
+        self.assertEqual(first["size_bytes"], 3)  # two samples + one weight file
+
+    def test_marks_the_state_run_current_and_live(self):
+        from trainer import control
+
+        self._make_run(self.RUN_ID)
+        control.write_state(
+            {"status": "training", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertEqual([run["run_id"] for run in runs], [self.RUN_ID])
+        self.assertTrue(runs[0]["current"])
+        self.assertTrue(runs[0]["live"])
+
+    def test_a_finished_run_is_current_but_not_live(self):
+        from trainer import control
+
+        self._make_run(self.RUN_ID)
+        control.write_state(
+            {"status": "finished", "pid": None, "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertTrue(runs[0]["current"])
+        self.assertFalse(runs[0]["live"])
+
+    def test_the_state_run_is_listed_without_its_directories(self):
+        from trainer import control
+
+        control.write_state(
+            {"status": "starting", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertEqual([run["run_id"] for run in runs], [self.RUN_ID])
+        self.assertTrue(runs[0]["current"])
+        self.assertFalse(runs[0]["has_output"])
+
+    def test_lists_another_output_name_and_resolves_its_samples(self):
+        self._make_run("konomi_20260912_090000", name="konomi", samples=("konomi_000100_0.png",))
+
+        runs = api.dispatch("list_runs", {})["runs"]
+        self.assertEqual([run["run_id"] for run in runs], ["konomi_20260912_090000"])
+        self.assertEqual(runs[0]["output_name"], "konomi")
+
+        # Only the run id is needed: the name it was built from opens its sample dir.
+        samples = api.dispatch("list_samples", {"run_id": "konomi_20260912_090000"})
+        self.assertEqual(list(samples["samples"]), ["100"])
+        self.assertEqual(samples["samples"]["100"][0]["filename"], "konomi_000100_0.png")
+
+    def test_default_run_reaches_a_run_without_logs(self):
+        self._make_run("konomi_20260912_090000", name="konomi", samples=("konomi_000100_0.png",))
+
+        result = api.dispatch("list_samples", {})
+        self.assertEqual(result["run_id"], "konomi_20260912_090000")
+        self.assertEqual(list(result["samples"]), ["100"])
+
+    def test_default_run_prefers_the_configured_name(self):
+        self._make_run("konomi_20260912_090000", name="konomi")
+        self._make_run("rein_20260101_000000")
+        self.assertEqual(api.dispatch("dashboard", {})["run_id"], "rein_20260101_000000")
+
+    def test_samples_dir_of_a_sanitized_name_is_found(self):
+        # A name with a space reaches the run id as `re_in`, but its sample dir keeps the raw name.
+        run_dir = self.out / "re_in_20260911_120000"
+        (run_dir / "re in_samples").mkdir(parents=True)
+        (run_dir / "re in_samples" / "re in_000200_0.png").write_bytes(b"x")
+
+        result = api.dispatch("list_samples", {"run_id": "re_in_20260911_120000"})
+        self.assertEqual(list(result["samples"]), ["200"])
 
 
 class GeneratedSampleIpcTest(unittest.TestCase):

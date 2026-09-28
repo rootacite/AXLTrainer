@@ -103,6 +103,38 @@ class FamilyCatalogTest(unittest.TestCase):
         with self.assertRaises(ModelSpecError):
             TrainConfig(modelspec_architecture="not-a-real-arch")
 
+    def test_output_name_has_to_be_filename_safe(self):
+        for name in ("re in", "re/in", "rein "):
+            with self.assertRaises(ValueError) as ctx:
+                TrainConfig(output_name=name)
+            self.assertIn("output_name must be", str(ctx.exception))
+        self.assertEqual(TrainConfig(output_name="re_in_v2").output_name, "re_in_v2")
+
+    def test_a_config_file_with_a_space_in_the_name_fails_at_startup(self):
+        # The startup path end to end: config.toml → flattened keys → TrainConfig, in a fresh
+        # module load, because a module reads its file once at import (which is why the trainer
+        # sees the change and a long-running process does not).
+        directory = tempfile.mkdtemp(prefix="axl-test-bad-name-")
+        try:
+            Path(directory, "config.toml").write_text(
+                '[environment]\noutput_name = "re in"\n', encoding="utf-8"
+            )
+            spec = importlib.util.spec_from_file_location(
+                "_test_bad_name_config", _REPO_ROOT / "trainer" / "config.py"
+            )
+            module = importlib.util.module_from_spec(spec)
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(directory)
+                spec.loader.exec_module(module)
+                with self.assertRaises(ValueError) as ctx:
+                    module.TrainConfig()
+            finally:
+                os.chdir(previous_cwd)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        self.assertIn("output_name must be", str(ctx.exception))
+
     def test_require_matching_spec_accepts_catalog_row(self):
         spec = CATALOG["sdxl_base_v1-0"]
         got = require_matching_spec(

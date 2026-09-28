@@ -22,6 +22,11 @@ try:
 except ImportError:
     from trainer.config import resolve_train_data_entries
 
+try:
+    from runs import validate_output_name
+except ImportError:
+    from trainer.runs import validate_output_name
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MASK_SIDECAR_SUFFIX = ".mask.png"
 TRASH_DEFAULT = Path("/tmp/axlranko/trash")
@@ -377,6 +382,16 @@ def config_save(text: str) -> dict[str, Any]:
         raise ValueError(f"config.toml would not parse: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValueError("config.toml must be a table")
+    # The trainer flattens every table into one key space, so the name is looked up there.
+    flat: dict[str, Any] = {}
+    for section in parsed.values():
+        if isinstance(section, dict):
+            flat.update(section)
+    if flat.get("output_name") is not None:
+        # The trainer would refuse this config at startup; refuse to write it in the first place.
+        name_error = validate_output_name(str(flat["output_name"]))
+        if name_error:
+            raise ValueError(name_error)
     path = config_path()
     if not path.is_file():
         raise ValueError(f"Config file does not exist: {path}")

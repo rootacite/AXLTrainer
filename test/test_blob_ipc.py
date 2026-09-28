@@ -340,6 +340,21 @@ class FsRpcTest(unittest.TestCase):
             api.dispatch("config_save", {"text": "[training]\nseed = 2\n"})
             self.assertIn("seed = 2", cfg.read_text(encoding="utf-8"))
 
+    def test_config_save_rejects_an_unusable_output_name(self):
+        cfg = self.root / "config.toml"
+        cfg.write_text('[environment]\noutput_name = "rein"\n', encoding="utf-8")
+        with mock.patch.object(fsrpc, "config_path", return_value=cfg):
+            with self.assertRaises(ValueError) as ctx:
+                api.dispatch("config_save", {"text": '[environment]\noutput_name = "re in"\n'})
+            self.assertIn("output_name must be", str(ctx.exception))
+            # Any table counts: the trainer flattens them into one key space.
+            with self.assertRaises(ValueError):
+                api.dispatch("config_save", {"text": '[training]\noutput_name = "re/in"\n'})
+            self.assertIn('output_name = "rein"', cfg.read_text(encoding="utf-8"))
+            # A config with no name at all still saves: the trainer's default is a valid one.
+            api.dispatch("config_save", {"text": "[training]\nseed = 3\n"})
+            self.assertIn("seed = 3", cfg.read_text(encoding="utf-8"))
+
     def test_checkpoint_export_same_file_refused(self):
         src = self.out / "run" / "model.safetensors"
         src.parent.mkdir(parents=True)

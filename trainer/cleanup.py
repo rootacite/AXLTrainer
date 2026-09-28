@@ -57,7 +57,14 @@ def run_cleanup(
     *,
     run_id: Optional[str] = None,
     delete_weights: bool = False,
+    delete_samples: bool = True,
+    delete_logs: bool = True,
 ) -> dict[str, Any]:
+    """Remove the selected parts of one run.
+
+    `train_reset` passes `delete_samples=False, delete_logs=False`: it only clears the
+    run's state, so the artifacts stay browsable in the dashboard's run history.
+    """
     plan = discover(output_dir, logging_dir, output_name, run_id)
     removed: list[str] = []
     skipped: list[str] = []
@@ -78,8 +85,8 @@ def run_cleanup(
         except OSError as exc:
             errors.append(f"{target}: {exc}")
 
-    attempt(plan["samples_dir"], True)
-    attempt(plan["log_dir"], True)
+    attempt(plan["samples_dir"], delete_samples)
+    attempt(plan["log_dir"], delete_logs)
     for directory in plan["weight_dirs"]:
         attempt(directory, delete_weights)
 
@@ -99,6 +106,8 @@ def run_cleanup(
         "log_dir": str(plan["log_dir"]),
         "weight_dirs": [str(path) for path in plan["weight_dirs"]],
         "delete_weights": bool(delete_weights),
+        "delete_samples": bool(delete_samples),
+        "delete_logs": bool(delete_logs),
         "removed": removed,
         "skipped": skipped,
         "errors": errors,
