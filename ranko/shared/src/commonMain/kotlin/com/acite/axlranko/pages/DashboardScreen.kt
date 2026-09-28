@@ -119,6 +119,7 @@ import com.acite.axlranko.pages.components.TrainControlCard
 import com.acite.axlranko.pages.components.checkpointPanelWidth
 import com.acite.axlranko.pages.components.clampPanelOrigin
 import com.acite.axlranko.pages.components.clampPanelSize
+import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generatedJobCaption
 import com.acite.axlranko.pages.components.generatedJobProgress
 import com.acite.axlranko.pages.components.generatedJobsForStep
@@ -219,6 +220,7 @@ fun DashboardScreen(
                             commandInFlight = uiState.commandInFlight,
                             controlsEnabled = trainingControlsEnabled(uiState),
                             pendingCommand = uiState.pendingCommand,
+                            shownRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId),
                             outputDir = uiState.config.string("output_dir"),
                             loggingDir = uiState.config.string("logging_dir"),
                             resumeFrom = uiState.config.string("resume_lora_path"),

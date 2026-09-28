@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.model.RunSummary
 import com.acite.axlranko.model.TrainStatus
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -56,6 +57,8 @@ fun TrainControlCard(
     commandInFlight: Boolean,
     controlsEnabled: Boolean = true,
     pendingCommand: String? = null,
+    /** The run the page shows (pinned or followed); `null` leaves the card to the trainer's own. */
+    shownRun: RunSummary? = null,
     outputDir: String,
     loggingDir: String,
     resumeFrom: String? = null,
@@ -87,7 +90,7 @@ fun TrainControlCard(
     val canResume = controlsEnabled && !runLocked && phase == "paused"
     val canStop = controlsEnabled && !runLocked && (running || phase == "paused")
     val canReset = controlsEnabled && !commandInFlight && actual in setOf("idle", "finished", "error", "stopping")
-    val runName = status.outputName?.takeIf { it.isNotBlank() } ?: "—"
+    val runName = controlRunName(shownRun, status)
 
     PorcelainCard {
         Column(
@@ -140,9 +143,12 @@ fun TrainControlCard(
                     "Will resume from ${resumeFrom.trimEnd('/').substringAfterLast('/')}"
                 else -> null
             }
+            // The identity line names the run the page shows; the resume note belongs to the run
+            // the trainer is on, so it stays off while a past one is pinned.
+            val shownIsTrainers = shownRun == null || shownRun.runId == status.runId
             val runLine = listOfNotNull(
-                status.runId?.takeIf { it.isNotBlank() }?.let { "run $it" },
-                resumeLine,
+                controlRunId(shownRun, status)?.let { "run $it" },
+                resumeLine.takeIf { shownIsTrainers },
             ).joinToString("   ")
 
             if (runLine.isNotEmpty()) {
@@ -463,6 +469,19 @@ private fun ControlButton(
         Text(text, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
+
+/**
+ * The name on the card: the shown run's, else the trainer's own. A history run carries the name
+ * its run id was built from, so this works for a run with no logs and no samples.
+ */
+internal fun controlRunName(shown: RunSummary?, status: TrainStatus): String =
+    shown?.outputName?.takeIf { it.isNotBlank() }
+        ?: status.outputName?.takeIf { it.isNotBlank() }
+        ?: "—"
+
+/** The run id on the card, `null` when neither the shown run nor the trainer has one. */
+internal fun controlRunId(shown: RunSummary?, status: TrainStatus): String? =
+    shown?.runId?.takeIf { it.isNotBlank() } ?: status.runId?.takeIf { it.isNotBlank() }
 
 @Composable
 private fun statusStyle(status: String): Pair<String, Color> {

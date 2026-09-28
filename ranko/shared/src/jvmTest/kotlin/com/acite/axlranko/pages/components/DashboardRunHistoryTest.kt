@@ -137,6 +137,7 @@ class DashboardRunHistoryTest {
                                             epochs = 16,
                                         ),
                                     ),
+                                    shownRun = selected ?: runs.first(),
                                     commandInFlight = false,
                                     controlsEnabled = controlsEnabled,
                                     outputDir = "/out",
@@ -167,6 +168,65 @@ class DashboardRunHistoryTest {
             }
             pumpFor(600)
 
+            onEdtGet { window.dispose() }
+            assertTrue(
+                failures.isEmpty(),
+                failures.joinToString("\n\n") { it.stackTraceToString() },
+            )
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous)
+        }
+    }
+
+    /** The no-run-recorded state, and the control card naming a run that left no logs or samples. */
+    @Test
+    fun emptyHistoryAndABareRunCompose() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { _, error -> failures += error }
+        try {
+            val bare = RunSummary(runId = "Kirika_20260927_225224", outputName = "Kirika")
+            val window = onEdtGetResult {
+                ComposeWindow().apply {
+                    setLocation(-3200, -3200)
+                    setSize(900, 620)
+                    setContent {
+                        RankoTheme {
+                            Column(modifier = Modifier.padding(12.dp).width(520.dp)) {
+                                RunSelector(
+                                    runs = emptyList(),
+                                    selected = null,
+                                    resolvedRunId = null,
+                                    onSelect = {},
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                RunMenuItem(
+                                    title = "Current run",
+                                    subtitle = "Nothing started yet",
+                                    badges = {},
+                                    chosen = true,
+                                    onClick = {},
+                                )
+                                TrainControlCard(
+                                    status = TrainStatus(),
+                                    shownRun = bare,
+                                    commandInFlight = false,
+                                    controlsEnabled = false,
+                                    outputDir = "/out",
+                                    loggingDir = "/logs",
+                                    onStart = {},
+                                    onPause = {},
+                                    onResume = {},
+                                    onStop = {},
+                                    onReset = {},
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            onEdtGet { window.isVisible = true }
+            pumpFor(700)
             onEdtGet { window.dispose() }
             assertTrue(
                 failures.isEmpty(),

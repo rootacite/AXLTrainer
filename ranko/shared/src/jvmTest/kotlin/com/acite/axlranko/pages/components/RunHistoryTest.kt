@@ -99,4 +99,42 @@ class RunHistoryTest {
         assertEquals("Live", runStateLabel(RunSummary(runId = "rein_20260911_120000", current = true, live = true)))
         assertEquals("Stopped", runStateLabel(RunSummary(runId = "konomi_20260912_090000")))
     }
+
+    @Test
+    fun theShownRunIsThePinnedOneElseTheResolvedOne() {
+        val history = listOf(
+            RunSummary(runId = "rein_20260911_120000"),
+            RunSummary(runId = "konomi_20260912_090000"),
+        )
+        assertEquals(history[1], displayedRun(history, null, "konomi_20260912_090000"))
+        assertEquals(history[0], displayedRun(history, history[0], "konomi_20260912_090000"))
+    }
+
+    @Test
+    fun nothingIsShownWhileNoRunIsResolved() {
+        assertNull(displayedRun(emptyList(), null, null))
+        // An empty history cannot satisfy an id either: the page names no run.
+        assertNull(displayedRun(emptyList(), null, "rein_20260911_120000"))
+    }
+
+    @Test
+    fun theControlCardNamesTheRunThePageShows() {
+        val bare = RunSummary(runId = "Kirika_20260927_225224", outputName = "Kirika")
+        // No live run at all: the name comes from the shown run, which needs no logs or samples.
+        assertEquals("Kirika", controlRunName(bare, TrainStatus()))
+        assertEquals("Kirika_20260927_225224", controlRunId(bare, TrainStatus()))
+    }
+
+    @Test
+    fun theControlCardFallsBackToTheTrainersOwnRun() {
+        val live = TrainStatus(status = "training", runId = "rein_20260911_120000", outputName = "rein")
+        assertEquals("rein", controlRunName(null, live))
+        assertEquals("rein_20260911_120000", controlRunId(null, live))
+    }
+
+    @Test
+    fun theControlCardHasNoNameWithoutARun() {
+        assertEquals("—", controlRunName(null, TrainStatus()))
+        assertNull(controlRunId(null, TrainStatus()))
+    }
 }

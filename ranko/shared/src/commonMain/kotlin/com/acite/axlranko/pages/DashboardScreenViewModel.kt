@@ -90,7 +90,9 @@ class DashboardScreenViewModel(
         _uiState.update {
             it.copy(
                 selectedRun = run,
-                runId = run?.runId ?: it.runId,
+                // Unpinning clears the id too: the run to follow is the next fetch's answer, and
+                // a leftover id would keep the page on the run just unpinned until it lands.
+                runId = run?.runId,
                 chartPick = null,
                 previewIndex = null,
                 samples = emptyMap(),

@@ -80,7 +80,7 @@ fun RunSelector(
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val shown = selected ?: runs.firstOrNull { it.runId == resolvedRunId }
+    val shown = displayedRun(runs, selected, resolvedRunId)
     // Following is a mode, not a run: the box says so, and the run it follows sits on the second line.
     val title = selected?.runId ?: "Current run"
     val subtitle = when {
@@ -218,6 +218,16 @@ internal fun RunMenuItem(
         onClick = onClick,
     )
 }
+
+/**
+ * The run the page is showing: the one the user pinned, else the run the helper resolved to.
+ * `null` means the trainer has no run — the page names none and shows no run's figures.
+ */
+internal fun displayedRun(
+    runs: List<RunSummary>,
+    selected: RunSummary?,
+    resolvedRunId: String?,
+): RunSummary? = selected ?: runs.firstOrNull { it.runId == resolvedRunId }
 
 /**
  * `Live` while that run's process is running, `Stopped` once it is not, and no badge at all when
