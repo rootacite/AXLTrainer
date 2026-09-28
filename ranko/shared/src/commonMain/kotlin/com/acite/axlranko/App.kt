@@ -11,7 +11,9 @@ import com.acite.axlranko.data.BlobStore
 import com.acite.axlranko.data.LocalThumbnailQuality
 import com.acite.axlranko.ui.components.RankoBackdrop
 import com.acite.axlranko.ui.theme.RankoTheme
+import com.acite.axlranko.util.AppWindow
 import com.acite.axlranko.util.InstallPathPickerHost
+import com.acite.axlranko.util.LocalAppWindow
 import com.acite.axlranko.util.PathPicker
 import dev.zacsweers.metrox.viewmodel.LocalMetroViewModelFactory
 import dev.zacsweers.metrox.viewmodel.MetroViewModelFactory
@@ -25,6 +27,8 @@ fun App(
     appearanceRepo: AppearanceRepository,
     blobStore: BlobStore,
     pathPicker: PathPicker,
+    /** The OS window, where the build owns one; `null` leaves the Utils WM tab out. */
+    appWindow: AppWindow? = null,
 ) {
     InstallBlobImageLoader(blobStore)
     InstallPathPickerHost(pathPicker)
@@ -38,6 +42,7 @@ fun App(
         CompositionLocalProvider(
             LocalMetroViewModelFactory provides metroVmf,
             LocalThumbnailQuality provides settings.thumbnailQuality,
+            LocalAppWindow provides appWindow,
         ) {
             RankoBackdrop(settings = settings) {
                 CompositionLocalProvider(LocalDensity provides scaledDensity) {

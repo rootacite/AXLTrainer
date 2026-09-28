@@ -154,6 +154,11 @@ enum class ConfigSection(
         description = "Background style, blur strength, and font/icon scale",
         fieldKeys = emptySet(),
     ),
+    Wm(
+        title = "WM",
+        description = "Maximize the window and quit, for a session that draws no decorations",
+        fieldKeys = emptySet(),
+    ),
     Profiles(
         title = "Profiles",
         description = "Named config.toml presets in configs/ — applying one patches config.toml in place",

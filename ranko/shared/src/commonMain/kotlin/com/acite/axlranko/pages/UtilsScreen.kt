@@ -26,8 +26,10 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
@@ -71,6 +73,8 @@ import com.acite.axlranko.ui.components.RankoChoiceRow
 import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
+import com.acite.axlranko.util.AppWindow
+import com.acite.axlranko.util.LocalAppWindow
 import com.acite.axlranko.util.checkpointSubtitle
 import com.acite.axlranko.util.formatBytes
 import com.acite.axlranko.util.formatFixed
@@ -132,6 +136,7 @@ public fun UtilsScreen(
     }
 
     val colors = rankoColors
+    val appWindow = LocalAppWindow.current
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
     ) {
@@ -141,6 +146,7 @@ public fun UtilsScreen(
             Box(modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight)) {
                 SectionNav(
                     uiState = uiState,
+                    appWindow = appWindow,
                     onSelect = viewModel::selectSection
                 )
             }
@@ -189,7 +195,11 @@ public fun UtilsScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = rankoColors.textDim
                         )
-                        SectionFields(uiState = uiState, viewModel = viewModel)
+                        SectionFields(
+                            uiState = uiState,
+                            viewModel = viewModel,
+                            appWindow = appWindow,
+                        )
                     }
                     VerticalScrollbar(
                         modifier = Modifier
@@ -331,9 +341,21 @@ private fun StatusBanner(message: String, isError: Boolean) {
     }
 }
 
+/**
+ * The sections this build offers: Helper only where the endpoint is editable in-app, WM only where
+ * there is a window to command (a desktop build).
+ */
+internal fun visibleSections(
+    helperEndpointSettings: Boolean,
+    appWindow: AppWindow?,
+): List<ConfigSection> = ConfigSection.entries.filter {
+    (it != ConfigSection.Helper || helperEndpointSettings) && (it != ConfigSection.Wm || appWindow != null)
+}
+
 @Composable
 private fun SectionNav(
     uiState: UtilsUiState,
+    appWindow: AppWindow?,
     onSelect: (ConfigSection) -> Unit
 ) {
     LazyColumn(
@@ -341,9 +363,7 @@ private fun SectionNav(
         contentPadding = PaddingValues(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        val sections = ConfigSection.entries.filter {
-            it != ConfigSection.Helper || showsHelperEndpointSettings
-        }
+        val sections = visibleSections(showsHelperEndpointSettings, appWindow)
         items(sections, key = { it.name }) { section ->
             val selected = uiState.selectedSection == section
             val hasError = uiState.fieldErrors.keys.any { section.owns(it) }
@@ -399,13 +419,15 @@ private fun ConfigSection.icon(): ImageVector = when (this) {
     ConfigSection.Infrastructure -> Icons.Default.Settings
     ConfigSection.Validation -> Icons.Default.Photo
     ConfigSection.Appearance -> Icons.Default.Palette
+    ConfigSection.Wm -> Icons.Default.OpenInFull
     ConfigSection.Profiles -> Icons.Default.Bookmarks
 }
 
 @Composable
 private fun SectionFields(
     uiState: UtilsUiState,
-    viewModel: UtilsScreenViewModel
+    viewModel: UtilsScreenViewModel,
+    appWindow: AppWindow?,
 ) {
     val form = uiState.form
     val errors = uiState.fieldErrors
@@ -424,10 +446,69 @@ private fun SectionFields(
             ConfigSection.Infrastructure -> InfrastructureFields(form, errors, viewModel)
             ConfigSection.Validation -> ValidationFields(uiState, form, errors, viewModel)
             ConfigSection.Appearance -> AppearanceFields(uiState, viewModel)
+            ConfigSection.Wm -> appWindow?.let { WmFields(it) }
             ConfigSection.Profiles -> ProfilesFields(uiState, viewModel)
         }
     }
 }
+
+/**
+ * Maximize / restore and quit, for a session whose compositor draws no decorations: cage shows the
+ * single application surface and nothing else, so there is no title bar to do either from.
+ */
+@Composable
+private fun WmFields(window: AppWindow) {
+    val colors = rankoColors
+    // The window state is not observable, so the label follows our own toggle from an initial read.
+    var maximized by remember(window) { mutableStateOf(window.maximized) }
+    PorcelainCard {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "Window",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
+            )
+            Text(
+                text = "For a kiosk session with no window manager to click — cage, or any other " +
+                    "single-window compositor. Maximize fills the screen; Exit quits the app " +
+                    "through the same path as closing its window.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.textDim,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CapsuleButton(
+                    text = maximizeButtonLabel(maximized),
+                    onClick = { maximized = window.toggleMaximized() },
+                ) {
+                    Icon(
+                        Icons.Default.OpenInFull,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(maximizeButtonLabel(maximized), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                }
+                CapsuleButton(
+                    text = "Exit",
+                    onClick = { window.exit() },
+                    danger = true,
+                ) {
+                    Icon(
+                        Icons.Default.PowerSettingsNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Exit", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+/** `Maximize` fills the screen; the same button puts the remembered size back once it has. */
+internal fun maximizeButtonLabel(maximized: Boolean): String =
+    if (maximized) "Restore" else "Maximize"
 
 @Composable
 private fun HelperFields(

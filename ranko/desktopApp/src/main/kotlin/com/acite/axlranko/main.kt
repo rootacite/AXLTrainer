@@ -8,6 +8,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import axlranko.desktopapp.generated.resources.Res
 import axlranko.desktopapp.generated.resources.app_icon
+import com.acite.axlranko.util.DesktopAppWindow
 import com.acite.axlranko.util.ProcessExitGuard
 import dev.zacsweers.metro.createGraph
 import java.awt.Dimension
@@ -19,13 +20,15 @@ fun main() {
     ProcessExitGuard.install()
 
     application {
+        // The last moment this JVM is known to be healthy — a hang in teardown would otherwise
+        // leave a windowless process holding the GPU nodes and its IPC child. The close request and
+        // the Utils WM tab's Exit both come through here.
+        val quit: () -> Unit = {
+            ProcessExitGuard.armOnce()
+            exitApplication()
+        }
         Window(
-            onCloseRequest = {
-                // The last moment this JVM is known to be healthy — a hang in teardown would
-                // otherwise leave a windowless process holding the GPU nodes and its IPC child.
-                ProcessExitGuard.armOnce()
-                exitApplication()
-            },
+            onCloseRequest = quit,
             title = "AxlRanko",
             icon = painterResource(Res.drawable.app_icon),
             state = rememberWindowState(size = DpSize(1600.dp, 900.dp))
@@ -37,6 +40,7 @@ fun main() {
                 appearanceRepo = appGraph.appearanceRepository,
                 blobStore = appGraph.blobStore,
                 pathPicker = appGraph.pathPicker,
+                appWindow = DesktopAppWindow(window, quit),
             )
         }
     }
