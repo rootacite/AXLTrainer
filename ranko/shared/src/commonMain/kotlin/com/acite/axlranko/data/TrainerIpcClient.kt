@@ -62,6 +62,10 @@ class TrainerIpcClient {
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
+        // A null where a model declares an Int (a job record written mid-spawn, or by another
+        // build) must read as that field's default: a single bad record would otherwise take the
+        // whole list down, and the generated images with it.
+        coerceInputValues = true
     }
     private val transport = WsTransport()
     private val controlMutex = Mutex()

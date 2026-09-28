@@ -31,7 +31,7 @@ class CheckpointListTest {
     private fun job(
         id: String,
         step: Int?,
-        checkpointPath: String = "/out/run/rein_s3050/rein.safetensors",
+        checkpointPath: String = checkpoint(3050).path,
         state: String = JOB_DONE,
         mode: String = JOB_MODE_SETS,
         files: List<String> = listOf("/out/run/rein_samples/generated/${id}_p0_0.png"),
@@ -72,6 +72,52 @@ class CheckpointListTest {
         assertTrue(rows[0].samples.isEmpty())
         assertNull(rows[1].checkpoint)
         assertEquals(1, rows[1].samples.size)
+    }
+
+    @Test
+    fun aJobRidesWithTheCheckpointItNames() {
+        // The path decides, whatever step the job recorded: a pass rendered from this checkpoint
+        // belongs on its card.
+        val target = checkpoint(3050)
+        val rows = checkpointRows(
+            checkpoints = listOf(target),
+            samples = emptyMap(),
+            jobs = listOf(job("named_sets_gen_1", step = 999, checkpointPath = target.path)),
+        )
+        assertEquals(1, rows.size)
+        assertEquals(listOf("named_sets_gen_1"), rows[0].generated.map { it.id })
+        assertNull(rows[0].samples.firstOrNull())
+    }
+
+    @Test
+    fun aPassWhoseCheckpointIsGoneStillGetsARow() {
+        // The step has a card, but that card is a different checkpoint: the orphaned pass must not
+        // vanish, and the card's own samples must not be repeated in the extra row.
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = mapOf("3050" to listOf(sample(3050, 0))),
+            jobs = listOf(job("orphan_sets_gen_1", step = 3050, checkpointPath = "/gone/rein.safetensors")),
+        )
+        assertEquals(2, rows.size)
+        assertTrue(rows[0].generated.isEmpty())
+        assertEquals(1, rows[0].samples.size)
+        assertNull(rows[1].checkpoint)
+        assertEquals(3050, rows[1].step)
+        assertTrue(rows[1].samples.isEmpty())
+        assertEquals(listOf("orphan_sets_gen_1"), rows[1].generated.map { it.id })
+    }
+
+    @Test
+    fun aJobWithNeitherAPathNorAStepStillGetsARow() {
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = emptyMap(),
+            jobs = listOf(job("nameless_sets_gen_1", step = null, checkpointPath = "")),
+        )
+        assertEquals(2, rows.size)
+        assertNull(rows[1].checkpoint)
+        assertNull(rows[1].step)
+        assertEquals(listOf("nameless_sets_gen_1"), rows[1].generated.map { it.id })
     }
 
     @Test
@@ -144,10 +190,13 @@ class CheckpointListTest {
                 "/out/run/rein_samples/generated/a_sets_gen_1_p1_0.png",
             ))),
         )
-        val images = rows[0].images()
-        assertEquals(3, images.size)
-        assertEquals(sample(3050, 0).path, images[0].path)
-        assertEquals(0, images[1].setIndex)
-        assertEquals(1, images[2].setIndex)
+        // The card's own assembly: the step's training samples first, then the generated ones.
+        val slots = sampleSlots(rows[0].samples, rows[0].generated, emptySet())
+        assertEquals(3, slots.size)
+        assertEquals(sample(3050, 0).path, slots[0].item.path)
+        assertTrue(slots[0].job == null)
+        assertEquals(0, slots[1].item.setIndex)
+        assertEquals(1, slots[2].item.setIndex)
+        assertTrue(slots.drop(1).all { it.job?.id == "a_sets_gen_1" })
     }
 }

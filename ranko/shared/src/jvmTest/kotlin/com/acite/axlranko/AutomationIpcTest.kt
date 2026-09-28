@@ -33,6 +33,7 @@ import kotlinx.serialization.json.Json
 class AutomationIpcTest {
     private val json = Json {
         ignoreUnknownKeys = true
+        coerceInputValues = true
         isLenient = true
         encodeDefaults = true
     }

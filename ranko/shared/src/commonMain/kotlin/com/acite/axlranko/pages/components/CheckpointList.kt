@@ -22,9 +22,11 @@ internal data class CheckpointRow(
 /**
  * The Checkpoints section, in the order [checkpoints] arrived (newest step first).
  *
- * The section is checkpoint-driven — an image always belongs to the checkpoint its save wrote —
- * but a step whose checkpoint is gone keeps its row, so Reset (which deletes weights and keeps
- * samples) never hides images.
+ * The section is checkpoint-driven — an image always belongs to the checkpoint its save wrote — so
+ * a job is attached by the checkpoint it names, and the step is only the fallback for a record that
+ * names none. A step whose checkpoint is gone keeps its row, so Reset (which deletes weights and
+ * keeps samples) never hides images, and any generated image a card did not claim lands in a
+ * `samples only` row rather than nowhere at all.
  */
 internal fun checkpointRows(
     checkpoints: List<CheckpointItem>,
@@ -33,28 +35,37 @@ internal fun checkpointRows(
 ): List<CheckpointRow> {
     val done = jobs.filter { it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() }
     val rows = mutableListOf<CheckpointRow>()
-    val claimed = mutableSetOf<Int>()
+    val claimedSteps = mutableSetOf<Int>()
+    val claimedJobs = mutableSetOf<String>()
 
     for (checkpoint in checkpoints) {
         val step = checkpoint.step
-        if (step != null) claimed += step
+        if (step != null) claimedSteps += step
+        val own = done.filter { belongsTo(it, checkpoint) }
+        claimedJobs += own.map { it.id }
         rows += CheckpointRow(
             checkpoint = checkpoint,
             step = step,
             samples = step?.let { samples[it.toString()] }.orEmpty(),
-            generated = done.filter { it.step == step }.sortedByDescending { it.startedAt },
+            generated = own.sortedByDescending { it.startedAt },
             running = runningJobForCheckpoint(jobs, checkpoint),
         )
     }
 
-    val leftover = (samples.keys + done.mapNotNull { it.step?.toString() })
+    // A row of its own for a step with images whose checkpoint is gone, and for any pass no card
+    // claimed — its checkpoint was deleted, or another card sits at the same step under a
+    // different path. A step a card already shows does not repeat that step's samples here.
+    val unclaimed = done.filter { it.id !in claimedJobs }
+    val keys = (
+        samples.keys.filter { key -> key.toIntOrNull()?.let { it in claimedSteps } != true } +
+            unclaimed.mapNotNull { it.step?.toString() }
+        )
         .distinct()
-        .filter { key -> key.toIntOrNull()?.let { it in claimed } != true }
         .sortedByDescending { it.toIntOrNull() ?: Int.MIN_VALUE }
-    for (key in leftover) {
+    for (key in keys) {
         val step = key.toIntOrNull()
-        val own = samples[key].orEmpty()
-        val generated = done.filter { it.step == step }.sortedByDescending { it.startedAt }
+        val own = if (step != null && step in claimedSteps) emptyList() else samples[key].orEmpty()
+        val generated = unclaimed.filter { it.step == step }.sortedByDescending { it.startedAt }
         if (own.isEmpty() && generated.isEmpty()) continue
         rows += CheckpointRow(
             checkpoint = null,
@@ -64,12 +75,26 @@ internal fun checkpointRows(
             running = null,
         )
     }
+
+    // Last resort: a pass from a checkpoint whose name and metadata both carry no step, which no
+    // row above could claim. It still gets a card, so its images are reachable.
+    val homeless = unclaimed.filter { it.step == null }
+    if (homeless.isNotEmpty() && rows.none { it.checkpoint == null && it.step == null }) {
+        rows += CheckpointRow(
+            checkpoint = null,
+            step = null,
+            samples = emptyList(),
+            generated = homeless.sortedByDescending { it.startedAt },
+            running = null,
+        )
+    }
     return rows
 }
 
-/** Every image of a row, training samples first, then the generated ones in render order. */
-internal fun CheckpointRow.images(): List<SampleItem> =
-    samples + generated.asReversed().flatMap { generatedSampleItems(it) }
+/** A job belongs to the card it names; the step is the fallback for a record that names none. */
+private fun belongsTo(job: GeneratedSampleJob, checkpoint: CheckpointItem): Boolean =
+    job.checkpoint == checkpoint.path ||
+        (job.checkpoint.isBlank() && job.step != null && job.step == checkpoint.step)
 
 /**
  * Lazy-list key of a row: the checkpoint file, which is unique, or the step of a `samples only`

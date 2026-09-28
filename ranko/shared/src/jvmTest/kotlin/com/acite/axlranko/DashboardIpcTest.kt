@@ -21,6 +21,7 @@ import kotlinx.serialization.json.put
 class DashboardIpcTest {
     private val json = Json {
         ignoreUnknownKeys = true
+        coerceInputValues = true
         isLenient = true
         encodeDefaults = true
     }
@@ -179,6 +180,33 @@ class DashboardIpcTest {
         assertEquals("single", old.mode)
         assertTrue(old.files.isEmpty())
         assertEquals(1, old.totalImages)
+    }
+
+    @Test
+    fun aNullInANumericFieldReadsAsItsDefault() {
+        // The record api.py writes before the generator touches it can carry `null` where the model
+        // declares an Int; one such job must not take the whole generated-samples list down.
+        val raw = """
+            {
+              "id": "rein_s003050_sets_gen_20260929_061723",
+              "state": "running",
+              "mode": "sets",
+              "step": null,
+              "total_steps": null,
+              "current_step": null,
+              "images_done": null,
+              "total_images": 6
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(
+            com.acite.axlranko.model.GeneratedSampleJob.serializer(),
+            raw,
+        )
+        assertEquals(0, parsed.totalSteps)
+        assertEquals(0, parsed.currentStep)
+        assertEquals(0, parsed.imagesDone)
+        assertEquals(6, parsed.totalImages)
+        assertEquals(null, parsed.step)
     }
 
     @Test
