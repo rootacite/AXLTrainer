@@ -237,6 +237,15 @@ class RunScopedIpcTest(unittest.TestCase):
         (self.logs / run_id).mkdir(parents=True)
         return run_dir
 
+    def _record_run(self) -> None:
+        """`state.json` as a finished run leaves it — what makes a run "the current one"."""
+        from trainer import control
+
+        control.write_state(
+            {"status": "finished", "pid": None, "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+
     def test_dashboard_without_run_is_empty(self):
         result = api.dispatch("dashboard", {})
         self.assertIsNone(result["run_id"])
@@ -253,11 +262,18 @@ class RunScopedIpcTest(unittest.TestCase):
         result = api.dispatch("dashboard", {})
         self.assertEqual(result["run_id"], self.RUN_ID)
 
-    def test_dashboard_falls_back_to_latest_run_dir(self):
+    def test_dashboard_without_a_recorded_run_is_empty(self):
         self._make_run("rein_20260101_000000")
         self._make_run("rein_20260911_120000")
         (self.logs / "rein").mkdir(parents=True)  # legacy flat dir is ignored
-        result = api.dispatch("dashboard", {})
+        # Following means the run state.json is on; a run the trainer never recorded is
+        # reached by name instead of being served as "current".
+        self.assertIsNone(api.dispatch("dashboard", {})["run_id"])
+
+    def test_dashboard_resolves_an_explicitly_named_run(self):
+        self._make_run("rein_20260101_000000")
+        self._make_run("rein_20260911_120000")
+        result = api.dispatch("dashboard", {"name": "rein"})
         self.assertEqual(result["run_id"], "rein_20260911_120000")
 
     def test_dashboard_explicit_run_id_wins(self):
@@ -269,7 +285,7 @@ class RunScopedIpcTest(unittest.TestCase):
         run_dir = self._make_run()
         (run_dir / "rein_samples" / "rein_000100_0.png").write_bytes(b"x")
         (run_dir / "rein_samples" / "rein_000200_0.png").write_bytes(b"x")
-        result = api.dispatch("list_samples", {})
+        result = api.dispatch("list_samples", {"run_id": self.RUN_ID})
         self.assertEqual(result["run_id"], self.RUN_ID)
         self.assertEqual(list(result["samples"].keys()), ["200", "100"])
 
@@ -277,6 +293,10 @@ class RunScopedIpcTest(unittest.TestCase):
         result = api.dispatch("list_samples", {})
         self.assertIsNone(result["run_id"])
         self.assertEqual(result["samples"], {})
+
+    def test_list_samples_without_a_recorded_run_is_empty(self):
+        self._make_run()
+        self.assertIsNone(api.dispatch("list_samples", {})["run_id"])
 
     def test_list_checkpoints_reports_metadata(self):
         from safetensors.torch import save_file
@@ -320,6 +340,7 @@ class RunScopedIpcTest(unittest.TestCase):
         weights.mkdir(parents=True)
         (weights / "rein.safetensors").write_bytes(b"w")
 
+        self._record_run()
         result = api.dispatch("train_reset", {})
         self.assertEqual(result["status"], "idle")
         self.assertEqual(result["run_id"], self.RUN_ID)
@@ -340,6 +361,7 @@ class RunScopedIpcTest(unittest.TestCase):
         weights.mkdir(parents=True)
         (weights / "rein.safetensors").write_bytes(b"w")
 
+        self._record_run()
         result = api.dispatch("train_reset", {"delete_weights": True})
         self.assertFalse(weights.exists())
         # The run directory itself stays: its samples are what the history list shows.
@@ -474,17 +496,29 @@ class ListRunsIpcTest(unittest.TestCase):
         self.assertEqual(list(samples["samples"]), ["100"])
         self.assertEqual(samples["samples"]["100"][0]["filename"], "konomi_000100_0.png")
 
-    def test_default_run_reaches_a_run_without_logs(self):
+    def test_a_run_without_logs_is_reached_by_id(self):
+        """A log-less run stays readable: the history entry carries the run id it needs."""
         self._make_run("konomi_20260912_090000", name="konomi", samples=("konomi_000100_0.png",))
 
-        result = api.dispatch("list_samples", {})
+        result = api.dispatch("list_samples", {"run_id": "konomi_20260912_090000"})
         self.assertEqual(result["run_id"], "konomi_20260912_090000")
         self.assertEqual(list(result["samples"]), ["100"])
 
-    def test_default_run_prefers_the_configured_name(self):
+    def test_the_state_run_wins_whatever_the_config_names(self):
+        from trainer import control
+
         self._make_run("konomi_20260912_090000", name="konomi")
         self._make_run("rein_20260101_000000")
-        self.assertEqual(api.dispatch("dashboard", {})["run_id"], "rein_20260101_000000")
+        control.write_state(
+            {
+                "status": "finished",
+                "pid": None,
+                "output_name": "konomi",
+                "run_id": "konomi_20260912_090000",
+            },
+            force=True,
+        )
+        self.assertEqual(api.dispatch("dashboard", {})["run_id"], "konomi_20260912_090000")
 
     def test_samples_dir_of_a_sanitized_name_is_found(self):
         # A name with a space reaches the run id as `re_in`, but its sample dir keeps the raw name.
@@ -544,6 +578,12 @@ class GeneratedSampleIpcTest(unittest.TestCase):
         self.checkpoint_dir.mkdir()
         self.checkpoint = self.checkpoint_dir / "rein.safetensors"
         self.checkpoint.write_bytes(b"weights")
+        # The run the page follows: its id comes from state.json, never from the newest
+        # directory on disk.
+        control.write_state(
+            {"status": "finished", "pid": None, "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
 
     def tearDown(self):
         from trainer import control
@@ -720,9 +760,12 @@ class GeneratedSampleIpcTest(unittest.TestCase):
                 self.assertIn(expected, str(ctx.exception))
 
     def test_requires_a_resolved_run(self):
+        from trainer import control
+
         with tempfile.TemporaryDirectory() as empty:
             self.cfg["logging_dir"] = empty
             self.cfg["output_dir"] = empty
+            control.reset_to_idle()  # no run recorded, and no run directory to find one in
             with self.assertRaises(ValueError) as ctx:
                 api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
             self.assertIn("no run", str(ctx.exception))

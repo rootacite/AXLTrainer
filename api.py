@@ -110,19 +110,6 @@ def _get_tensorboard_metrics(
     return metrics
 
 
-def _run_name(params: dict[str, Any], cfg: dict[str, Any]) -> str:
-    """The name a request asks for, before the run itself is resolved."""
-    explicit = params.get("name")
-    if explicit:
-        return str(explicit)
-    run_id = params.get("run_id")
-    if run_id:
-        derived = run_output_name(str(run_id))
-        if derived:
-            return derived
-    return str(cfg.get("output_name") or "default")
-
-
 def _resolve_run(params: dict[str, Any], cfg: dict[str, Any]) -> tuple[Optional[str], str]:
     """(run_id, output_name) for this request.
 
@@ -143,25 +130,29 @@ def _resolve_run(params: dict[str, Any], cfg: dict[str, Any]) -> tuple[Optional[
 
 
 def _resolve_run_id(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[str]:
-    """Explicit param → the run recorded in state.json → the newest run directory.
+    """Explicit `run_id` → the run recorded in state.json → the newest run of an explicitly named one.
 
-    The run directories of both roots count, so a run whose TensorBoard directory is
-    gone (Reset used to delete it, or the config's `logging_dir` moved since) is still
-    resolved and its sample images stay visible.
+    A request that names nothing (`dashboard` / `list_samples` / `train_reset` as the
+    dashboard sends them while it follows the trainer) means *the run the trainer is on*,
+    so it stops at `state.json`. It deliberately does not fall back to the newest run
+    directory: that made "current" mean "the last run on disk", so a dashboard with no
+    run recorded showed a stopped run's step count and size under a `Current run` heading.
+    Such a run is reached by naming it — every run directory of both roots is listed by
+    `list_runs`, so a run whose TensorBoard directory is gone (Reset used to delete it, or
+    the config's `logging_dir` moved since) is still picked from the history list.
     """
     explicit = params.get("run_id")
     if explicit:
         return str(explicit)
-    name = _run_name(params, cfg)
-    current = reconcile()
-    state_run = current.get("run_id")
-    if state_run and str(current.get("output_name") or name) == name:
+    state_run = reconcile().get("run_id")
+    if state_run:
         return str(state_run)
-    runs = list_runs(cfg.get("output_dir", "./output"), cfg.get("logging_dir", "./logs"), None)
-    if not runs:
+    name = str(params.get("name") or "")
+    if not name:
         return None
+    runs = list_runs(cfg.get("output_dir", "./output"), cfg.get("logging_dir", "./logs"), None)
     known = next((run for run in runs if run["output_name"] == name), None)
-    return str((known or runs[0])["run_id"])
+    return str(known["run_id"]) if known else None
 
 
 def handle_ping(_params: dict[str, Any]) -> dict[str, str]:
