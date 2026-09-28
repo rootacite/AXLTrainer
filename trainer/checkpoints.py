@@ -17,6 +17,11 @@ except ImportError:
 _STEP_DIR_RE = re.compile(r"_s(\d{6})$")
 _EPOCH_DIR_RE = re.compile(r"_e(\d{3})_s(\d{6})$")
 
+# (absolute path, mtime_ns, size) -> metadata. Bounded; cleared wholesale when it fills, because a
+# run's own checkpoints are what gets read over and over.
+_METADATA_CACHE: dict[tuple[str, int, int], dict[str, str]] = {}
+_METADATA_CACHE_LIMIT = 512
+
 
 def _int_or_none(value: Any) -> Optional[int]:
     if value is None:
@@ -57,12 +62,29 @@ def resolve_resume_path(raw: Union[str, Path]) -> Path:
 
 def read_lora_metadata(path: Union[str, Path]) -> dict[str, str]:
     target = Path(path)
+    key: Optional[tuple[str, int, int]] = None
+    try:
+        stat = target.stat()
+        key = (str(target), int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        key = None
+    if key is not None:
+        cached = _METADATA_CACHE.get(key)
+        if cached is not None:
+            return dict(cached)
     try:
         with safe_open(str(target), framework="pt") as handle:
             metadata = handle.metadata() or {}
     except Exception as exc:  # noqa: BLE001 - surfaced as a config error
         raise ValueError(f"failed to read safetensors metadata from {target}: {exc}") from exc
-    return {str(key): str(value) for key, value in metadata.items()}
+    parsed = {str(key_name): str(value) for key_name, value in metadata.items()}
+    if key is not None:
+        # The dashboard lists a run's checkpoints with every poll, and each header read is a file
+        # open: keyed by (path, mtime, size), a checkpoint written once is read once.
+        if len(_METADATA_CACHE) >= _METADATA_CACHE_LIMIT:
+            _METADATA_CACHE.clear()
+        _METADATA_CACHE[key] = parsed
+    return dict(parsed)
 
 
 def parse_network_args(raw: Any) -> dict[str, str]:

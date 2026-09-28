@@ -26,6 +26,12 @@ STATE_DONE = "done"
 STATE_ERROR = "error"
 STATES = (STATE_RUNNING, STATE_DONE, STATE_ERROR)
 
+# What one job renders: a single ad-hoc image with its own prompt, or every
+# `[[validation.samples]]` set of the config for one checkpoint.
+MODE_SINGLE = "single"
+MODE_SETS = "sets"
+MODES = (MODE_SINGLE, MODE_SETS)
+
 # Launch limits, mirrored by Ranko's form validation so a rejected click costs no GPU time.
 MIN_CFG = 1.0
 MAX_CFG = 30.0
@@ -61,7 +67,7 @@ def job_stem(checkpoint: Union[str, Path]) -> str:
     return stem
 
 
-def new_job_id(stem: str, *, now: Optional[Union[datetime, float]] = None) -> str:
+def new_job_id(stem: str, *, mode: str = MODE_SINGLE, now: Optional[Union[datetime, float]] = None) -> str:
     if now is None:
         stamp = datetime.now()
     elif isinstance(now, (int, float)):
@@ -69,7 +75,9 @@ def new_job_id(stem: str, *, now: Optional[Union[datetime, float]] = None) -> st
     else:
         stamp = now
     cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in (stem or "").strip())
-    return f"{cleaned or 'sample'}_gen_{stamp.strftime(_STAMP)}"
+    # `_sets` marks a full `[[validation.samples]]` pass, so the two kinds never share a job id.
+    marker = "" if mode == MODE_SINGLE else f"_{mode}"
+    return f"{cleaned or 'sample'}{marker}_gen_{stamp.strftime(_STAMP)}"
 
 
 def job_path(generated: Union[str, Path], job_id: str) -> Path:
@@ -78,6 +86,17 @@ def job_path(generated: Union[str, Path], job_id: str) -> Path:
 
 def image_path(generated: Union[str, Path], job_id: str) -> Path:
     return Path(generated) / f"{job_id}.png"
+
+
+def set_image_path(
+    generated: Union[str, Path],
+    job_id: str,
+    set_index: int,
+    repeat_idx: int,
+) -> Path:
+    """One image of a `sets` job: `{job_id}_p{set}_{repeat}.png`, sets counting from 0 like the
+    run's own `{output_name}_{step:06d}_p{set}_{repeat}.png` samples."""
+    return Path(generated) / f"{job_id}_p{int(set_index)}_{int(repeat_idx)}.png"
 
 
 def log_path(generated: Union[str, Path], job_id: str) -> Path:
@@ -130,6 +149,8 @@ def list_jobs(generated: Union[str, Path]) -> list[dict[str, Any]]:
         if payload.get("state") not in STATES:
             payload["state"] = STATE_ERROR
             payload.setdefault("error", "job file has no valid state")
+        if payload.get("mode") not in MODES:
+            payload["mode"] = MODE_SINGLE
         jobs.append(payload)
     jobs.sort(key=lambda job: (float(job.get("started_at") or 0.0), str(job.get("id"))), reverse=True)
     return jobs
@@ -215,13 +236,19 @@ def new_job(
     run_id: str,
     output_name: str,
     checkpoint: str,
+    mode: str = MODE_SINGLE,
+    total_images: int = 1,
     pid: Optional[int] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """The job record api.py writes before spawning the generator."""
+    if mode not in MODES:
+        raise ValueError(f"unknown job mode: {mode}")
+    total_images = max(1, int(total_images))
     job: dict[str, Any] = {
-        "id": new_job_id(job_stem(checkpoint)),
+        "id": new_job_id(job_stem(checkpoint), mode=mode),
         "state": STATE_RUNNING,
+        "mode": mode,
         "run_id": run_id,
         "output_name": output_name,
         "checkpoint": checkpoint,
@@ -236,6 +263,11 @@ def new_job(
         "current_step": 0,
         "total_steps": request.get("steps"),
         "image_path": None,
+        # A `sets` job writes one image per (set, repeat); a `single` job one, recorded in
+        # `image_path` as before so a job file from the old build still reads.
+        "files": [],
+        "images_done": 0,
+        "total_images": total_images,
         "error": None,
         "pid": pid,
         "started_at": time.time(),

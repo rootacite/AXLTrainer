@@ -11,6 +11,7 @@ try:
     from loss_log import LossRecorder
     from env import flush_memory
     import control
+    from control import LiveSettings
     from device_swap import SwapContext, at_safe_point
     from family import FamilyModules, ModelFamily
     from models import artifact_root
@@ -20,6 +21,7 @@ except ImportError:
     from trainer.loss_log import LossRecorder
     from trainer.env import flush_memory
     from trainer import control
+    from trainer.control import LiveSettings
     from trainer.device_swap import SwapContext, at_safe_point
     from trainer.family import FamilyModules, ModelFamily
     from trainer.models import artifact_root
@@ -141,7 +143,11 @@ def _maybe_log_and_sample(
     global_step: int,
     swap_ctx: SwapContext | None = None,
 ) -> None:
-    """Save checkpoints and generate samples on step boundaries."""
+    """Log the step, then save a checkpoint (and, when the switch is on, its samples).
+
+    Sampling has no cadence of its own: a sample always belongs to the checkpoint written in the
+    same step, so turning sampling off makes a save point checkpoint-only.
+    """
     accelerator = artifacts.accelerator
     if accelerator.is_main_process:
         denoise_optimizer = artifacts.denoise_optimizer
@@ -162,29 +168,46 @@ def _maybe_log_and_sample(
             step=global_step,
         )
 
-        if cfg.save_every_n_steps > 0 and global_step % cfg.save_every_n_steps == 0:
+        settings = artifacts.settings
+        if settings.due(global_step):
             if hasattr(denoise_optimizer, "eval"):
                 denoise_optimizer.eval()
             try:
                 artifacts.family.save_lora(
                     accelerator, artifacts.modules, cfg, global_step
                 )
-                artifacts.family.generate_sample(
-                    accelerator=accelerator,
-                    modules=artifacts.modules,
-                    cfg=cfg,
-                    device=artifacts.device,
-                    dtype=artifacts.weight_dtype,
-                    global_step=global_step,
-                    output_dir_base=artifact_root(cfg),
-                    swap_ctx=swap_ctx,
-                )
+                if settings.sampling_enabled:
+                    artifacts.family.generate_sample(
+                        accelerator=accelerator,
+                        modules=artifacts.modules,
+                        cfg=cfg,
+                        device=artifacts.device,
+                        dtype=artifacts.weight_dtype,
+                        global_step=global_step,
+                        output_dir_base=artifact_root(cfg),
+                        swap_ctx=swap_ctx,
+                    )
             finally:
                 if hasattr(denoise_optimizer, "train"):
                     denoise_optimizer.train()
+            settings.mark_saved(global_step)
+            control.publish_settings(settings)
 
 _maybe_log_and_sample.last_loss = 0.0
 _maybe_log_and_sample.last_avg_loss = 0.0
+
+
+def adopt_live_settings(artifacts: TrainArtifacts, global_step: int) -> None:
+    """Take over a cadence / sampling switch requested while the run was going.
+
+    Called once per optimizer step, after `at_safe_point` so a change made while paused applies
+    to the step the run resumes with.
+    """
+    adopted = artifacts.settings.adopt(control.read_settings(), global_step)
+    if adopted is artifacts.settings:
+        return
+    artifacts.settings = adopted
+    control.publish_settings(adopted)
 
 
 def train_one_epoch(
@@ -297,6 +320,7 @@ def train_one_epoch(
             if not at_safe_point("training", swap_ctx):
                 return global_step
 
+            adopt_live_settings(artifacts, global_step)
             _maybe_log_and_sample(
                 artifacts=artifacts,
                 cfg=cfg,

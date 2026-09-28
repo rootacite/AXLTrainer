@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 
 try:
     from config import TrainConfig
+    from control import LiveSettings
     from dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from models import (
@@ -20,6 +21,7 @@ try:
     from env import setup_migraphx_cache
 except ImportError:
     from trainer.config import TrainConfig
+    from trainer.control import LiveSettings
     from trainer.dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from trainer.family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from trainer.models import (
@@ -43,6 +45,8 @@ class TrainArtifacts:
     te_optimizer: Any
     te_scheduler: Any
     resume: dict[str, Any]
+    # Cadence + sampling switch, replaced in place when the dashboard asks for a change.
+    settings: LiveSettings = field(default_factory=LiveSettings)
 
 
 def maybe_enable_amp_backends() -> None:
@@ -112,7 +116,7 @@ def build_optimizers_and_schedulers(
     return denoise_optimizer, te_optimizer, te_scheduler
 
 
-def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
+def build_train_objects(cfg: TrainConfig, settings: LiveSettings | None = None) -> TrainArtifacts:
     """Build everything required for training in a readable sequence."""
     family = resolve_family(cfg)
     require_trainable(family)
@@ -157,4 +161,5 @@ def build_train_objects(cfg: TrainConfig) -> TrainArtifacts:
         te_optimizer=te_optimizer,
         te_scheduler=te_scheduler,
         resume=resume,
+        settings=settings if settings is not None else LiveSettings.from_config(cfg),
     )

@@ -537,6 +537,33 @@ class ResolveResumePathTest(unittest.TestCase):
         )
         self.assertEqual(read_lora_metadata(target)["ss_steps"], "42")
 
+    def test_read_lora_metadata_rerereads_a_changed_file(self):
+        """The cache is the dashboard's repeated scan; a rewritten checkpoint must not go stale."""
+        target = self.dir / "rein.safetensors"
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(target),
+            metadata={"ss_steps": "42"},
+        )
+        self.assertEqual(read_lora_metadata(target)["ss_steps"], "42")
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(8, 2)},
+            str(target),
+            metadata={"ss_steps": "77"},
+        )
+        self.assertEqual(read_lora_metadata(target)["ss_steps"], "77")
+
+    def test_a_caller_cannot_corrupt_the_metadata_cache(self):
+        target = self.dir / "rein.safetensors"
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(target),
+            metadata={"ss_steps": "42"},
+        )
+        first = read_lora_metadata(target)
+        first["ss_steps"] = "0"
+        self.assertEqual(read_lora_metadata(target)["ss_steps"], "42")
+
 
 class TrainStartFamilyTest(unittest.TestCase):
     def setUp(self):

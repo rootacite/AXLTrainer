@@ -38,6 +38,65 @@ class JobIdTest(unittest.TestCase):
         self.assertEqual(genjob.image_path(generated, "job1"), generated / "job1.png")
         self.assertEqual(genjob.log_path(generated, "job1"), generated / "job1.log")
 
+    def test_a_sets_job_is_marked_in_its_id(self):
+        job_id = genjob.new_job_id("lllj_s003050", mode=genjob.MODE_SETS)
+        self.assertRegex(job_id, r"^lllj_s003050_sets_gen_\d{8}_\d{6}$")
+
+    def test_set_image_names_follow_the_run_sample_convention(self):
+        generated = Path("/tmp/run/lllj_samples/generated")
+        self.assertEqual(
+            genjob.set_image_path(generated, "job1", 2, 3),
+            generated / "job1_p2_3.png",
+        )
+
+
+class SetsJobTest(unittest.TestCase):
+    def test_defaults_mark_a_job_as_single_image(self):
+        job = genjob.new_job(
+            {"prompt": "p", "steps": 12},
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+        )
+        self.assertEqual(job["mode"], genjob.MODE_SINGLE)
+        self.assertEqual(job["total_images"], 1)
+        self.assertEqual(job["images_done"], 0)
+        self.assertEqual(job["files"], [])
+
+    def test_a_sets_job_carries_its_image_count_and_files(self):
+        job = genjob.new_job(
+            {},
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+            mode=genjob.MODE_SETS,
+            total_images=5,
+            extra={"sample_sets": [{"name": "a"}]},
+        )
+        self.assertEqual(job["mode"], genjob.MODE_SETS)
+        self.assertEqual(job["total_images"], 5)
+        self.assertEqual(job["sample_sets"], [{"name": "a"}])
+        self.assertIn("_sets_gen_", job["id"])
+
+    def test_an_unknown_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            genjob.new_job(
+                {},
+                run_id="r",
+                output_name="rein",
+                checkpoint="/out/c.safetensors",
+                mode="everything",
+            )
+
+    def test_a_job_file_without_a_mode_reads_as_single(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            generated = genjob.generated_dir(Path(tmp) / "rein_samples")
+            generated.mkdir(parents=True)
+            (generated / "old_gen_1.json").write_text(
+                json.dumps({"id": "old_gen_1", "state": "done"}), encoding="utf-8"
+            )
+            self.assertEqual(genjob.list_jobs(generated)[0]["mode"], genjob.MODE_SINGLE)
+
 
 class RequestValidationTest(unittest.TestCase):
     defaults = {

@@ -105,7 +105,7 @@ trainer/main.py ──► begin_run (acquires train.lock)
      │    batch → group by bucket → build inputs (cached latent or on-demand encode)
      │    → family.compute_loss (SDXL: dual CLIP + UNet MSE / v-pred)
      │    → backward → clip grads → both optimizers step
-     │    → every save_every_n_steps: save LoRA checkpoint + generate sample
+     │    → next_save_step reached: save LoRA checkpoint (+ samples if sampling_enabled)
      │    → at_safe_point() every step (handles pause / resume / stop)
      │
      ├─ final checkpoint: {output_name}_final/{name}.safetensors

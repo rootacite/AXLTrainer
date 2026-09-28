@@ -95,7 +95,8 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `max_grad_norm` | `1.0` | UNet gradient clipping. |
 | `epoch` | `16` | Total epochs for this run. |
 | `save_every_n_epochs` | `1` | **Defined but not used**; checkpoints are driven by `save_every_n_steps`. |
-| `save_every_n_steps` | `100` | Save a LoRA checkpoint + generate samples every N steps. |
+| `save_every_n_steps` | `100` | Steps between LoRA checkpoints (`0` writes none). The value here is what a run **starts** with; the Dashboard's Training Control card can retune it for the run in progress (a change restarts the countdown from the step that adopts it), and a run keeps its own cadence — the file is never rewritten by a live change. |
+| `sampling_enabled` | `true` | Whether a checkpoint save also renders the `[[validation.samples]]` images. `false` keeps the same cadence but writes checkpoints only (the expensive part of a save point is the sampling, not the checkpoint). Changeable mid-run like the cadence; a checkpoint with no samples can be rendered later, one pass per checkpoint, from the Dashboard. |
 | `resume_lora_path` | `""` | Optional. kohya LoRA `.safetensors` (or a checkpoint directory holding exactly one) loaded into the UNet + both text encoders **before** training. Weights only: step/epoch counting still starts at 0 and the run gets its own timestamped directory, so earlier runs are never overwritten. `network_type` and `network_dim` / `network_alpha` must match the checkpoint. See [Training → Resuming from a checkpoint](training.md#resuming-from-a-checkpoint). |
 
 `run_dir` is **not** a config key you should write: the trainer fills it in at runtime with the absolute run directory created for that run.
@@ -249,4 +250,7 @@ The Ranko **Utils** tab is a validated form over exactly these sections/keys:
   `×` on a chip deletes that set after a confirmation. The last set cannot be deleted. Saving writes
   the `[validation]` scalars from the first set plus one fully explicit block per tab (a blank label
   is left out), so the file never carries two contradictory prompts.
+- The **Training** section carries the **Sampling** switch (`[training].sampling_enabled`) beside
+  `save_every_n_steps`. Those two are the *starting* values: the Dashboard's Training Control card
+  can change both for the run in progress without touching this file.
 - Save runs full-form validation; on error it jumps to the first section with an invalid field (and to the offending set's tab). The writer is a line-preserving TOML patcher, so comments and formatting survive edits — except inside the replaced `[[validation.samples]]` blocks.

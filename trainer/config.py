@@ -294,6 +294,9 @@ class TrainConfig:
     epoch: int = get_val("epoch", 60)
     save_every_n_epochs: int = get_val("save_every_n_epochs", 1)
     save_every_n_steps: int = get_val("save_every_n_steps", 100)
+    # Validation samples stay tied to a checkpoint save; this only says whether that save also
+    # renders them. The Dashboard can flip it (and the cadence) for the run in progress.
+    sampling_enabled: bool = get_val("sampling_enabled", True)
 
     # Resume: kohya LoRA .safetensors (or its directory) to load before training
     resume_lora_path: str = get_val("resume_lora_path", "")

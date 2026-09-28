@@ -116,7 +116,8 @@ alpha is **not** effectively opaque (mean 0.55), so alpha does act as a mask the
 Each child run gets a generated config in a throwaway repo mirror. It **inherits** everything from the
 live `config.toml` (model, `network_dim`, dataset, bucket settings, `max_token_length`,
 precision, `sample_seed`, …) and **overrides** only: `seed`, `epoch`, `save_every_n_steps`,
-`resume_lora_path`, `train_batch_size = 3` (pinned in `launch_run`, so the live config's batch size
+`sampling_enabled = true` (the checks count sample images, so the verifier asks for them whatever
+the live config was left at), `resume_lora_path`, `train_batch_size = 3` (pinned in `launch_run`, so the live config's batch size
 does not apply), `lr_warmup_steps`, both learning rates (`--unet-lr`/`--te-lr`, deliberately higher
 than the shipped values so a few minutes move the LoRA measurably), DataLoader workers = 2, and cheap
 samples (`768×768`, 8 steps, 1 repeat). So `network_dim` and `sample_seed` come from the config file

@@ -16,9 +16,11 @@ from setup import build_train_objects
 
 try:
     import control
+    from control import LiveSettings
     from device_swap import SwapContext
 except ImportError:
     from trainer import control
+    from trainer.control import LiveSettings
     from trainer.device_swap import SwapContext
 
 
@@ -54,6 +56,11 @@ def main() -> None:
     control.begin_run(os.getpid(), cfg.output_name, run_id=run_id)
     set_seed(cfg.seed)
 
+    # Publish what this run starts with, so the Dashboard shows the cadence and the sampling
+    # switch while the model is still loading (`api.py` seeded settings.json from the same config).
+    live = LiveSettings.from_config(cfg)
+    control.publish_settings(live)
+
     artifacts = None
     swap_ctx: SwapContext | None = None
     global_step = 0
@@ -65,7 +72,7 @@ def main() -> None:
         # when it is built).
         sample_sets = resolve_sample_sets(cfg)
         resolve_train_data_entries(cfg)
-        artifacts = build_train_objects(cfg)
+        artifacts = build_train_objects(cfg, settings=live)
         control.set_resume(artifacts.resume)
         accelerator = artifacts.accelerator
         if accelerator.is_main_process:
@@ -198,16 +205,17 @@ def main() -> None:
                 global_step,
                 final=True,
             )
-            artifacts.family.generate_sample(
-                accelerator=accelerator,
-                modules=artifacts.modules,
-                cfg=cfg,
-                device=device,
-                dtype=weight_dtype,
-                global_step=global_step,
-                output_dir_base=artifact_root(cfg),
-                swap_ctx=swap_ctx,
-            )
+            if artifacts.settings.sampling_enabled:
+                artifacts.family.generate_sample(
+                    accelerator=accelerator,
+                    modules=artifacts.modules,
+                    cfg=cfg,
+                    device=device,
+                    dtype=weight_dtype,
+                    global_step=global_step,
+                    output_dir_base=artifact_root(cfg),
+                    swap_ctx=swap_ctx,
+                )
         finally:
             if hasattr(artifacts.denoise_optimizer, "train"):
                 artifacts.denoise_optimizer.train()

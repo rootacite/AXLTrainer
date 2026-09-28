@@ -35,7 +35,7 @@ try:
         read_lora_metadata,
         resolve_resume_path,
     )
-    from config import TrainConfig
+    from config import TrainConfig, resolve_sample_sets
     from env import flush_memory, setup_migraphx_cache
     from family import require_trainable, resolve_family
     from models import enable_flash_attention
@@ -47,7 +47,7 @@ except ImportError:
         read_lora_metadata,
         resolve_resume_path,
     )
-    from trainer.config import TrainConfig
+    from trainer.config import TrainConfig, resolve_sample_sets
     from trainer.env import flush_memory, setup_migraphx_cache
     from trainer.family import require_trainable, resolve_family
     from trainer.models import enable_flash_attention
@@ -279,8 +279,186 @@ def run_generation(spec: dict, generated: Path) -> None:
     _log(f"saved {target}")
 
 
+def _seed_for(sample_set, repeat_idx: int) -> int:
+    """sampling.py's rule: 0 draws a fresh random seed per image, else `seed + repeat_idx`."""
+    if sample_set.seed == 0:
+        seed = int(torch.randint(0, 2**32, (1,)).item())
+        _log(f"random seed for {sample_set.name}.{repeat_idx}: {seed}")
+        return seed
+    return sample_set.seed + repeat_idx
+
+
+@torch.no_grad()
+def run_sample_sets(spec: dict, generated: Path) -> None:
+    """Render every `[[validation.samples]]` set for this checkpoint.
+
+    The prompt sets, sizes, steps, CFG, seeds and repeats come from `config.toml` — the same
+    logic the trainer's own sample points use — while the model side (network type / dim /
+    alpha, `clip_skip`, `max_token_length`, base model) comes from the checkpoint's metadata,
+    through `_build_config`. Images go to `{name}_samples/generated/`, named
+    `{job_id}_p{set}_{repeat}.png`; the run's own samples are never touched.
+    """
+    job_id = str(spec["id"])
+    checkpoint = resolve_resume_path(spec["checkpoint"])
+    metadata = read_lora_metadata(checkpoint)
+    cfg = _build_config(metadata, checkpoint)
+    sets = resolve_sample_sets(cfg)
+    if not sets:
+        raise RuntimeError("config.toml has no [[validation.samples]] sets to render")
+    total_images = sum(sample_set.repeat for sample_set in sets)
+
+    dtype = torch.float16 if cfg.mixed_precision == "fp16" else torch.bfloat16
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _log(
+        f"checkpoint={checkpoint} type={cfg.network_type} dim={cfg.network_dim} "
+        f"alpha={cfg.network_alpha} sets={len(sets)} images={total_images} on {device}"
+    )
+
+    genjob.update_job(
+        generated,
+        job_id,
+        state=genjob.STATE_RUNNING,
+        pid=os.getpid(),
+        current_step=0,
+        images_done=0,
+        total_images=total_images,
+        current_set=0,
+        total_sets=len(sets),
+    )
+
+    family = resolve_family(cfg)
+    require_trainable(family)
+    setup_migraphx_cache()
+    pipe = family.load_pipeline(cfg.pretrained_model_name_or_path, dtype)
+    modules = family.unpack(pipe)
+    modules = family.apply_lora(cfg, modules)
+    family.load_lora(cfg, modules)
+
+    trained_unet = modules.denoise.eval()
+    te1, te2 = (te.eval() for te in modules.text_encoders)
+    enable_flash_attention(trained_unet)
+    pipe.unet = trained_unet
+    pipe.text_encoder = te1
+    pipe.text_encoder_2 = te2
+
+    files: list[str] = []
+    try:
+        for set_index, sample_set in enumerate(sets):
+            _prepare_scheduler(pipe, sample_set.steps, device)
+            # Each set encodes on its own, so one set's prompt length never pads another's.
+            for module in (te1, te2):
+                module.to(device=device)
+            prompt_embeds, pooled_prompt_embeds, num_chunks = encode_prompt_batch(
+                prompts=[sample_set.prompt],
+                tokenizer_1=pipe.tokenizer,
+                tokenizer_2=pipe.tokenizer_2,
+                text_encoder_1=te1,
+                text_encoder_2=te2,
+                clip_skip=cfg.clip_skip,
+                max_token_length=cfg.max_token_length,
+                device=device,
+                dtype=dtype,
+            )
+            negative_embeds, negative_pooled, _ = encode_prompt_batch(
+                prompts=[sample_set.negative],
+                tokenizer_1=pipe.tokenizer,
+                tokenizer_2=pipe.tokenizer_2,
+                text_encoder_1=te1,
+                text_encoder_2=te2,
+                clip_skip=cfg.clip_skip,
+                max_token_length=cfg.max_token_length,
+                device=device,
+                dtype=dtype,
+                target_num_chunks=num_chunks,
+            )
+            for module in (te1, te2):
+                module.to("cpu")
+            flush_memory(device)
+            _log(
+                f"set {set_index + 1}/{len(sets)} {sample_set.name}: {sample_set.repeat} image(s), "
+                f"{sample_set.width}x{sample_set.height}, {sample_set.steps} steps, "
+                f"cfg {sample_set.guidance_scale}, seed {sample_set.seed}"
+            )
+
+            for repeat_idx in range(sample_set.repeat):
+                generator = torch.Generator(device="cpu")
+                seed = _seed_for(sample_set, repeat_idx)
+                generator.manual_seed(seed)
+
+                def _on_step_end(_pipeline, step_index, _timestep, callback_kwargs):
+                    genjob.update_job(
+                        generated,
+                        job_id,
+                        current_step=int(step_index) + 1,
+                        total_steps=sample_set.steps,
+                        images_done=len(files),
+                        total_images=total_images,
+                        current_set=set_index + 1,
+                        total_sets=len(sets),
+                    )
+                    return callback_kwargs
+
+                trained_unet.to(device=device)
+                flush_memory(device)
+                latent_result = pipe(
+                    prompt=None,
+                    negative_prompt=None,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_embeds,
+                    pooled_prompt_embeds=pooled_prompt_embeds,
+                    negative_pooled_prompt_embeds=negative_pooled,
+                    width=sample_set.width,
+                    height=sample_set.height,
+                    num_inference_steps=sample_set.steps,
+                    guidance_scale=sample_set.guidance_scale,
+                    generator=generator,
+                    output_type="latent",
+                    callback_on_step_end=_on_step_end,
+                )
+                trained_unet.to("cpu")
+                flush_memory(device)
+
+                latents = latent_result.images / pipe.vae.config.scaling_factor
+                image = _decode(pipe, latents, device, torch.bfloat16)
+                pipe.vae.to("cpu")
+
+                target = genjob.set_image_path(generated, job_id, set_index, repeat_idx)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(image).save(target)
+                files.append(str(target))
+                genjob.update_job(
+                    generated,
+                    job_id,
+                    files=files,
+                    images_done=len(files),
+                    total_images=total_images,
+                    current_step=0,
+                    total_steps=sample_set.steps,
+                    current_set=set_index + 1,
+                    total_sets=len(sets),
+                    seed=seed,
+                )
+                _log(f"saved {target} ({len(files)}/{total_images})")
+    finally:
+        for module in (trained_unet, te1, te2):
+            module.to("cpu")
+        flush_memory(device)
+
+    genjob.update_job(
+        generated,
+        job_id,
+        state=genjob.STATE_DONE,
+        files=files,
+        images_done=len(files),
+        total_images=total_images,
+        current_step=0,
+        error=None,
+    )
+    _log(f"finished {len(files)} image(s) for {checkpoint}")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate one sample image from a LoRA checkpoint")
+    parser = argparse.ArgumentParser(description="Generate sample images from a LoRA checkpoint")
     parser.add_argument("--spec", required=True, help="job JSON written by api.py")
     args = parser.parse_args()
 
@@ -293,7 +471,10 @@ def main() -> int:
 
     job_id = str(spec.get("id") or spec_path.stem)
     try:
-        run_generation(spec, generated)
+        if str(spec.get("mode") or genjob.MODE_SINGLE) == genjob.MODE_SETS:
+            run_sample_sets(spec, generated)
+        else:
+            run_generation(spec, generated)
     except Exception as exc:  # noqa: BLE001 - the panel shows the message, the log the traceback
         traceback.print_exc()
         genjob.update_job(

@@ -157,6 +157,46 @@ class ControlTest(unittest.TestCase):
         self.assertIn("validation.samples[1]", str(ctx.exception))
         popen.assert_not_called()
 
+    def test_train_start_publishes_the_settings_the_run_starts_with(self):
+        """The card must read config.toml's cadence from the moment Start is pressed."""
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(
+            base_model_version="sdxl_base_v1-0",
+            modelspec_architecture="stable-diffusion-xl-v1-base/lora",
+            modelspec_implementation="https://github.com/Stability-AI/generative-models",
+            modelspec_sai_model_spec="1.0.0",
+            resume_lora_path="",
+            save_every_n_steps=250,
+            sampling_enabled=False,
+            sample_prompts="p",
+            sample_negative="",
+            sample_width=1024,
+            sample_height=1024,
+            sample_steps=30,
+            sample_seed=0,
+            sample_repeat=1,
+            guidance_scale=5.0,
+            samples=[],
+        )
+
+        class FakeProc:
+            pid = 4242
+
+        with mock.patch.object(api, "TrainConfig", lambda: config):
+            with mock.patch.object(api, "_train_config_dict", lambda: {"output_name": "rein"}):
+                with mock.patch("api.subprocess.Popen", return_value=FakeProc()):
+                    result = api.dispatch("train_start")
+
+        self.assertEqual(
+            result["settings"],
+            {"save_every_n_steps": 250, "sampling_enabled": False, "next_save_step": 250},
+        )
+        self.assertEqual(
+            control.read_settings(),
+            {"save_every_n_steps": 250, "sampling_enabled": False},
+        )
+
     def test_begin_run_records_run_id(self):
         control.begin_run(4242, "rein", run_id="rein_20260911_120000")
         loaded = control.read_state()
@@ -281,6 +321,130 @@ class ControlTest(unittest.TestCase):
         finally:
             api._train_config_dict = orig
         self.assertEqual(result["status"], "idle")
+
+
+class LiveSettingsTest(unittest.TestCase):
+    """The runtime cadence / sampling switch: settings.json, the state block, and the schedule."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.clear_settings()
+
+    def tearDown(self):
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _config(self, **fields):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(**{"save_every_n_steps": 100, "sampling_enabled": True, **fields})
+
+    def test_from_config_anchors_the_first_save_at_n(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=25))
+        self.assertEqual(settings.save_every_n_steps, 25)
+        self.assertEqual(settings.next_save_step, 25)
+        self.assertFalse(settings.due(24))
+        self.assertTrue(settings.due(25))
+
+    def test_untouched_cadence_keeps_the_modulo_sequence(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=100))
+        saved = []
+        for step in range(1, 501):
+            if settings.due(step):
+                saved.append(step)
+                settings.mark_saved(step)
+        self.assertEqual(saved, [100, 200, 300, 400, 500])
+
+    def test_a_missed_boundary_still_saves_at_the_next_step(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=100))
+        # Step 100 went by without a save (paused, or the loop was between epochs): the next
+        # step that reaches the loop still writes the checkpoint.
+        self.assertTrue(settings.due(137))
+        settings.mark_saved(137)
+        self.assertEqual(settings.next_save_step, 237)
+
+    def test_zero_disables_the_schedule(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=0))
+        self.assertFalse(settings.due(0))
+        self.assertFalse(settings.due(1000))
+
+    def test_a_changed_cadence_restarts_from_the_change(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=100))
+        settings.mark_saved(100)
+        adopted = settings.adopt({"save_every_n_steps": 50, "sampling_enabled": True}, global_step=120)
+        self.assertIsNot(adopted, settings)
+        self.assertEqual(adopted.next_save_step, 170)
+        self.assertFalse(adopted.due(169))
+        self.assertTrue(adopted.due(170))
+
+    def test_adopting_nothing_keeps_the_same_object(self):
+        settings = control.LiveSettings.from_config(self._config())
+        self.assertIs(settings.adopt(None, 10), settings)
+        self.assertIs(
+            settings.adopt({"save_every_n_steps": 100, "sampling_enabled": True}, 10),
+            settings,
+        )
+
+    def test_the_switch_can_change_on_its_own(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=100))
+        adopted = settings.adopt({"save_every_n_steps": 100, "sampling_enabled": False}, 30)
+        self.assertFalse(adopted.sampling_enabled)
+        # Only the switch moved, so the schedule does not restart.
+        self.assertEqual(adopted.next_save_step, 100)
+
+    def test_a_corrupt_request_is_ignored(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=100))
+        adopted = settings.adopt({"save_every_n_steps": "soon", "sampling_enabled": True}, 30)
+        self.assertEqual(adopted.save_every_n_steps, 100)
+
+    def test_read_settings_needs_a_usable_file(self):
+        self.assertIsNone(control.read_settings())
+        control.settings_path().write_text("{not json", encoding="utf-8")
+        self.assertIsNone(control.read_settings())
+        control.settings_path().write_text('{"sampling_enabled": false}', encoding="utf-8")
+        self.assertIsNone(control.read_settings())
+
+    def test_request_settings_merges_and_resets(self):
+        self.assertEqual(
+            control.request_settings(save_every_n_steps=40),
+            {"save_every_n_steps": 40, "sampling_enabled": True},
+        )
+        self.assertEqual(
+            control.request_settings(sampling_enabled=False),
+            {"save_every_n_steps": 40, "sampling_enabled": False},
+        )
+        self.assertEqual(
+            control.request_settings(save_every_n_steps=-5)["save_every_n_steps"],
+            0,
+        )
+
+    def test_publish_settings_lands_in_the_state_block(self):
+        settings = control.LiveSettings.from_config(self._config(save_every_n_steps=7))
+        control.publish_settings(settings)
+        self.assertEqual(
+            control.read_state()["settings"],
+            {"save_every_n_steps": 7, "sampling_enabled": True, "next_save_step": 7},
+        )
+        # The other blocks of the state file survive a settings publish.
+        control.write_state({"status": "training", "training": {"step": 12}}, force=True)
+        control.publish_settings(settings)
+        loaded = control.read_state()
+        self.assertEqual(loaded["training"]["step"], 12)
+        self.assertEqual(loaded["settings"]["save_every_n_steps"], 7)
+
+    def test_reset_clears_the_request(self):
+        control.request_settings(save_every_n_steps=33)
+        control.reset_to_idle()
+        self.assertIsNone(control.read_settings())
+        self.assertFalse(control.settings_path().exists())
+        self.assertEqual(control.read_state()["settings"]["save_every_n_steps"], 0)
 
 
 class FilenameTest(unittest.TestCase):

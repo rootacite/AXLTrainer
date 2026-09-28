@@ -225,8 +225,12 @@ Params:
 `network_alpha`, base model) come from the checkpoint's own kohya metadata so an old checkpoint is
 sampled with the settings it was trained with.
 
-Refused with an error when the trainer process is alive (running **or** paused — the GPU is single
-tenant), when a generation for the run is already `running`, or when a value is out of range.
+Refused with an error while a live trainer is using the GPU (`starting`, `encoding`, `training`,
+`sampling`, `pausing`, `resuming`, `stopping`), when any generation is already `running` (the GPU is
+single tenant, whatever run the other job belongs to), or when a value is out of range. A **paused**
+run does not block it: pause has offloaded the UNet, both text encoders, the optimizers and the VAE
+to CPU. `train_resume` is refused while a generation is running, so resuming cannot put a second SDXL
+on the card.
 
 Result:
 
@@ -235,6 +239,7 @@ Result:
   "job": {
     "id": "rein_s000100_gen_20260915_161123",
     "state": "running",
+    "mode": "single",
     "run_id": "rein_20260911_120000",
     "output_name": "rein",
     "checkpoint": "/out/rein_20260911_120000/rein_s000100/rein.safetensors",
@@ -249,6 +254,9 @@ Result:
     "current_step": 0,
     "total_steps": 20,
     "image_path": null,
+    "files": [],
+    "images_done": 0,
+    "total_images": 1,
     "error": null,
     "pid": 12345,
     "started_at": 1757500000.0
@@ -256,6 +264,37 @@ Result:
   "log_path": "/out/rein_20260911_120000/rein_samples/generated/rein_s000100_gen_20260915_161123.log"
 }
 ```
+
+`mode` is `single` here. `files` (every image, in render order), `images_done` and `total_images`
+matter for `generate_checkpoint_samples`, which renders one image per sample set and repeat.
+
+### `generate_checkpoint_samples`
+
+Renders the checkpoint's `[[validation.samples]]` sets as one detached job — the "sample this
+checkpoint" action the Dashboard offers per checkpoint. Prompts, `width`/`height`, `steps`,
+`guidance_scale`, `seed` and `repeat` come from `config.toml` (the same logic a training sample point
+uses, seed `0` = a fresh random seed per image); network type / dim / alpha, `conv_dim` / `conv_alpha`,
+`clip_skip`, `max_token_length` and the base model come from the checkpoint's own kohya metadata, as
+in `generate_sample`.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checkpoint` | string | Yes | Path to a `.safetensors` LoRA file (any run's). |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`. |
+
+Images land in `{output_dir}/{run_id}/{output_name}_samples/generated/` as
+`{job_id}_p{set}_{repeat}.png` — sets counting from zero, like the run's own
+`{output_name}_{step:06d}_p{set}_{repeat}.png` samples — so a training-produced sample is never
+overwritten and a `Pn` badge can be shown. The job record is the same shape as `generate_sample`'s
+with `mode: "sets"`, a `sample_sets` copy of what is being rendered, and `total_images` =
+Σ `repeat`.
+
+Refused under the same GPU rules as `generate_sample`, plus when `config.toml` has no usable
+`[[validation.samples]]` set.
+
+Result: the same `{job, log_path}` shape, with `mode: "sets"`.
 
 ### `list_generated_samples`
 
@@ -273,6 +312,7 @@ Result:
     {
       "id": "rein_s000100_gen_20260915_161123",
       "state": "done",
+      "mode": "single",
       "step": 100,
       "cfg": 5.0,
       "steps": 20,
@@ -280,6 +320,9 @@ Result:
       "current_step": 20,
       "total_steps": 20,
       "image_path": "/out/rein_20260911_120000/rein_samples/generated/rein_s000100_gen_20260915_161123.png",
+      "files": [],
+      "images_done": 0,
+      "total_images": 1,
       "error": null
     }
   ]
@@ -342,11 +385,15 @@ Pause/resume is a GPU swap process. While `pausing` or `resuming`, `swap` is `{s
 
 While sampling, `sampling` is `{active, repeat, repeats, denoise_step, denoise_steps, global_step, prompt_set, prompt_sets}`: `repeat`/`repeats` count the images of the whole pass (all `[[validation.samples]]` sets) and `prompt_set`/`prompt_sets` are 1-based (both `0` for a run with no sets).
 
+`settings` is `{save_every_n_steps, sampling_enabled, next_save_step}`: the checkpoint cadence, the sampling switch and the step the next checkpoint is written at, as the trainer is actually running them. It starts from `config.toml` and follows `train_settings` (below); `next_save_step` moves whenever a checkpoint is written, and a cadence change restarts it from the step that adopted the change (`0` = no checkpoint is scheduled).
+
 ### `train_start`
 
 Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does not stop training. Stdout/stderr append to `train.log` in the runtime dir.
 
 Params: `{}`
+
+It also publishes `[training].save_every_n_steps` / `sampling_enabled` as this run's `settings` (and into `settings.json`), so the dashboard shows the run's cadence from the moment Start is pressed rather than the empty placeholder.
 
 Fails if a live training PID already exists, including a process that has already marked `finished` but has not exited yet. Also fails synchronously — before any GPU work — when `[training].resume_lora_path` is set but does not resolve to a `.safetensors` file, when that file's `ss_network_type` does not match `[network].network_type`, and when `[environment].amdfq` is `tail` or `vmm` but the corresponding `target/release/libamdfq_*_rs.so` is missing.
 
@@ -356,9 +403,31 @@ Writes `command.json` (`pause` | `resume` | `stop`). The trainer consumes it at 
 
 Params: `{}`
 
-Fails if no live training PID.
+Fails if no live training PID. `train_resume` additionally fails while a `generate_sample` /
+`generate_checkpoint_samples` job is running, because resuming would load a second SDXL next to the
+generator.
 
 Pause offloads UNet / text encoders / optimizer state / VAE to CPU and `empty_cache`s. Resume reloads what the paused phase needs. Early-stop during encoding does not save a LoRA; during training it saves `{output_name}.safetensors` if that step has no checkpoint yet; during sampling it skips leftover repeats (the step checkpoint already exists).
+
+### `train_settings`
+
+Retunes the run in progress: the checkpoint cadence, the sampling switch, or both. `train_start`
+seeds the request from `config.toml`, so a change made here lasts for this run only — the file keeps
+the value the next run starts from.
+
+Params (at least one):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `save_every_n_steps` | integer | No | `>= 1` (or `0` to stop writing checkpoints). The next checkpoint is written `N` steps after the step that adopts the change. |
+| `sampling_enabled` | bool | No | Whether a checkpoint save also renders the `[[validation.samples]]` images. `false` = checkpoints only. |
+
+The request is written to `settings.json` in the runtime dir; the trainer adopts it at its next
+optimizer step (after a pause, at the step the run resumes with) and publishes the effective values
+back through `train_status.settings`. The reply is the `train_status` payload, which still carries
+the previous values until then.
+
+Fails if no live training PID, on an out-of-range value, and when neither field is given.
 
 ### `train_reset`
 

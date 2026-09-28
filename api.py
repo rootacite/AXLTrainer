@@ -30,11 +30,14 @@ from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
     LIVE_STATUSES,
+    LiveSettings,
     is_pid_alive,
     log_path,
     mark_starting,
+    publish_settings,
     reconcile,
     request as request_train_command,
+    request_settings,
     reset_to_idle,
     status_payload,
 )
@@ -54,6 +57,15 @@ _TAG_BLOCKED = frozenset(
     }
 )
 from trainer.loss_log import synthesize_avg_loss
+
+
+def _gpu_busy(current: dict[str, Any]) -> bool:
+    """True while a live trainer is using the GPU.
+
+    `paused` is deliberately free: pause has offloaded the UNet, both text encoders, the
+    optimizers and the VAE to CPU, so a one-off generation can run next to it.
+    """
+    return current.get("status") in _TAG_BLOCKED and is_pid_alive(current.get("pid"))
 
 
 def _json_safe(value: Any) -> Any:
@@ -337,6 +349,13 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
     except (FileNotFoundError, ValueError) as exc:
         raise ValueError(str(exc)) from exc
 
+    # A fresh run starts from config.toml: whatever the last run was tuned to must not leak in.
+    start_settings = LiveSettings.from_config(cfg_obj)
+    request_settings(
+        save_every_n_steps=start_settings.save_every_n_steps,
+        sampling_enabled=start_settings.sampling_enabled,
+    )
+
     cfg = _train_config_dict()
     output_name = str(cfg.get("output_name") or "default")
     log_file = log_path()
@@ -351,6 +370,9 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
     mark_starting(proc.pid, output_name)
+    # `mark_starting` cleared the state, so publish the values this run will use right away: the
+    # card would otherwise read the empty placeholder until the trainer's first optimizer step.
+    publish_settings(start_settings)
     return status_payload()
 
 
@@ -369,6 +391,14 @@ def handle_train_pause(_params: dict[str, Any]) -> dict[str, Any]:
 
 def handle_train_resume(_params: dict[str, Any]) -> dict[str, Any]:
     _require_alive()
+    # A one-off generation may have been started while the run was paused; resuming now would
+    # put a second SDXL on the same card.
+    running = _running_generation(_output_dir(_train_config_dict()))
+    if running is not None:
+        raise ValueError(
+            f"a sample generation is using the GPU ({running.get('id')}); "
+            "wait for it to finish, then resume"
+        )
     request_train_command("resume")
     return status_payload()
 
@@ -376,6 +406,31 @@ def handle_train_resume(_params: dict[str, Any]) -> dict[str, Any]:
 def handle_train_stop(_params: dict[str, Any]) -> dict[str, Any]:
     _require_alive()
     request_train_command("stop")
+    return status_payload()
+
+
+def handle_train_settings(params: dict[str, Any]) -> dict[str, Any]:
+    """Change the checkpoint cadence / sampling switch of the run in progress.
+
+    The request lands in the runtime `settings.json`; the trainer adopts it at its next
+    optimizer step and publishes the effective values back through `state.json`, which is what
+    the dashboard shows. Nothing is written to `config.toml`: the next run starts from the file.
+    """
+    _require_alive()
+    steps = params.get("save_every_n_steps")
+    if steps is not None:
+        try:
+            steps = int(steps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("save_every_n_steps must be an integer") from exc
+        if steps < 0:
+            raise ValueError("save_every_n_steps must be >= 0 (0 disables checkpoints)")
+    enabled = params.get("sampling_enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        raise ValueError("sampling_enabled must be a boolean")
+    if steps is None and enabled is None:
+        raise ValueError("nothing to change: pass save_every_n_steps and/or sampling_enabled")
+    request_settings(save_every_n_steps=steps, sampling_enabled=enabled)
     return status_payload()
 
 
@@ -508,6 +563,34 @@ def _samples_dir(cfg: dict[str, Any], run_id: str, output_name: str) -> Path:
     return find_samples_dir(output_dir / str(run_id), output_name)
 
 
+def _output_dir(cfg: dict[str, Any]) -> Path:
+    return Path(str(cfg.get("output_dir") or ".")).expanduser()
+
+
+def _running_generation(output_dir: Path) -> Optional[dict[str, Any]]:
+    """Any generation job still running under `output_dir`, whatever run it belongs to.
+
+    The GPU is single-tenant, so a job started for another run blocks a new one just as much as
+    a job of the run being viewed. A job whose process is gone is closed as an error on the way
+    past, or a kill would block generations forever.
+    """
+    if not output_dir.is_dir():
+        return None
+    for spec in sorted(output_dir.glob("*/*_samples/generated/*.json")):
+        job = genjob.read_job(spec)
+        if job is None or job.get("state") != genjob.STATE_RUNNING:
+            continue
+        if is_pid_alive(job.get("pid")):
+            return job
+        genjob.update_job(
+            spec.parent,
+            str(job.get("id") or spec.stem),
+            state=genjob.STATE_ERROR,
+            error="the generator exited before finishing (see the job's .log)",
+        )
+    return None
+
+
 def _generated_dir(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[tuple[str, str, Path]]:
     """(run_id, output_name, generated dir) for the resolved run, or None when no run exists."""
     run_id, output_name = _resolve_run(params, cfg)
@@ -546,17 +629,34 @@ def _generator_script() -> Path:
     return script
 
 
-def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
-    """Start one "sample with this checkpoint" job. Returns immediately; Ranko follows the job file.
+def _spawn_generator(generated: Path, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Write the job file, start `generate_sample.py` detached on it, return (job, log path)."""
+    spec_path = genjob.job_path(generated, job["id"])
+    log = genjob.log_path(generated, job["id"])
+    # Write the record before spawning so a click that arrives while the process starts still lists it.
+    genjob.write_job(generated, job)
+    with open(log, "w", encoding="utf-8") as handle:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(_generator_script()), "--spec", str(spec_path)],
+            cwd=str(_repo_root()),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    return genjob.update_job(generated, job["id"], pid=proc.pid), str(log)
 
-    The GPU is single-tenant: a live trainer (running *or* paused) refuses the request outright,
-    because a second SDXL would have to load into the same 16 GB.
+
+def _claim_generation(params: dict[str, Any]) -> tuple[dict[str, Any], str, str, Path, Path]:
+    """Shared gate + run/checkpoint resolution of both generation entry points.
+
+    Refuses while a live trainer is using the GPU (a paused one is fine) and while any other
+    generation is running, and returns (cfg, run_id, output_name, generated dir, checkpoint).
     """
     current = reconcile()
-    if is_pid_alive(current.get("pid")):
+    if _gpu_busy(current):
         raise ValueError(
-            "training is still running; finish or stop the run before generating "
-            "(the GPU is in use)"
+            "training is using the GPU; pause the run (or stop it) before generating samples"
         )
 
     cfg = _train_config_dict()
@@ -568,6 +668,20 @@ def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
     checkpoint = Path(str(params.get("checkpoint") or "")).expanduser()
     if not checkpoint.is_file():
         raise ValueError(f"not a checkpoint file: {checkpoint}")
+
+    running = _running_generation(_output_dir(cfg))
+    if running is not None:
+        raise ValueError(f"a generation is already running ({running.get('id')})")
+    return cfg, run_id, output_name, generated, checkpoint
+
+
+def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
+    """Start one "sample with this checkpoint" job. Returns immediately; Ranko follows the job file.
+
+    The image keeps its own prompt/CFG/seed and lands in the run's `_samples/generated/`; the
+    config's `[[validation.samples]]` sets are what `generate_checkpoint_samples` renders.
+    """
+    cfg, run_id, output_name, generated, checkpoint = _claim_generation(params)
 
     first_set = _sample_sets_payload()
     defaults = first_set[0] if first_set else {"prompt": None}
@@ -585,41 +699,47 @@ def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
     )
 
     generated.mkdir(parents=True, exist_ok=True)
-    # Reconcile first: a generator killed with its job still `running` must not block this one.
-    running = next(
-        (job for job in _reconcile_generated(generated) if job.get("state") == genjob.STATE_RUNNING),
-        None,
-    )
-    if running is not None:
-        raise ValueError(f"a generation is already running ({running.get('id')})")
-
     job = genjob.new_job(
         request,
         run_id=run_id,
         output_name=output_name,
         checkpoint=str(checkpoint),
     )
-    spec_path = genjob.job_path(generated, job["id"])
-    log = genjob.log_path(generated, job["id"])
+    job, log = _spawn_generator(generated, job)
+    return {"job": _json_safe(job), "log_path": log}
 
-    # Write the record before spawning so a click that arrives while the process starts still lists it.
-    genjob.write_job(generated, job)
-    with open(log, "w", encoding="utf-8") as handle:
-        proc = subprocess.Popen(
-            [sys.executable, "-u", str(_generator_script()), "--spec", str(spec_path)],
-            cwd=str(_repo_root()),
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        )
-    job = genjob.update_job(generated, job["id"], pid=proc.pid)
-    return {"job": _json_safe(job), "log_path": str(log)}
+
+def handle_generate_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]:
+    """Render this checkpoint's `[[validation.samples]]` sets as one detached job.
+
+    This is the "one checkpoint, one full sample pass" the Dashboard offers for any checkpoint
+    once the GPU is free. Prompts, size, steps, CFG, seed and repeat come from `config.toml`;
+    network type/dim/alpha, `clip_skip`, `max_token_length` and the base model come from the
+    checkpoint's own metadata. Images land in `_samples/generated/` next to the run's own
+    samples, so a training-produced sample is never overwritten.
+    """
+    cfg, run_id, output_name, generated, checkpoint = _claim_generation(params)
+
+    sets = resolve_sample_sets(_train_config_dict())
+    if not sets:
+        raise ValueError("config.toml has no [[validation.samples]] sets to render")
+
+    generated.mkdir(parents=True, exist_ok=True)
+    job = genjob.new_job(
+        {},
+        run_id=run_id,
+        output_name=output_name,
+        checkpoint=str(checkpoint),
+        mode=genjob.MODE_SETS,
+        total_images=sum(sample_set.repeat for sample_set in sets),
+        extra={"sample_sets": [asdict(sample_set) for sample_set in sets]},
+    )
+    job, log = _spawn_generator(generated, job)
+    return {"job": _json_safe(job), "log_path": log}
 
 
 def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
-    current = reconcile()
-    if current.get("status") in _TAG_BLOCKED and is_pid_alive(current.get("pid")):
+    if _gpu_busy(reconcile()):
         raise ValueError("cannot tag while training is using the GPU")
 
     cfg = _train_config_dict()
@@ -1220,10 +1340,12 @@ _HANDLERS = {
     "train_pause": handle_train_pause,
     "train_resume": handle_train_resume,
     "train_stop": handle_train_stop,
+    "train_settings": handle_train_settings,
     "train_reset": handle_train_reset,
     "dataset_tag": handle_dataset_tag,
     "hardware_status": handle_hardware_status,
     "generate_sample": handle_generate_sample,
+    "generate_checkpoint_samples": handle_generate_checkpoint_samples,
     "list_generated_samples": handle_list_generated_samples,
     "config_get": handle_config_get,
     "config_save": handle_config_save,
@@ -1274,9 +1396,11 @@ _CONTROL_METHODS = frozenset(
         "train_pause",
         "train_resume",
         "train_stop",
+        "train_settings",
         "train_reset",
         "dataset_tag",
         "generate_sample",
+        "generate_checkpoint_samples",
         "config_save",
         "profile_save",
         "profile_delete",

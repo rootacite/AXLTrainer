@@ -725,15 +725,25 @@ class GeneratedSampleIpcTest(unittest.TestCase):
         self.assertEqual(stored["seed"], 11)
         self.assertEqual((stored["width"], stored["height"]), (640, 960))
 
-    def test_refuses_while_the_trainer_is_alive(self):
+    def test_refuses_while_the_gpu_is_busy(self):
         from trainer import control
 
-        for status in ("training", "sampling", "paused"):
+        for status in ("starting", "encoding", "training", "sampling", "pausing", "resuming", "stopping"):
             with self.subTest(status=status):
                 control.write_state({"status": status, "pid": os.getpid()}, force=True)
                 with self.assertRaises(ValueError) as ctx:
                     api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
-                self.assertIn("GPU is in use", str(ctx.exception))
+                self.assertIn("GPU", str(ctx.exception))
+
+    def test_generating_is_allowed_while_paused(self):
+        """Pause has offloaded every module, so a one-off image can use the card next to it."""
+        from trainer import control
+
+        control.write_state({"status": "paused", "pid": os.getpid()}, force=True)
+        result = self._spawn()
+        self.popen.assert_called_once()
+        self.assertEqual(result["job"]["state"], "running")
+        self.assertEqual(result["job"]["checkpoint"], str(self.checkpoint))
 
     def test_refuses_a_second_job_while_one_runs(self):
         self._write_job("live_gen_1", pid=os.getpid())
@@ -769,6 +779,114 @@ class GeneratedSampleIpcTest(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
             self.assertIn("no run", str(ctx.exception))
+
+    def test_checkpoint_samples_spawn_a_sets_job(self):
+        self.cfg["samples"] = [
+            {"prompt": "set one", "steps": 9, "repeat": 2},
+            {"prompt": "set two", "steps": 40, "repeat": 3},
+        ]
+        result = api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual(stored["mode"], "sets")
+        self.assertEqual(stored["state"], "running")
+        self.assertEqual(stored["total_images"], 5)
+        self.assertEqual(stored["images_done"], 0)
+        self.assertEqual(stored["files"], [])
+        self.assertEqual(stored["checkpoint"], str(self.checkpoint))
+        # The sets are recorded so the panel can show what the pass renders.
+        self.assertEqual([entry["steps"] for entry in stored["sample_sets"]], [9, 40])
+        self.assertIn("_sets_gen_", stored["id"])
+        self.assertEqual(result["job"]["id"], stored["id"])
+        self.popen.assert_called_once()
+
+    def test_checkpoint_samples_refuse_a_busy_gpu_and_a_second_job(self):
+        from trainer import control
+
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+        self.assertIn("GPU", str(ctx.exception))
+
+        control.write_state({"status": "finished", "pid": None}, force=True)
+        self._write_job("live_gen_1", pid=os.getpid())
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+        self.assertIn("already running", str(ctx.exception))
+
+    def test_checkpoint_samples_require_a_checkpoint_and_sets(self):
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples({"checkpoint": str(self.run_dir / "nope.safetensors")})
+        self.assertIn("not a checkpoint file", str(ctx.exception))
+
+        self.cfg["samples"] = [{"prompt": ""}]
+        with self.assertRaises(ValueError):
+            api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+
+    def test_resume_is_refused_while_a_generation_runs(self):
+        from trainer import control
+
+        control.write_state({"status": "paused", "pid": os.getpid()}, force=True)
+        self._write_job("live_gen_1", pid=os.getpid())
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_train_resume({})
+        self.assertIn("generation is using the GPU", str(ctx.exception))
+
+        # A job whose process is gone is closed as an error instead of blocking the resume.
+        self._write_job("live_gen_1", pid=999_999_999)
+        control.write_state({"status": "paused", "pid": os.getpid()}, force=True)
+        api.handle_train_resume({})
+        self.assertTrue(control.peek_command())
+
+    def test_train_settings_writes_the_request(self):
+        from trainer import control
+
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        result = api.handle_train_settings({"save_every_n_steps": 50, "sampling_enabled": False})
+        self.assertEqual(result["status"], "training")
+        self.assertEqual(control.read_settings(), {"save_every_n_steps": 50, "sampling_enabled": False})
+
+        # One field at a time keeps the other where it was.
+        api.handle_train_settings({"sampling_enabled": True})
+        self.assertEqual(control.read_settings(), {"save_every_n_steps": 50, "sampling_enabled": True})
+
+    def test_train_settings_validates_and_needs_a_live_run(self):
+        from trainer import control
+
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        for params, expected in (
+            ({"save_every_n_steps": -1}, ">= 0"),
+            ({"save_every_n_steps": "many"}, "integer"),
+            ({"sampling_enabled": "yes"}, "boolean"),
+            ({}, "nothing to change"),
+        ):
+            with self.subTest(params=params):
+                with self.assertRaises(ValueError) as ctx:
+                    api.handle_train_settings(params)
+                self.assertIn(expected, str(ctx.exception))
+
+        control.write_state({"status": "idle", "pid": None}, force=True)
+        with self.assertRaises(ValueError):
+            api.handle_train_settings({"save_every_n_steps": 10})
+
+    def test_a_generation_from_another_run_blocks_a_new_one(self):
+        """The GPU is single-tenant whatever run the job belongs to."""
+        from trainer import genjob
+
+        other = self.out / "elsewhere_20260910_120000" / "elsewhere_samples" / "generated"
+        other.mkdir(parents=True)
+        job = genjob.new_job(
+            {"prompt": "p", "cfg": 5.0, "steps": 4, "seed": 1, "width": 512, "height": 512},
+            run_id="elsewhere_20260910_120000",
+            output_name="elsewhere",
+            checkpoint=str(self.checkpoint),
+            pid=os.getpid(),
+        )
+        genjob.write_job(other, job)
+
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
+        self.assertIn("already running", str(ctx.exception))
 
 
 class DatasetTagIpcTest(unittest.TestCase):

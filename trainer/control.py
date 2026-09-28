@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -72,6 +73,11 @@ def command_path() -> Path:
     return runtime_dir() / "command.json"
 
 
+def settings_path() -> Path:
+    """The trainer's live cadence / sampling switch, written by api.py and read every step."""
+    return runtime_dir() / "settings.json"
+
+
 def lock_path() -> Path:
     return runtime_dir() / "train.lock"
 
@@ -109,6 +115,7 @@ def default_state() -> dict[str, Any]:
             "global_step": 0,
         },
         "swap": None,
+        "settings": {"save_every_n_steps": 0, "sampling_enabled": True, "next_save_step": 0},
         "error": None,
         "detail": None,
     }
@@ -152,7 +159,7 @@ def read_state() -> dict[str, Any]:
         return default_state()
     merged = default_state()
     merged.update(raw)
-    for key in ("encoding", "training", "sampling"):
+    for key in ("encoding", "training", "sampling", "settings"):
         base = default_state()[key]
         value = raw.get(key)
         if isinstance(value, dict):
@@ -167,7 +174,7 @@ def write_state(updates: Optional[dict[str, Any]] = None, *, force: bool = False
         state = _ensure_state()
         if updates:
             for key, value in updates.items():
-                if key in ("encoding", "training", "sampling") and isinstance(value, dict):
+                if key in ("encoding", "training", "sampling", "settings") and isinstance(value, dict):
                     current = state.get(key)
                     if not isinstance(current, dict):
                         current = default_state()[key]
@@ -309,6 +316,9 @@ def reset_to_idle() -> dict[str, Any]:
             command.unlink()
         except OSError:
             pass
+    # A request left over from the finished run must not shape the next one; `train_start`
+    # writes the new run's own values.
+    clear_settings()
     return write_state(_state, force=True)
 
 
@@ -425,6 +435,131 @@ def set_swap(stage: str, detail: str, current: int, total: int) -> None:
 
 def clear_swap() -> None:
     write_state({"swap": None}, force=True)
+
+
+@dataclass
+class LiveSettings:
+    """The checkpoint cadence and sampling switch a run is running with.
+
+    `next_save_step` is the global step that writes the next checkpoint, not a modulo of the
+    cadence: adopting a new cadence at step S makes the next checkpoint `S + N`, so "every N
+    steps" always means "N steps from the change" and a changed cadence is never silently
+    skipped. Untouched, the sequence stays N, 2N, 3N…, i.e. what the modulo rule produced.
+    """
+
+    save_every_n_steps: int = 0
+    sampling_enabled: bool = True
+    next_save_step: int = 0
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "LiveSettings":
+        steps = max(0, int(getattr(cfg, "save_every_n_steps", 0) or 0))
+        return cls(
+            save_every_n_steps=steps,
+            sampling_enabled=bool(getattr(cfg, "sampling_enabled", True)),
+            next_save_step=steps,
+        )
+
+    def adopt(self, requested: Optional[dict[str, Any]], global_step: int) -> "LiveSettings":
+        """`self`, or the settings `requested` asks for when they differ (None = nothing asked).
+
+        Only a cadence change moves the schedule: flipping the sampling switch leaves the step
+        of the next checkpoint where it was.
+        """
+        if not isinstance(requested, dict):
+            return self
+        try:
+            steps = max(0, int(requested.get("save_every_n_steps", self.save_every_n_steps)))
+        except (TypeError, ValueError):
+            steps = self.save_every_n_steps
+        enabled = bool(requested.get("sampling_enabled", self.sampling_enabled))
+        if steps == self.save_every_n_steps and enabled == self.sampling_enabled:
+            return self
+        if steps == self.save_every_n_steps:
+            next_save_step = self.next_save_step
+        else:
+            next_save_step = (global_step + steps) if steps > 0 else 0
+        return LiveSettings(
+            save_every_n_steps=steps,
+            sampling_enabled=enabled,
+            next_save_step=next_save_step,
+        )
+
+    def due(self, global_step: int) -> bool:
+        return self.save_every_n_steps > 0 and global_step >= self.next_save_step
+
+    def mark_saved(self, global_step: int) -> None:
+        self.next_save_step = (
+            global_step + self.save_every_n_steps if self.save_every_n_steps > 0 else 0
+        )
+
+
+def _read_settings_file() -> Optional[dict[str, Any]]:
+    path = settings_path()
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def read_settings() -> Optional[dict[str, Any]]:
+    """The requested cadence / switch, which the trainer adopts at its next optimizer step.
+
+    None when nothing has been asked for (no file, or an unreadable one): the run then keeps
+    whatever `config.toml` (and the last adopted change) gave it.
+    """
+    raw = _read_settings_file()
+    if raw is None:
+        return None
+    try:
+        steps = max(0, int(raw.get("save_every_n_steps")))
+    except (TypeError, ValueError):
+        return None
+    return {"save_every_n_steps": steps, "sampling_enabled": bool(raw.get("sampling_enabled", True))}
+
+
+def request_settings(
+    *,
+    save_every_n_steps: Optional[int] = None,
+    sampling_enabled: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Record what the trainer should run with (api.py side). Unset fields keep their value."""
+    payload: dict[str, Any] = {}
+    current = _read_settings_file()
+    if isinstance(current, dict):
+        payload.update(current)
+    if save_every_n_steps is not None:
+        payload["save_every_n_steps"] = max(0, int(save_every_n_steps))
+    if sampling_enabled is not None:
+        payload["sampling_enabled"] = bool(sampling_enabled)
+    payload.setdefault("save_every_n_steps", 0)
+    payload.setdefault("sampling_enabled", True)
+    _atomic_write(settings_path(), payload)
+    return payload
+
+
+def publish_settings(settings: "LiveSettings") -> None:
+    """Publish the settings the trainer is actually running with (the dashboard reads these)."""
+    write_state(
+        {
+            "settings": {
+                "save_every_n_steps": int(settings.save_every_n_steps),
+                "sampling_enabled": bool(settings.sampling_enabled),
+                "next_save_step": int(settings.next_save_step),
+            }
+        },
+        force=True,
+    )
+
+
+def clear_settings() -> None:
+    try:
+        settings_path().unlink()
+    except OSError:
+        pass
 
 
 def _read_command_file() -> Optional[dict[str, Any]]:
