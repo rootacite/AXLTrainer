@@ -76,7 +76,7 @@ Params:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string \| null | No | Overrides `output_name` from config. |
-| `run_id` | string \| null | No | Run directory to read. Defaults to `state.json`'s `run_id`, then the newest run directory of the configured `output_name` under either root, then the newest run overall — which is what keeps a run whose `logging_dir` directory is gone (Reset used to delete it) readable. |
+| `run_id` | string \| null | No | Run directory to read. Defaults to `state.json`'s `run_id`; with no run recorded and no `name` there is no run to read, and `run_id` comes back `null`. A run the trainer never recorded is reached by name, or by its `run_id` — every run directory of either root is listed by `list_runs`, which is what keeps a run whose `logging_dir` directory is gone (Reset used to delete it) readable. |
 | `start_step` | integer \| null | No | Inclusive lower bound on metric steps. |
 | `end_step` | integer \| null | No | Inclusive upper bound on metric steps. |
 

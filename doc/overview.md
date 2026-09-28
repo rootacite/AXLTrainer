@@ -35,7 +35,7 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 - **Ranko** starts `api.py --websocket` if nothing is listening, then talks JSON-RPC on `ws://127.0.0.1:18765`. After connect it does not open trainer files itself. All control goes through `api.py`.
 - **Training** is spawned by `api.py` via `bash start_train.sh` in a new session (`setsid`). It is **detached**: closing Ranko does not stop training.
 - The running trainer publishes its state to a **runtime directory** (`$AXL_RUNTIME_DIR` → `$XDG_RUNTIME_DIR/axltrainer` → `/tmp/axltrainer-$UID`) as `state.json` (status + progress), `command.json` (one-shot pause/resume/stop commands), and `train.lock` (single-run lock). `api.py` reads `state.json` and writes `command.json` on the trainer's behalf.
-- Training metrics go to **TensorBoard** under `logging_dir/{run_id}/`, and sample images land in `output_dir/{run_id}/{output_name}_samples/`, where `run_id` is the `{output_name}_{YYYYMMDD_HHMMSS}` directory created for that run. `api.py` reads both to serve `dashboard` / `list_samples`, resolving the run id from the request, `state.json`, or the newest run directory.
+- Training metrics go to **TensorBoard** under `logging_dir/{run_id}/`, and sample images land in `output_dir/{run_id}/{output_name}_samples/`, where `run_id` is the `{output_name}_{YYYYMMDD_HHMMSS}` directory created for that run. `api.py` reads both to serve `dashboard` / `list_samples`, resolving the run id from the request, from `state.json`, or — for a request that names a run — from the newest run directory of that `output_name`.
 
 ## Repository layout
 
