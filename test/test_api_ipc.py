@@ -1,7 +1,9 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,8 +15,13 @@ import torch
 # `unittest discover -s test` does from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# `api.subprocess` *is* the subprocess module, so the spawn tests' `mock.patch.object(api.subprocess,
+# "Popen")` replaces it globally; the tests that need a real child process keep this reference.
+REAL_POPEN = subprocess.Popen
+
 import api
 from trainer import config as trainer_config
+from trainer import genjob
 from trainer.loss_log import LossRecorder, synthesize_avg_loss
 
 
@@ -856,6 +863,260 @@ class GeneratedSampleIpcTest(unittest.TestCase):
         self.cfg["samples"] = [{"prompt": ""}]
         with self.assertRaises(ValueError):
             api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+
+    def _checkpoint_dir(self, step: int):
+        """A real checkpoint directory (`{name}_s{step:06d}`) with a safetensors file in it."""
+        from safetensors.torch import save_file
+
+        import torch
+
+        target = self.run_dir / f"rein_s{step:06d}" / "rein.safetensors"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(target),
+            metadata={"ss_steps": str(step)},
+        )
+        return target
+
+    def test_a_batch_covers_the_checkpoints_inside_the_range(self):
+        for step in (100, 200):
+            self._checkpoint_dir(step)
+        self.cfg["samples"] = [
+            {"prompt": "a", "steps": 9, "repeat": 2},
+            {"prompt": "b", "steps": 9, "repeat": 1},
+        ]
+
+        result = api.handle_generate_checkpoint_samples_batch({"from_step": 150, "to_step": 250})
+        stored = self._spec_written_by_last_spawn()
+
+        self.assertEqual(stored["mode"], "batch")
+        self.assertEqual(stored["state"], "running")
+        self.assertEqual((stored["from_step"], stored["to_step"]), (150, 250))
+        self.assertEqual([entry["step"] for entry in stored["checkpoints"]], [200])
+        self.assertEqual(stored["total_checkpoints"], 1)
+        # One checkpoint × 3 images, and nothing rendered yet.
+        self.assertEqual(stored["total_images"], 3)
+        self.assertEqual(stored["images_done"], 0)
+        self.assertEqual(stored["checkpoint_index"], 0)
+        self.assertEqual(stored["job_ids"], [])
+        self.assertEqual(stored["failed"], [])
+        self.assertIn("_batch_gen_", stored["id"])
+        self.assertEqual(result["job"]["id"], stored["id"])
+        self.popen.assert_called_once()
+
+    def test_a_batch_runs_oldest_step_first(self):
+        for step in (300, 100, 200):
+            self._checkpoint_dir(step)
+        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 500})
+        stored = self._spec_written_by_last_spawn()
+        # Oldest step first, and the fixture's own step-3050 checkpoint is outside the range.
+        self.assertEqual([entry["step"] for entry in stored["checkpoints"]], [100, 200, 300])
+
+    def test_a_batch_leaves_out_another_runs_checkpoints(self):
+        self._checkpoint_dir(100)
+        other = self.out / "elsewhere_20260910_120000" / "rein_s00200"
+        other.mkdir(parents=True)
+        (other / "rein.safetensors").write_bytes(b"not a checkpoint")
+        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+
+        api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 150})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual([entry["step"] for entry in stored["checkpoints"]], [100])
+
+    def test_a_batch_validates_its_range_before_spawning(self):
+        self._checkpoint_dir(100)
+        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        cases = [
+            ({"from_step": "x", "to_step": 10}, "from_step must be an integer"),
+            ({"from_step": -1, "to_step": 10}, "from_step must be >= 0"),
+            ({"from_step": 20, "to_step": 10}, "must not be greater"),
+            ({}, "from_step must be an integer"),
+        ]
+        for params, expected in cases:
+            with self.subTest(params=params):
+                with self.assertRaises(ValueError) as ctx:
+                    api.handle_generate_checkpoint_samples_batch(params)
+                self.assertIn(expected, str(ctx.exception))
+
+        # A range with nothing in it, and a config with no sets to render.
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples_batch({"from_step": 500, "to_step": 600})
+        self.assertIn("no checkpoints between step 500 and 600", str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_a_batch_shares_the_gpu_gate(self):
+        from trainer import control
+
+        self._checkpoint_dir(100)
+        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 200})
+        self.assertIn("GPU", str(ctx.exception))
+
+        control.write_state({"status": "finished", "pid": None}, force=True)
+        self._write_job("live_gen_1", pid=os.getpid())
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 200})
+        self.assertIn("already running", str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_a_batch_record_names_no_images_of_its_own(self):
+        """The images belong to the per-checkpoint jobs, so a batch never renders as an image."""
+        from trainer import genjob as genjob_module
+
+        job = genjob_module.new_batch_job(
+            run_id=self.RUN_ID,
+            output_name="rein",
+            checkpoints=[{"path": "/out/rein_s000100/rein.safetensors", "step": 100}],
+            from_step=100,
+            to_step=100,
+            images_per_checkpoint=1,
+        )
+        self.assertEqual(job["mode"], genjob_module.MODE_BATCH)
+        self.assertNotIn("files", job)
+        self.assertNotIn("image_path", job)
+
+    def _sleeping_generator(self, job_id: str = "live_gen_1"):
+        """A stand-in for a generator: a real process in its own session, recorded as a job."""
+        child = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        self._write_job(job_id, pid=child.pid)
+        return child
+
+    @staticmethod
+    def _wait_gone(pid: int, timeout: float = 10.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                Path(f"/proc/{pid}/stat").read_text()
+            except OSError:
+                return True
+            try:
+                state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
+            except (OSError, IndexError):
+                return True
+            if state == "Z":  # killed and unreaped: it is no longer running
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_cancel_asks_the_running_generation_to_stop(self):
+        child = self._sleeping_generator()
+        try:
+            result = api.handle_cancel_generation({})
+            self.assertTrue(result["cancelled"])
+            stored = json.loads(
+                genjob.job_path(self.generated, "live_gen_1").read_text(encoding="utf-8")
+            )
+            # Still `running` while the process winds down, so the card is not handed over yet.
+            self.assertEqual(stored["state"], "running")
+            self.assertTrue(stored["cancel_requested"])
+            self.assertTrue(self._wait_gone(child.pid))
+        finally:
+            child.wait()
+
+    def test_a_cancelled_job_closes_as_cancelled_once_the_process_is_gone(self):
+        from trainer import control
+
+        child = self._sleeping_generator()
+        try:
+            api.handle_cancel_generation({})
+            self._wait_gone(child.pid)
+            jobs = api.dispatch("list_generated_samples", {})["jobs"]
+            self.assertEqual(jobs[0]["state"], "cancelled")
+            self.assertIsNone(jobs[0]["error"])
+        finally:
+            child.wait()
+
+        # A job that died on its own is still an error.
+        self._write_job("dead_gen_1", pid=999_999_999)
+        jobs = api.dispatch("list_generated_samples", {})["jobs"]
+        states = {job["id"]: job["state"] for job in jobs}
+        self.assertEqual(states["dead_gen_1"], "error")
+
+    def test_a_cancelling_job_still_holds_the_card(self):
+        """A generator handles SIGTERM and finishes its step: until it is really gone, nothing else
+        may start on that card. (A process that dies at once frees it — see the close test.)"""
+        # The child says when it is ready: a SIGTERM that arrives before its handler is installed
+        # would kill it outright, and the card would legitimately be free.
+        ready = Path(self.tmp.name) / "stubborn.ready"
+        script = (
+            "import signal, time, pathlib; "
+            "signal.signal(signal.SIGTERM, lambda *a: None); "
+            f"pathlib.Path({str(ready)!r}).write_text('ready'); "
+            "time.sleep(60)"
+        )
+        child = REAL_POPEN([sys.executable, "-c", script], start_new_session=True)
+        deadline = time.time() + 10
+        while not ready.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(ready.exists(), "the stand-in generator never got ready")
+        self._write_job("stubborn_gen_1", pid=child.pid)
+        try:
+            api.handle_cancel_generation({})
+            with self.assertRaises(ValueError) as ctx:
+                api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+            self.assertIn("already running", str(ctx.exception))
+            self.popen.assert_not_called()
+        finally:
+            child.kill()
+            child.wait()
+
+    def test_cancel_refuses_when_nothing_runs(self):
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_cancel_generation({})
+        self.assertIn("no generation is running", str(ctx.exception))
+
+        self._write_job("done_gen_1", state="done")
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_cancel_generation({"id": "done_gen_1"})
+        self.assertIn("done_gen_1 is not running", str(ctx.exception))
+
+    def test_cancel_can_name_one_job(self):
+        first = self._sleeping_generator("first_gen_1")
+        second = self._sleeping_generator("second_gen_1")
+        try:
+            api.handle_cancel_generation({"id": "second_gen_1"})
+            recorded = {
+                job_id: json.loads(
+                    genjob.job_path(self.generated, job_id).read_text(encoding="utf-8")
+                )["cancel_requested"]
+                for job_id in ("first_gen_1", "second_gen_1")
+            }
+            self.assertEqual(recorded, {"first_gen_1": False, "second_gen_1": True})
+            self.assertTrue(self._wait_gone(second.pid))
+            self.assertIsNone(first.poll())
+        finally:
+            first.terminate()
+            first.wait()
+            second.wait()
+
+    def test_a_batch_is_cancellable_like_any_other_job(self):
+        from trainer import genjob as genjob_module
+
+        child = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        batch = genjob_module.new_batch_job(
+            run_id=self.RUN_ID,
+            output_name="rein",
+            checkpoints=[{"path": "/out/rein_s000100/rein.safetensors", "step": 100}],
+            from_step=100,
+            to_step=100,
+            images_per_checkpoint=1,
+        )
+        batch["pid"] = child.pid
+        genjob_module.write_job(self.generated, batch)
+        try:
+            api.handle_cancel_generation({"id": str(batch["id"])})
+            stored = json.loads(
+                genjob_module.job_path(self.generated, str(batch["id"])).read_text(encoding="utf-8")
+            )
+            self.assertTrue(stored["cancel_requested"])
+            self.assertEqual(stored["mode"], "batch")
+            self.assertTrue(self._wait_gone(child.pid))
+        finally:
+            child.wait()
 
     def test_resume_is_refused_while_a_generation_runs(self):
         from trainer import control

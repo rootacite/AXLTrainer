@@ -43,6 +43,7 @@ from trainer.control import (
     status_payload,
 )
 from trainer.hardware import collect_hardware_status
+from trainer import orphans
 from trainer.runs import find_samples_dir, list_runs, run_output_name, safe_name
 from trainer import automation, blobcodec, comfy, fsrpc, genjob
 
@@ -598,13 +599,17 @@ def _running_generation(output_dir: Path) -> Optional[dict[str, Any]]:
         if job is None or job.get("state") != genjob.STATE_RUNNING:
             continue
         if is_pid_alive(job.get("pid")):
+            # A cancel asked to stop is still using the card until its process is really gone.
             return job
-        genjob.update_job(
-            spec.parent,
-            str(job.get("id") or spec.stem),
-            state=genjob.STATE_ERROR,
-            error="the generator exited before finishing (see the job's .log)",
-        )
+        if job.get("cancel_requested"):
+            genjob.update_job(spec.parent, str(job.get("id") or spec.stem), state=genjob.STATE_CANCELLED, error=None)
+        else:
+            genjob.update_job(
+                spec.parent,
+                str(job.get("id") or spec.stem),
+                state=genjob.STATE_ERROR,
+                error="the generator exited before finishing (see the job's .log)",
+            )
     return None
 
 
@@ -616,16 +621,29 @@ def _generated_dir(params: dict[str, Any], cfg: dict[str, Any]) -> Optional[tupl
     return run_id, output_name, genjob.generated_dir(_samples_dir(cfg, run_id, output_name))
 
 
-def _reconcile_generated(generated: Path) -> list[dict[str, Any]]:
-    """A generator killed with its job still `running` (SIGKILL, reboot) must not block the next one."""
+def _close_dead_jobs(generated: Path) -> None:
+    """A generator whose process is gone must not leave its job `running`.
+
+    A job that was asked to cancel closes as `cancelled` (not a failure); anything else died on its
+    own and closes as `error` with the log to look at.
+    """
     for job in genjob.list_jobs(generated):
-        if job.get("state") == genjob.STATE_RUNNING and not is_pid_alive(job.get("pid")):
+        if job.get("state") != genjob.STATE_RUNNING or is_pid_alive(job.get("pid")):
+            continue
+        if job.get("cancel_requested"):
+            genjob.update_job(generated, str(job["id"]), state=genjob.STATE_CANCELLED, error=None)
+        else:
             genjob.update_job(
                 generated,
                 str(job["id"]),
                 state=genjob.STATE_ERROR,
                 error="the generator exited before finishing (see the job's .log)",
             )
+
+
+def _reconcile_generated(generated: Path) -> list[dict[str, Any]]:
+    """Every job of the run, with the ones whose generator is gone closed first."""
+    _close_dead_jobs(generated)
     return genjob.list_jobs(generated)
 
 
@@ -664,11 +682,11 @@ def _spawn_generator(generated: Path, job: dict[str, Any]) -> tuple[dict[str, An
     return genjob.update_job(generated, job["id"], pid=proc.pid), str(log)
 
 
-def _claim_generation(params: dict[str, Any]) -> tuple[dict[str, Any], str, str, Path, Path]:
-    """Shared gate + run/checkpoint resolution of both generation entry points.
+def _claim_generation_run(params: dict[str, Any]) -> tuple[dict[str, Any], str, str, Path]:
+    """Shared gate + run resolution of every generation entry point.
 
     Refuses while a live trainer is using the GPU (a paused one is fine) and while any other
-    generation is running, and returns (cfg, run_id, output_name, generated dir, checkpoint).
+    generation is running, and returns (cfg, run_id, output_name, generated dir).
     """
     current = reconcile()
     if _gpu_busy(current):
@@ -682,13 +700,19 @@ def _claim_generation(params: dict[str, Any]) -> tuple[dict[str, Any], str, str,
         raise ValueError("no run to attach the sample to; finish a run first")
     run_id, output_name, generated = resolved
 
-    checkpoint = Path(str(params.get("checkpoint") or "")).expanduser()
-    if not checkpoint.is_file():
-        raise ValueError(f"not a checkpoint file: {checkpoint}")
-
     running = _running_generation(_output_dir(cfg))
     if running is not None:
         raise ValueError(f"a generation is already running ({running.get('id')})")
+    return cfg, run_id, output_name, generated
+
+
+def _claim_generation(params: dict[str, Any]) -> tuple[dict[str, Any], str, str, Path, Path]:
+    """`_claim_generation_run` plus the checkpoint one of the two forms renders from."""
+    cfg, run_id, output_name, generated = _claim_generation_run(params)
+
+    checkpoint = Path(str(params.get("checkpoint") or "")).expanduser()
+    if not checkpoint.is_file():
+        raise ValueError(f"not a checkpoint file: {checkpoint}")
     return cfg, run_id, output_name, generated, checkpoint
 
 
@@ -753,6 +777,122 @@ def handle_generate_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]
         mode=genjob.MODE_SETS,
         total_images=sum(sample_set.repeat for sample_set in sets),
         extra={"sample_sets": [asdict(sample_set) for sample_set in sets]},
+    )
+    job, log = _spawn_generator(generated, job)
+    return {"job": _json_safe(job), "log_path": log}
+
+
+def _signal_generator(pid: Any) -> None:
+    """Ask one generator process (and its group) to stop, without touching anything else.
+
+    The generator is spawned with `start_new_session=True`, so its pid is its own process group
+    *and* its session — verified through `/proc` before signalling a group, because a reused pid
+    must not take an unrelated group down.
+    """
+    if not is_pid_alive(pid):
+        return
+    pid_i = int(pid)
+    if orphans.session_of(pid_i) == pid_i:
+        try:
+            os.killpg(pid_i, signal.SIGTERM)
+            return
+        except OSError:
+            pass
+    try:
+        os.kill(pid_i, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def handle_cancel_generation(params: dict[str, Any]) -> dict[str, Any]:
+    """Ask a running generation job to stop, the batch one included.
+
+    The job keeps its state until its process is gone (so the card can say `cancelling…` and no new
+    generation starts on the same card meanwhile); whatever images it had written stay in `files`.
+    No GPU gate: this has to work while the trainer is using the card.
+    """
+    cfg = _train_config_dict()
+    resolved = _generated_dir(params, cfg)
+    if resolved is None:
+        raise ValueError("no run to cancel a generation for")
+    _run_id, _output_name, generated = resolved
+
+    wanted = str(params.get("id") or "").strip()
+    job = next(
+        (
+            item
+            for item in _reconcile_generated(generated)
+            if item.get("state") == genjob.STATE_RUNNING and (not wanted or str(item.get("id")) == wanted)
+        ),
+        None,
+    )
+    if job is None:
+        if wanted:
+            raise ValueError(f"{wanted} is not running")
+        raise ValueError("no generation is running for this run")
+
+    _signal_generator(job.get("pid"))
+    updated = genjob.update_job(generated, str(job["id"]), cancel_requested=True)
+    return {"job": _json_safe(updated), "cancelled": True}
+
+
+def _range_bounds(params: dict[str, Any]) -> tuple[int, int]:
+    """`(from_step, to_step)` a batch covers, validated before any work is planned."""
+    bounds: list[int] = []
+    for key in ("from_step", "to_step"):
+        raw = params.get(key)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+        if value < 0:
+            raise ValueError(f"{key} must be >= 0")
+        bounds.append(value)
+    from_step, to_step = bounds
+    if from_step > to_step:
+        raise ValueError(f"from_step ({from_step}) must not be greater than to_step ({to_step})")
+    return from_step, to_step
+
+
+def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str, Any]:
+    """Render the config's sample sets for every checkpoint of one step range, in one job.
+
+    The run's own checkpoints whose step falls inside `from_step..to_step` are rendered oldest
+    first by a single detached process, which gives each of them its own `generate_checkpoint_samples`
+    job (so the images land beside the run's samples and are shown under that checkpoint's card).
+    """
+    cfg, run_id, output_name, generated = _claim_generation_run(params)
+    from_step, to_step = _range_bounds(params)
+
+    candidates = [
+        item
+        for item in discover_checkpoints(str(_output_dir(cfg)), output_name)
+        if item.get("run_id") == run_id
+        and item.get("step") is not None
+        and from_step <= int(item["step"]) <= to_step
+    ]
+    if not candidates:
+        raise ValueError(
+            f"no checkpoints between step {from_step} and {to_step} for this run"
+        )
+    candidates.sort(key=lambda item: (int(item["step"]), str(item["dir"])))
+
+    sets = resolve_sample_sets(_train_config_dict())
+    if not sets:
+        raise ValueError("config.toml has no [[validation.samples]] sets to render")
+    images_per_checkpoint = sum(sample_set.repeat for sample_set in sets)
+
+    generated.mkdir(parents=True, exist_ok=True)
+    job = genjob.new_batch_job(
+        run_id=run_id,
+        output_name=output_name,
+        checkpoints=[
+            {"path": str(item["path"]), "step": int(item["step"]), "dir": str(item["dir"])}
+            for item in candidates
+        ],
+        from_step=from_step,
+        to_step=to_step,
+        images_per_checkpoint=images_per_checkpoint,
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
@@ -1366,6 +1506,8 @@ _HANDLERS = {
     "hardware_status": handle_hardware_status,
     "generate_sample": handle_generate_sample,
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
+    "generate_checkpoint_samples_batch": handle_generate_checkpoint_samples_batch,
+    "cancel_generation": handle_cancel_generation,
     "list_generated_samples": handle_list_generated_samples,
     "config_get": handle_config_get,
     "config_save": handle_config_save,
@@ -1421,6 +1563,8 @@ _CONTROL_METHODS = frozenset(
         "dataset_tag",
         "generate_sample",
         "generate_checkpoint_samples",
+        "generate_checkpoint_samples_batch",
+        "cancel_generation",
         "config_save",
         "profile_save",
         "profile_delete",

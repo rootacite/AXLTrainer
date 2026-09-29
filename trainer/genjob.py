@@ -24,13 +24,18 @@ GENERATED_DIRNAME = "generated"
 STATE_RUNNING = "running"
 STATE_DONE = "done"
 STATE_ERROR = "error"
-STATES = (STATE_RUNNING, STATE_DONE, STATE_ERROR)
+# Asked to stop (a second `cancel_generation` or a stray signal) and finished stopping. A job that
+# is cancelled still keeps whatever `files` it had written; it is not a failure.
+STATE_CANCELLED = "cancelled"
+STATES = (STATE_RUNNING, STATE_DONE, STATE_ERROR, STATE_CANCELLED)
 
-# What one job renders: a single ad-hoc image with its own prompt, or every
-# `[[validation.samples]]` set of the config for one checkpoint.
+# What one job renders: a single ad-hoc image with its own prompt, every `[[validation.samples]]`
+# set of the config for one checkpoint, or that same sets pass for each checkpoint of a step range
+# (a batch, which drives its own `sets` jobs — one per checkpoint — from one process).
 MODE_SINGLE = "single"
 MODE_SETS = "sets"
-MODES = (MODE_SINGLE, MODE_SETS)
+MODE_BATCH = "batch"
+MODES = (MODE_SINGLE, MODE_SETS, MODE_BATCH)
 
 # Launch limits, mirrored by Ranko's form validation so a rejected click costs no GPU time.
 MIN_CFG = 1.0
@@ -151,6 +156,7 @@ def list_jobs(generated: Union[str, Path]) -> list[dict[str, Any]]:
             payload.setdefault("error", "job file has no valid state")
         if payload.get("mode") not in MODES:
             payload["mode"] = MODE_SINGLE
+        payload.setdefault("cancel_requested", False)
         jobs.append(payload)
     jobs.sort(key=lambda job: (float(job.get("started_at") or 0.0), str(job.get("id"))), reverse=True)
     return jobs
@@ -267,6 +273,9 @@ def new_job(
         # through `normalize_request`'s validated step count.
         "total_steps": int(request.get("steps") or 0),
         "image_path": None,
+        # Set by `cancel_generation`; the job stays `running` until its process is really gone, so
+        # the card can say "cancelling…" and another generation cannot start on the same card yet.
+        "cancel_requested": False,
         # A `sets` job writes one image per (set, repeat); a `single` job one, recorded in
         # `image_path` as before so a job file from the old build still reads.
         "files": [],
@@ -279,6 +288,48 @@ def new_job(
     if extra:
         job.update(dict(extra))
     return job
+
+
+def new_batch_job(
+    *,
+    run_id: str,
+    output_name: str,
+    checkpoints: list[dict[str, Any]],
+    from_step: int,
+    to_step: int,
+    images_per_checkpoint: int,
+    now: Optional[Union[datetime, float]] = None,
+) -> dict[str, Any]:
+    """The plan api.py writes before spawning a range batch.
+
+    `checkpoints` is the ordered work list (`path` + `step`); the runner creates one `sets` job per
+    entry, so the images of each checkpoint are named, shown and followed exactly as a manual pass
+    from that checkpoint would be. This record is the batch's own bookkeeping: what is left, which
+    checkpoint is being rendered, and what failed.
+    """
+    stem = f"{output_name}_s{from_step}-{to_step}"
+    return {
+        "id": new_job_id(stem, mode=MODE_BATCH, now=now),
+        "state": STATE_RUNNING,
+        "mode": MODE_BATCH,
+        "run_id": run_id,
+        "output_name": output_name,
+        "checkpoints": [dict(entry) for entry in checkpoints],
+        "from_step": int(from_step),
+        "to_step": int(to_step),
+        "checkpoint_index": 0,
+        "total_checkpoints": len(checkpoints),
+        "current_checkpoint": None,
+        "job_ids": [],
+        "failed": [],
+        "images_done": 0,
+        # Every checkpoint of one run renders the same `[[validation.samples]]` sets, so this is an
+        # exact total rather than a guess; the runner only moves `images_done`.
+        "total_images": len(checkpoints) * max(0, int(images_per_checkpoint)),
+        "error": None,
+        "cancel_requested": False,
+        "started_at": time.time(),
+    }
 
 
 def checkpoint_step(metadata: Mapping[str, str]) -> Optional[int]:

@@ -300,12 +300,60 @@ its decode and take the whole generated-samples list down with it.
 Refused under the same GPU rules as `generate_sample`, plus when `config.toml` has no usable
 `[[validation.samples]]` set.
 
+### `generate_checkpoint_samples_batch`
+
+The same pass for a whole **step range**: every checkpoint of the run whose step is inside
+`from_step..to_step`, oldest first, rendered by one detached process.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `from_step` / `to_step` | integer | Yes | Inclusive bounds, `0 <= from_step <= to_step`. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`. |
+
+The plan is a `batch` job record — the ordered work list, `from_step`/`to_step`, how many
+checkpoints and images, which entry is being rendered, and what failed — and the runner gives each
+checkpoint its **own** `sets` job (with `batch_id`/`batch_index`/`batch_total`), so every image is
+named, shown and followed exactly as a manual pass from that card would be. A checkpoint that fails
+is recorded in the batch's `failed` list and on its own job, and the range carries on; the batch is
+`done` if anything rendered and `error` if nothing did. The pipeline is built once for the range and
+rebuilt only when a checkpoint's LoRA shape (base model, kind, rank/alpha, conv dim) differs.
+
+Refused under the same GPU rules as `generate_checkpoint_samples`, on a malformed range, and when
+the range covers no checkpoint of the run (`no checkpoints between step X and Y`).
+
+Result: `{job, log_path}` with `mode: "batch"`.
+
+### `cancel_generation`
+
+Asks a running generation job to stop — the batch one included.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | No | The job to stop; null stops the running one. |
+
+The generator handles `SIGTERM` (or `SIGINT`) by finishing the step it is in and stopping at the
+next check point, so the job keeps its `running` state and its `cancelRequested` flag until the
+process is really gone: the card says `cancelling…`, and no second generation may start on that GPU
+meanwhile. It then closes as `cancelled` — not `error` — and keeps the images it had already
+written in its `files`. Whatever was already rendered stays on the cards; the checkpoints the batch
+had not reached are left alone.
+
+A second signal leaves immediately. This method never takes the GPU gate: it has to work while the
+trainer is using the card.
+
+Result: the updated job record and `cancelled: true`.
+
 Result: the same `{job, log_path}` shape, with `mode: "sets"`.
 
 ### `list_generated_samples`
 
-Lists the generated samples of the resolved run, newest first. Read-only; a job whose generator died
-(reported `running` but its PID is gone) is rewritten to `error` so it never blocks the next one.
+Lists the generated samples of the resolved run, newest first (batch records among them). Read-only;
+a `running` job whose process is gone is closed first — as `cancelled` when it had been asked to
+stop, as `error` otherwise — so it never blocks the next one.
 
 Params: `name` / `run_id` as in `list_samples`.
 
@@ -335,7 +383,8 @@ Result:
 }
 ```
 
-`state` is `running`, `done` or `error`; `jobs` is empty when the run has no `generated/` directory.
+`state` is `running`, `done`, `error` or `cancelled`; `jobs` is empty when the run has no
+`generated/` directory.
 
 ### `list_checkpoints`
 
