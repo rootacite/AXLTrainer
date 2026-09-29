@@ -280,7 +280,7 @@ class ControlTest(unittest.TestCase):
         self.assertIn(str(weights), result["cleanup"]["weight_dirs"])
         self.assertEqual(result["cleanup"]["removed"], [])
 
-    def test_reset_can_delete_weights(self):
+    def test_reset_never_deletes_weights(self):
         out = Path(self.tmp.name) / "out"
         logs = Path(self.tmp.name) / "logs"
         run_id = "rein_20260911_120000"
@@ -298,12 +298,13 @@ class ControlTest(unittest.TestCase):
             "output_name": "rein",
         }
         try:
-            api.dispatch("train_reset", {"delete_weights": True})
+            # The old `delete_weights` flag is gone; sending it anyway must not remove anything.
+            result = api.dispatch("train_reset", {"delete_weights": True})
         finally:
             api._train_config_dict = orig
-        self.assertFalse(weights.exists())
-        # Nothing was kept, so the now-empty run directory is still pruned.
-        self.assertFalse((out / run_id).exists())
+        self.assertTrue(weights.exists())
+        self.assertEqual(result["cleanup"]["removed"], [])
+        self.assertIn(str(weights), result["cleanup"]["weight_dirs"])
 
     def test_reset_refuses_live_pid(self):
         control.write_state({"status": "training", "pid": os.getpid()}, force=True)

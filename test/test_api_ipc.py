@@ -362,18 +362,21 @@ class RunScopedIpcTest(unittest.TestCase):
         self.assertEqual([run["run_id"] for run in runs], [self.RUN_ID])
         self.assertTrue(runs[0]["has_log"])
 
-    def test_reset_can_delete_weights(self):
+    def test_reset_never_deletes_weights(self):
         run_dir = self._make_run()
         weights = run_dir / "rein_final"
         weights.mkdir(parents=True)
         (weights / "rein.safetensors").write_bytes(b"w")
 
         self._record_run()
+        # Reset clears the state and nothing else: the flag that used to wipe a run's weights is
+        # gone, and an older client still sending it changes nothing.
         result = api.dispatch("train_reset", {"delete_weights": True})
-        self.assertFalse(weights.exists())
-        # The run directory itself stays: its samples are what the history list shows.
-        self.assertTrue((run_dir / "rein_samples").is_dir())
+        self.assertTrue(weights.exists())
+        self.assertEqual(result["cleanup"]["removed"], [])
+        self.assertFalse(result["cleanup"]["delete_weights"])
         self.assertEqual(result["cleanup"]["run_id"], self.RUN_ID)
+        self.assertTrue((run_dir / "rein_samples").is_dir())
 
     def test_reset_without_run_leaves_legacy_alone(self):
         legacy_samples = self.out / "rein_samples"

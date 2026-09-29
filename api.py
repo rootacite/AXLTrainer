@@ -22,9 +22,14 @@ from trainer.amdfq_patch import resolve_preload
 from trainer.checkpoints import (
     discover_checkpoints,
     parse_checkpoint_dir,
+    pin_entry,
+    pins_path,
     read_lora_metadata,
+    read_pins,
     require_resume_network_type,
     resolve_resume_path,
+    unpin_entry,
+    write_pins,
 )
 from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets, resolve_train_data_entries
 from trainer.family import require_trainable, resolve_family
@@ -452,23 +457,24 @@ _RESET_BLOCKED = frozenset(
 def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
     """Clear the run's state so Start can launch a new one.
 
-    Sample images and TensorBoard logs stay on disk: they are what the dashboard's run
-    history shows afterwards. Only the LoRA weight directories are removable
-    (`delete_weights`), and `python clean.py` remains the tool for wiping a run.
+    Nothing is deleted: the sample images and TensorBoard logs are what the dashboard's run
+    history shows afterwards, and the LoRA weight directories are what the run produced.
+    `python clean.py` is the tool for wiping a run.
     """
     current = reconcile()
     if current.get("status") in _RESET_BLOCKED and is_pid_alive(current.get("pid")):
         raise ValueError("cannot reset while training is running")
     cfg = _train_config_dict()
     run_id, output_name = _resolve_run(params, cfg)
-    delete_weights = bool(params.get("delete_weights"))
     if run_id:
+        # A `delete_weights` param an older client may still send is ignored: Reset never removes
+        # a weight directory, whatever the request asks for.
         cleanup: dict[str, Any] = run_cleanup(
             cfg.get("output_dir", "./output"),
             cfg.get("logging_dir", "./logs"),
             output_name,
             run_id=run_id,
-            delete_weights=delete_weights,
+            delete_weights=False,
             delete_samples=False,
             delete_logs=False,
         )
@@ -481,7 +487,7 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
             "samples_dir": None,
             "log_dir": None,
             "weight_dirs": [],
-            "delete_weights": delete_weights,
+            "delete_weights": False,
             "delete_samples": False,
             "delete_logs": False,
             "removed": [],
@@ -510,6 +516,48 @@ def handle_list_checkpoints(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "checkpoints": discover_checkpoints(str(output_dir), output_name),
     }
+
+
+def handle_checkpoint_pins(params: dict[str, Any]) -> dict[str, Any]:
+    """The run's pinned checkpoints, read from its own `checkpoint_pins.json`. Read-only.
+
+    Pins belong to one run, so a request that names nothing resolves the run `state.json` is on,
+    exactly like `list_samples`; without a run there is nothing to read and nothing to show.
+    """
+    cfg = _train_config_dict()
+    run_id, _output_name = _resolve_run(params, cfg)
+    if not run_id:
+        return {"run_id": None, "file": None, "pins": []}
+    log_dir = _log_dir(cfg, run_id)
+    return {"run_id": run_id, "file": str(pins_path(log_dir)), "pins": read_pins(log_dir)}
+
+
+def handle_checkpoint_pin_set(params: dict[str, Any]) -> dict[str, Any]:
+    """Pin or unpin one checkpoint of a run, and answer with the run's whole pin list.
+
+    Unpinning is allowed for a path whose file is gone (a Reset deletes weights and keeps the pin
+    file): a stale entry has to stay removable. Pinning checks the file exists, so a typo cannot
+    leave a pin nothing will ever show.
+    """
+    cfg = _train_config_dict()
+    run_id, _output_name = _resolve_run(params, cfg)
+    if not run_id:
+        raise ValueError("no run to pin a checkpoint to")
+    if "pinned" not in params:
+        raise ValueError("pinned is required")
+    target = str(params.get("path") or "").strip()
+    if not target:
+        raise ValueError("path is empty")
+
+    log_dir = _log_dir(cfg, run_id)
+    pins = read_pins(log_dir)
+    if bool(params.get("pinned")):
+        if not Path(target).is_file():
+            raise ValueError(f"checkpoint not found: {target}")
+        pins = pin_entry(pins, target, dir_name=params.get("dir"), step=params.get("step"))
+    else:
+        pins = unpin_entry(pins, target)
+    return {"run_id": run_id, "file": str(write_pins(log_dir, run_id, pins)), "pins": pins}
 
 
 def run_tagger_process(
@@ -567,6 +615,11 @@ def _samples_dir(cfg: dict[str, Any], run_id: str, output_name: str) -> Path:
 
 def _output_dir(cfg: dict[str, Any]) -> Path:
     return Path(str(cfg.get("output_dir") or ".")).expanduser()
+
+
+def _log_dir(cfg: dict[str, Any], run_id: str) -> Path:
+    """A run's TensorBoard directory, which is also where its pinned checkpoints live."""
+    return Path(str(cfg.get("logging_dir") or "./logs")).expanduser() / str(run_id)
 
 
 def _checkpoint_step(checkpoint: Path, output_name: str) -> Optional[int]:
@@ -1495,6 +1548,8 @@ _HANDLERS = {
     "list_runs": handle_list_runs,
     "list_samples": handle_list_samples,
     "list_checkpoints": handle_list_checkpoints,
+    "checkpoint_pins": handle_checkpoint_pins,
+    "checkpoint_pin_set": handle_checkpoint_pin_set,
     "train_status": handle_train_status,
     "train_start": handle_train_start,
     "train_pause": handle_train_pause,
@@ -1566,6 +1621,7 @@ _CONTROL_METHODS = frozenset(
         "generate_checkpoint_samples_batch",
         "cancel_generation",
         "config_save",
+        "checkpoint_pin_set",
         "profile_save",
         "profile_delete",
         "prompt_profile_save",

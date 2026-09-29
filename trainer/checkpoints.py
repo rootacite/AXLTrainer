@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -28,6 +30,15 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
     try:
         return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -214,3 +225,89 @@ def discover_checkpoints(
         reverse=True,
     )
     return items
+
+
+PIN_FILENAME = "checkpoint_pins.json"
+_PIN_VERSION = 1
+
+
+def pins_path(log_dir: Union[str, Path]) -> Path:
+    """Where a run keeps its pinned checkpoints: the run's own TensorBoard directory."""
+    return Path(log_dir) / PIN_FILENAME
+
+
+def read_pins(log_dir: Union[str, Path]) -> list[dict[str, Any]]:
+    """The pinned checkpoints of one run, `[]` when the file is missing or unreadable.
+
+    The file is the user's state, not a run artifact, so a hand-edited one is read leniently: a
+    bare list of paths works as well as the written `{"version": 1, "pins": [...]}` shape.
+    """
+    try:
+        payload = json.loads(pins_path(log_dir).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(payload, dict):
+        payload = payload.get("pins")
+    if not isinstance(payload, list):
+        return []
+
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in payload:
+        if isinstance(raw, str):
+            raw = {"path": raw}
+        if not isinstance(raw, dict):
+            continue
+        path = str(raw.get("path") or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        entries.append(
+            {
+                "path": path,
+                "dir": str(raw.get("dir") or ""),
+                "step": _int_or_none(raw.get("step")),
+                "pinned_at": _float_or_none(raw.get("pinned_at")),
+            }
+        )
+    return entries
+
+
+def write_pins(log_dir: Union[str, Path], run_id: str, pins: list[dict[str, Any]]) -> Path:
+    """Replace a run's pin file atomically; the directory is created if the run wrote no logs."""
+    path = pins_path(log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": _PIN_VERSION, "run_id": str(run_id or ""), "pins": list(pins)}
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def pin_entry(
+    pins: list[dict[str, Any]],
+    path: Union[str, Path],
+    dir_name: Optional[str] = None,
+    step: Optional[Any] = None,
+    pinned_at: Optional[float] = None,
+) -> list[dict[str, Any]]:
+    """Pin one checkpoint at the end of the list; pinning twice keeps the first entry."""
+    target = str(path or "").strip()
+    if not target:
+        raise ValueError("checkpoint path is empty")
+    if any(str(entry.get("path") or "") == target for entry in pins):
+        return list(pins)
+    return list(pins) + [
+        {
+            "path": target,
+            "dir": str(dir_name or ""),
+            "step": _int_or_none(step),
+            "pinned_at": float(pinned_at if pinned_at is not None else time.time()),
+        }
+    ]
+
+
+def unpin_entry(pins: list[dict[str, Any]], path: Union[str, Path]) -> list[dict[str, Any]]:
+    """Drop one checkpoint from the list; a path that is not pinned changes nothing."""
+    target = str(path or "").strip()
+    return [entry for entry in pins if str(entry.get("path") or "") != target]
