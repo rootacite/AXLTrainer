@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from orphans import PROC, is_running
+except ImportError:
+    from trainer.orphans import PROC, is_running
+
 SCHEMA = 1
 
 STATUS_IDLE = "idle"
@@ -195,6 +200,17 @@ def write_state(updates: Optional[dict[str, Any]] = None, *, force: bool = False
 
 
 def is_pid_alive(pid: Optional[int]) -> bool:
+    """True while the process is running.
+
+    `os.kill(pid, 0)` alone calls a *zombie* alive: a child nobody has waited on keeps its `/proc`
+    entry, answers signals, and holds nothing. `api.py` never `wait()`s the trainer — or a generator
+    — it spawns, so a finished run's trainer sits in exactly that state, and the dashboard (which
+    reads `alive` from `state.json`) would keep believing training is still on the GPU until api.py
+    itself exits, which only happens when Ranko closes: the checkpoint panel's "Generate sample"
+    stayed disabled in a session where the run had already finished. The process state is the
+    arbiter (`orphans.is_running`: `Z` means gone), with the signal check as the fallback for a
+    machine without `/proc`.
+    """
     if pid is None:
         return False
     try:
@@ -203,6 +219,8 @@ def is_pid_alive(pid: Optional[int]) -> bool:
         return False
     if pid_i <= 0:
         return False
+    if PROC.is_dir():
+        return is_running(pid_i)
     try:
         os.kill(pid_i, 0)
     except ProcessLookupError:

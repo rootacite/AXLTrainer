@@ -1,6 +1,8 @@
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -321,6 +323,90 @@ class ControlTest(unittest.TestCase):
         finally:
             api._train_config_dict = orig
         self.assertEqual(result["status"], "idle")
+
+
+class ProcessIdentityTest(unittest.TestCase):
+    """`is_pid_alive`: a finished run must not look live to the api.py that spawned it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+
+    def tearDown(self):
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _state_of(self, pid: int, want: str, timeout: float = 10.0) -> str:
+        deadline = time.time() + timeout
+        state = ""
+        while time.time() < deadline:
+            try:
+                state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
+            except (OSError, IndexError):
+                state = ""
+            if state == want:
+                return state
+            time.sleep(0.01)
+        return state
+
+    def test_a_running_child_is_alive(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertEqual(self._state_of(child.pid, "S"), "S")
+            self.assertTrue(control.is_pid_alive(child.pid))
+        finally:
+            child.terminate()
+            child.wait()
+
+    def test_a_child_nobody_waited_on_is_not_alive(self):
+        """The reported bug: api.py never `wait()`s the trainer it spawns, so after a normal finish
+        the trainer is a zombie — `kill(pid, 0)` still succeeds on it, and the dashboard kept
+        `alive` true (and the panel's Generate button disabled) until Ranko was restarted."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            self.assertEqual(self._state_of(child.pid, "Z"), "Z")
+            self.assertFalse(control.is_pid_alive(child.pid))
+        finally:
+            child.wait()  # reap it, the way api.py does not
+
+    def test_a_reaped_or_missing_pid_is_not_alive(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        self.assertFalse(control.is_pid_alive(child.pid))
+        self.assertFalse(control.is_pid_alive(None))
+        self.assertFalse(control.is_pid_alive(-1))
+        self.assertFalse(control.is_pid_alive("not a pid"))
+
+    def test_reconcile_closes_a_run_whose_trainer_was_never_reaped(self):
+        """A live status plus a zombie pid is a dead run, not a live one."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            self.assertEqual(self._state_of(child.pid, "Z"), "Z")
+            control.write_state({"status": "training", "pid": child.pid}, force=True)
+            payload = control.status_payload()
+            self.assertEqual(payload["status"], "error")
+            self.assertFalse(payload["alive"])
+            self.assertIn("no longer running", payload["error"])
+        finally:
+            child.wait()
+
+    def test_reconcile_keeps_a_live_trainer_live(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertEqual(self._state_of(child.pid, "S"), "S")
+            control.write_state({"status": "training", "pid": child.pid}, force=True)
+            payload = control.status_payload()
+            self.assertEqual(payload["status"], "training")
+            self.assertTrue(payload["alive"])
+        finally:
+            child.terminate()
+            child.wait()
 
 
 class LiveSettingsTest(unittest.TestCase):

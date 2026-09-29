@@ -337,7 +337,9 @@ fun DashboardScreen(
                 originInRoot = dashboardOrigin,
                 userSize = uiState.chartPanelSize,
                 previewOpen = uiState.previewIndex != null,
-                trainerAlive = uiState.trainStatus.alive,
+                // One rule for "may a generation start", shared with the Checkpoints section and
+                // mirroring api.py's `_gpu_busy`: a paused run is fine, it has given the card back.
+                gpuFree = generationAllowed(uiState.trainStatus),
                 newJobIds = uiState.sessionJobIds,
                 onResize = viewModel::setChartPanelSize,
                 onOpenSample = { viewModel.openPreview(it) },
@@ -829,7 +831,7 @@ private fun CheckpointPanelOverlay(
     originInRoot: Offset,
     userSize: DpSize?,
     previewOpen: Boolean,
-    trainerAlive: Boolean,
+    gpuFree: Boolean,
     newJobIds: Set<String>,
     onResize: (DpSize) -> Unit,
     onOpenSample: (SampleItem) -> Unit,
@@ -950,7 +952,7 @@ private fun CheckpointPanelOverlay(
                         fallbackFromStep = fallbackStep?.let { checkpointStep },
                         slotWidth = slotWidth,
                         slotHeight = slotHeight,
-                        trainerAlive = trainerAlive,
+                        gpuFree = gpuFree,
                         showSetBadges = showsSampleSetBadges(samples),
                         onOpenSample = onOpenSample,
                         onSaveAs = onSaveAs,
@@ -1032,7 +1034,7 @@ private fun CheckpointPanelBody(
     fallbackFromStep: Int?,
     slotWidth: Dp,
     slotHeight: Dp,
-    trainerAlive: Boolean,
+    gpuFree: Boolean,
     showSetBadges: Boolean,
     onOpenSample: (SampleItem) -> Unit,
     onSaveAs: () -> Unit,
@@ -1147,7 +1149,7 @@ private fun CheckpointPanelBody(
             pick = pick,
             generatedJobs = generatedJobs,
             generatedError = generatedError,
-            trainerAlive = trainerAlive,
+            gpuFree = gpuFree,
             onUpdateForm = onUpdateForm,
             onGenerate = { onGenerate(shownStep) },
         )
@@ -1293,7 +1295,8 @@ private fun GenerateSamplePanel(
     pick: ChartPickState,
     generatedJobs: List<GeneratedSampleJob>,
     generatedError: String?,
-    trainerAlive: Boolean,
+    /** True while a generation may start: no live trainer is using the GPU (a paused one is ok). */
+    gpuFree: Boolean,
     onUpdateForm: (ChartPickState.() -> ChartPickState) -> Unit,
     onGenerate: () -> Unit,
 ) {
@@ -1346,19 +1349,19 @@ private fun GenerateSamplePanel(
             CapsuleButton(
                 text = "Generate",
                 onClick = onGenerate,
-                enabled = !busy && !trainerAlive && pick.checkpoint != null,
+                enabled = !busy && gpuFree && pick.checkpoint != null,
                 emphasized = true,
                 compact = true,
             )
             val note = when {
-                trainerAlive -> "Finish or stop the run first (the GPU is in use)"
                 busy -> "A generation is running…"
+                !gpuFree -> "Pause the run, or stop it, to free the GPU"
                 else -> "One extra image, saved next to this run's samples"
             }
             Text(
                 text = note,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (trainerAlive) colors.qualityRed else colors.textDim,
+                color = if (gpuFree) colors.textDim else colors.qualityRed,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )

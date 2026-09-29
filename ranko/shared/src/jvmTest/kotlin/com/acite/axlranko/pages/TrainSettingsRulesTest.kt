@@ -100,6 +100,19 @@ class TrainSettingsRulesTest {
     }
 
     @Test
+    fun thePanelMayGenerateWheneverTheGpuIsFree() {
+        // The Ctrl+click panel's Generate button read `alive` directly: that kept it disabled for
+        // a paused run (while the section's own button was enabled), and it is what left it
+        // disabled over a run that had finished while the helper still had its PID on record.
+        assertTrue(generationAllowed(status("paused")))
+        assertTrue(generationAllowed(status("finished", alive = false)))
+        assertTrue(generationAllowed(status("finished", alive = true)))
+        assertTrue(generationAllowed(status("error", alive = false)))
+        assertFalse(generationAllowed(status("training")))
+        assertFalse(generationAllowed(status("sampling")))
+    }
+
+    @Test
     fun theControlBarRuleIsUnchangedForAFollowedRun() {
         val followed = DashboardUiState(trainStatus = status("training").copy(runId = "rein_1"))
         assertTrue(trainingControlsEnabled(followed))

@@ -379,7 +379,7 @@ Reads `$AXL_RUNTIME_DIR` or `$XDG_RUNTIME_DIR/axltrainer/` or `/tmp/axltrainer-$
 
 Params: `{}`
 
-Result: the on-disk state plus `alive` (PID is running) and `log_path`. Relevant state keys: `run_id` (run directory created for this run), `output_name`, and `resume` — `null` for a fresh run, otherwise
+Result: the on-disk state plus `alive` (is that PID running) and `log_path`. A process that has exited but was never waited on counts as gone: `api.py` does not `wait()` the trainer it spawns, so a finished run's trainer is a zombie — its `/proc` entry stays and `kill(pid, 0)` still succeeds — and calling that alive kept the dashboard's GPU-busy state (and the checkpoint panel's `Generate sample`) until Ranko was restarted. Relevant state keys: `run_id` (run directory created for this run), `output_name`, and `resume` — `null` for a fresh run, otherwise
 
 ```json
 { "path": "/out/rein_…_final/rein.safetensors", "filename": "rein.safetensors", "step": 300, "epoch": 7, "loaded": 96, "skipped": 0 }

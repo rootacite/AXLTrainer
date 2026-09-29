@@ -36,7 +36,7 @@ def _stat_tail(pid: int) -> list[str] | None:
     return raw.rsplit(")", 1)[-1].split()
 
 
-def _live(pid: int) -> bool:
+def is_running(pid: int) -> bool:
     """A process that is still running.
 
     A dead child the parent has not waited on is a *zombie*: its `/proc` entry stays, its state
@@ -62,7 +62,7 @@ def session_of(pid: int) -> int | None:
 
 def is_alive(pid: int, born: int | None = None) -> bool:
     """True while `pid` is running *and* still the process that `born` was read from."""
-    if not _live(pid):
+    if not is_running(pid):
         return False
     return born is None or start_ticks(pid) == born
 
@@ -74,7 +74,7 @@ def pids() -> list[int]:
 def session_members(sid: int) -> list[int]:
     """Every running process in session `sid`, this one excluded. Zombies are not members."""
     mine = os.getpid()
-    return [pid for pid in pids() if pid != mine and _live(pid) and session_of(pid) == sid]
+    return [pid for pid in pids() if pid != mine and is_running(pid) and session_of(pid) == sid]
 
 
 def matches_forkserver(cmdline: str, marker: str) -> bool:
@@ -111,7 +111,7 @@ def forkserver_members(marker: str) -> list[int]:
     skip = _ancestors()
     found = []
     for pid in pids():
-        if pid in skip or not _live(pid):
+        if pid in skip or not is_running(pid):
             continue
         cmdline = _cmdline(pid)
         if cmdline and matches_forkserver(cmdline, marker):
@@ -125,7 +125,7 @@ def reap(pids_to_reap: list[int], *, term_timeout: float = 2.0, poll: float = 0.
     signalled: list[int] = []
     stubborn: list[int] = []
     for pid in sorted(set(pids_to_reap) - skip):
-        if not _live(pid):
+        if not is_running(pid):
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -135,7 +135,7 @@ def reap(pids_to_reap: list[int], *, term_timeout: float = 2.0, poll: float = 0.
         stubborn.append(pid)
     deadline = time.monotonic() + term_timeout
     while stubborn and time.monotonic() < deadline:
-        stubborn = [pid for pid in stubborn if _live(pid)]
+        stubborn = [pid for pid in stubborn if is_running(pid)]
         if stubborn:
             time.sleep(poll)
     for pid in stubborn:
