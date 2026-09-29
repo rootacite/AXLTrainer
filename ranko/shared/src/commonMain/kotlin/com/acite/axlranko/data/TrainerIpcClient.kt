@@ -1,5 +1,6 @@
 package com.acite.axlranko.data
 
+import com.acite.axlranko.model.CheckpointPinsResponse
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
@@ -120,6 +121,44 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /** The displayed run's pinned checkpoints, from its own `checkpoint_pins.json`. */
+    suspend fun checkpointPins(
+        name: String? = null,
+        runId: String? = null,
+    ): CheckpointPinsResponse {
+        val result = call(
+            "checkpoint_pins",
+            buildJsonObject {
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** Pin or unpin one checkpoint; the reply is that run's whole pin list. */
+    suspend fun setCheckpointPin(
+        path: String,
+        pinned: Boolean,
+        dir: String? = null,
+        step: Int? = null,
+        name: String? = null,
+        runId: String? = null,
+    ): CheckpointPinsResponse {
+        val result = call(
+            "checkpoint_pin_set",
+            buildJsonObject {
+                put("path", path)
+                put("pinned", pinned)
+                dir?.let { put("dir", it) }
+                step?.let { put("step", it) }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     /** The training history: every run directory under the output / log roots, newest first. */
     suspend fun listRuns(): RunsResponse {
         val result = call("list_runs", JsonObject(emptyMap()))
@@ -151,11 +190,11 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
-    suspend fun trainReset(deleteWeights: Boolean = false, name: String? = null): TrainStatus {
+    /** Clears the run's state so Start can launch a new one. Never deletes artifacts. */
+    suspend fun trainReset(name: String? = null): TrainStatus {
         val result = call(
             "train_reset",
             buildJsonObject {
-                put("delete_weights", deleteWeights)
                 name?.let { put("name", it) }
             },
         )

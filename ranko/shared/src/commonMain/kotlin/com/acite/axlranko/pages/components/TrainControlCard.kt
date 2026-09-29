@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -79,11 +78,10 @@ fun TrainControlCard(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
-    onReset: (deleteWeights: Boolean) -> Unit,
+    onReset: () -> Unit,
 ) {
     var confirmStop by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
-    var deleteWeights by remember { mutableStateOf(false) }
     val actual = status.status
     val terminal = actual in setOf("idle", "finished", "error")
     val phase = when {
@@ -274,10 +272,7 @@ fun TrainControlCard(
                     text = "Reset",
                     icon = Icons.Default.RestartAlt,
                     enabled = canReset,
-                    onClick = {
-                        deleteWeights = false
-                        confirmReset = true
-                    },
+                    onClick = { confirmReset = true },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -328,29 +323,20 @@ fun TrainControlCard(
                     Text(
                         if (runId != null) {
                             "Clears the Finished / Error state so Start can launch a new run. " +
-                                "Run \"$runId\" stays in the run history: its samples and " +
-                                "TensorBoard logs are kept."
+                                "Nothing is deleted: run \"$runId\" keeps its LoRA checkpoints, " +
+                                "its samples and its TensorBoard logs."
                         } else {
                             "Clears the Finished / Error state so Start can launch a new run. " +
-                                "There is no run directory to delete."
+                                "There is no run directory."
                         }
                     )
                     if (runId != null) {
                         Text(
-                            "Kept logs: $loggingDir/$runId\n" +
+                            "Kept checkpoints: $outputDir/$runId/${runName}_*\n" +
+                                "Kept logs: $loggingDir/$runId\n" +
                                 "Kept samples: $outputDir/$runId/${runName}_samples",
                             style = MaterialTheme.typography.bodySmall,
                             color = rankoColors.textDim
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = deleteWeights, onCheckedChange = { deleteWeights = it })
-                        Text(
-                            if (runId != null) {
-                                "Also delete LoRA checkpoints under $outputDir/$runId/${runName}_*"
-                            } else {
-                                "Also delete LoRA checkpoints (nothing to delete)"
-                            }
                         )
                     }
                 }
@@ -358,9 +344,8 @@ fun TrainControlCard(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val wipe = deleteWeights
                         confirmReset = false
-                        onReset(wipe)
+                        onReset()
                     }
                 ) { Text("Reset") }
             },

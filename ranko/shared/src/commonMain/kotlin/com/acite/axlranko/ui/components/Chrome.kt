@@ -178,6 +178,8 @@ fun RankoBackdrop(
 fun PorcelainCard(
     modifier: Modifier = Modifier,
     title: String? = null,
+    /** Marks the card with the accent — the Dashboard's pinned checkpoint. */
+    emphasized: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val tokens = rankoTokens
@@ -185,12 +187,21 @@ fun PorcelainCard(
     val hazeContext = LocalRankoHaze.current
     val tint = colors.bgPanel.copy(alpha = 0.58f)
     val cardTint = colors.bgCard.copy(alpha = 0.42f)
+    // The emphasis is a wash over the frosted fill every other card gets, not a different fill: a
+    // pinned card is still a card, and only the accent border and the wash mark it apart.
+    val wash = if (emphasized) colors.accentPink.copy(alpha = 0.14f) else Color.Transparent
+    val border = if (emphasized) {
+        colors.accentPink.copy(alpha = 0.50f)
+    } else {
+        Color.White.copy(alpha = 0.10f)
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(tokens.card)
             .rankoCardBlur(hazeContext, tint, cardTint)
-            .border(1.dp, Color.White.copy(alpha = 0.10f), tokens.card)
+            .background(wash)
+            .border(if (emphasized) 2.dp else 1.dp, border, tokens.card)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         content = {

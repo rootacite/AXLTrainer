@@ -4,12 +4,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.unit.dp
+import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.SampleItem
@@ -17,6 +19,7 @@ import com.acite.axlranko.pages.components.JOB_DONE
 import com.acite.axlranko.pages.components.JOB_MODE_BATCH
 import com.acite.axlranko.pages.components.JOB_MODE_SETS
 import com.acite.axlranko.pages.components.JOB_RUNNING
+import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.checkpointRowKey
 import com.acite.axlranko.pages.components.runningBatch
 import com.acite.axlranko.pages.components.checkpointRows
@@ -46,6 +49,12 @@ class CheckpointsSectionRenderTest {
         val generatingPath: String? = null,
         val gpuFree: Boolean = true,
         val startingBatch: Boolean = false,
+        val pinnedPaths: Set<String> = emptySet(),
+        val pinningPath: String? = null,
+        val pinsError: String? = null,
+        /** The checkpoint whose Save As is open or copying, and where the last one landed. */
+        val exportingPath: String? = null,
+        val exportResult: CheckpointExport? = null,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -119,6 +128,7 @@ class CheckpointsSectionRenderTest {
                                     current.checkpoints,
                                     current.samples,
                                     current.jobs,
+                                    pinned = current.pinnedPaths,
                                 )
                                 item {
                                     SampleRangeRow(
@@ -131,10 +141,16 @@ class CheckpointsSectionRenderTest {
                                         onCancel = {},
                                     )
                                 }
+                                if (rows.any { it.pinned }) {
+                                    item { PinnedHintLine("/logs/rein_20260911_120000/checkpoint_pins.json") }
+                                }
+                                current.pinsError?.let { message -> item { PinsErrorLine(message) } }
                                 if (rows.isEmpty()) {
                                     item { CheckpointsEmptyCard() }
                                 } else {
-                                    items(rows, key = { checkpointRowKey(it) }) { row ->
+                                    val pinnedCards = rows.filter { it.pinned }
+                                    val restCards = rows.filterNot { it.pinned }
+                                    val card: @Composable (CheckpointRow) -> Unit = { row ->
                                         CheckpointRowCard(
                                             row = row,
                                             thumbSize = 120f,
@@ -144,10 +160,26 @@ class CheckpointsSectionRenderTest {
                                             starting = current.generatingPath == row.checkpoint?.path,
                                             busyElsewhere = current.generatingPath != null &&
                                                 current.generatingPath != row.checkpoint?.path,
+                                            pinning = current.pinningPath == row.checkpoint?.path,
+                                            pinEnabled = current.pinningPath == null,
+                                            exportInFlightPath = current.exportingPath,
+                                            exportResult = current.exportResult,
                                             onOpen = {},
                                             onGenerate = {},
+                                            onTogglePin = {},
+                                            onSaveAs = {},
                                         )
                                     }
+                                    items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
+                                    if (pinnedCards.isNotEmpty() && restCards.isNotEmpty()) {
+                                        item {
+                                            CheckpointsDivider(
+                                                pinned = pinnedCards.size,
+                                                rest = restCards.size,
+                                            )
+                                        }
+                                    }
+                                    items(restCards, key = { checkpointRowKey(it) }) { row -> card(row) }
                                 }
                             }
                         }
@@ -238,6 +270,37 @@ class CheckpointsSectionRenderTest {
                     ),
                 ),
                 Case(checkpoints = listOf(checkpoint(3050)), startingBatch = true),
+                // Pinned cards leading the section, one of them mid-pin and one whose pin the
+                // helper refused.
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000), checkpoint(2950)),
+                    pinnedPaths = setOf(checkpoint(2950).path, checkpoint(3000).path),
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+                    pinnedPaths = setOf(checkpoint(3050).path),
+                    pinningPath = checkpoint(3000).path,
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    pinsError = "ValueError: no run to pin a checkpoint to",
+                ),
+                // Save As: open on one card, landed on another, failed on a third.
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+                    exportResult = CheckpointExport(
+                        path = checkpoint(3050).path,
+                        savedPath = "/home/me/loras/rein_s003050.safetensors (24.0 MB)",
+                    ),
+                    exportingPath = checkpoint(3000).path,
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    exportResult = CheckpointExport(
+                        path = checkpoint(3050).path,
+                        error = "ValueError: destination is the same file as the source",
+                    ),
+                ),
             ),
         )
     }

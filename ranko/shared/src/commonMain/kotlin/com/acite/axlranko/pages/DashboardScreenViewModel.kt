@@ -7,6 +7,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.DpSize
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.ChartPickState
+import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.GeneratedSampleJob
@@ -68,6 +69,9 @@ class DashboardScreenViewModel(
     private val sessionJobIds = mutableSetOf<String>()
     private var generatedPollJob: Job? = null
 
+    /** True while a pin is being written, so a poll that started before it cannot undo it. */
+    private var pinsWriteInFlight = false
+
     fun onEnter() {
         if (!entered) {
             entered = true
@@ -95,6 +99,9 @@ class DashboardScreenViewModel(
                 chartPick = null,
                 previewIndex = null,
                 samples = emptyMap(),
+                checkpointPins = emptyList(),
+                checkpointPinsFile = null,
+                pinsError = null,
                 latestStats = JsonObject(emptyMap()),
                 metrics = emptyMap(),
             )
@@ -392,6 +399,48 @@ class DashboardScreenViewModel(
         }
     }
 
+    /**
+     * Pin or unpin one checkpoint of the run the page shows. Pins are the run's own state: the
+     * helper writes them into `checkpoint_pins.json` inside that run's log directory, and Ranko
+     * never touches the file itself.
+     */
+    fun toggleCheckpointPin(checkpoint: CheckpointItem) {
+        if (_uiState.value.pinningPath != null) return
+        val pinned = _uiState.value.checkpointPins.any { it.path == checkpoint.path }
+        pinsWriteInFlight = true
+        _uiState.update { it.copy(pinningPath = checkpoint.path, pinsError = null) }
+        viewModelScope.launch {
+            try {
+                val shown = displayedRun(
+                    _uiState.value.runs,
+                    _uiState.value.selectedRun,
+                    _uiState.value.runId,
+                )
+                val response = withContext(IoDispatcher) {
+                    ipc.setCheckpointPin(
+                        path = checkpoint.path,
+                        pinned = !pinned,
+                        dir = checkpoint.dir,
+                        step = checkpoint.step,
+                        name = shown?.outputName ?: _uiState.value.selectedRun?.outputName,
+                        runId = shown?.runId ?: _uiState.value.selectedRun?.runId ?: _uiState.value.runId,
+                    )
+                }
+                _uiState.update {
+                    it.copy(
+                        pinningPath = null,
+                        checkpointPins = response.pins,
+                        checkpointPinsFile = response.file,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(pinningPath = null, pinsError = e.message ?: e.toString()) }
+            } finally {
+                pinsWriteInFlight = false
+            }
+        }
+    }
+
     private suspend fun fetchGeneratedJobs(runId: String, name: String? = null): List<GeneratedSampleJob> =
         try {
             withContext(IoDispatcher) { ipc.listGeneratedSamples(name = name, runId = runId) }.jobs
@@ -426,53 +475,49 @@ class DashboardScreenViewModel(
 
 
     /**
-     * "Save As" for the picked checkpoint: pick a destination in the OS save dialog, then copy the
-     * LoRA off the run directory. The copy is off-thread and reports progress.
+     * "Save As" for one checkpoint: pick a destination in the OS save dialog, then copy the LoRA
+     * off the run directory. The Ctrl+click panel and the Checkpoints section's cards share it —
+     * there is one save dialog and one copy in flight, so a second request is ignored until the
+     * first lands. Ranko only asks the helper to copy; the file bytes never pass through here.
      */
-    fun saveCheckpointAs() {
-        val pick = _uiState.value.chartPick ?: return
-        val checkpoint = pick.checkpoint ?: return
-        if (pick.isSaving) return
-
+    fun saveCheckpointAs(checkpoint: CheckpointItem) {
+        if (_uiState.value.exportInFlightPath != null) return
         val source = checkpoint.path
+        _uiState.update {
+            it.copy(exportInFlightPath = source, exportResult = null)
+        }
         viewModelScope.launch {
             val parent = source.substringBeforeLast('/', missingDelimiterValue = "")
-            val chosen = pathPicker.saveFile(checkpointSaveName(checkpoint), parent) ?: return@launch
+            val chosen = pathPicker.saveFile(checkpointSaveName(checkpoint), parent)
+            if (chosen == null) {
+                _uiState.update { it.copy(exportInFlightPath = null) }
+                return@launch
+            }
             val destName = ensureSafetensorsExtension(chosen.substringAfterLast('/'))
             val destParent = chosen.substringBeforeLast('/', missingDelimiterValue = "")
             val target = if (destParent.isEmpty()) destName else "$destParent/$destName"
             if (target != chosen) pathPicker.deleteEmptyPlaceholder(chosen)
 
-            _uiState.update { state ->
-                state.copy(
-                    chartPick = state.chartPick?.copy(
-                        isSaving = true,
-                        saveProgress = 0f,
-                        savedPath = null,
-                        saveError = null,
-                    ),
-                )
-            }
             try {
                 val exported = withContext(IoDispatcher) {
                     ipc.checkpointExport(source, target)
                 }
-                _uiState.update { state ->
-                    state.copy(
-                        chartPick = state.chartPick?.copy(
-                            isSaving = false,
-                            saveProgress = null,
+                _uiState.update {
+                    it.copy(
+                        exportInFlightPath = null,
+                        exportResult = CheckpointExport(
+                            path = source,
                             savedPath = "$target (${formatBytes(exported.bytes)})",
                         ),
                     )
                 }
             } catch (e: Exception) {
-                _uiState.update { state ->
-                    state.copy(
-                        chartPick = state.chartPick?.copy(
-                            isSaving = false,
-                            saveProgress = null,
-                            saveError = e.message ?: e.toString(),
+                _uiState.update {
+                    it.copy(
+                        exportInFlightPath = null,
+                        exportResult = CheckpointExport(
+                            path = source,
+                            error = e.message ?: e.toString(),
                         ),
                     )
                 }
@@ -518,8 +563,9 @@ class DashboardScreenViewModel(
 
     fun stopTraining() = runTrainCommand(pending = "stop") { ipc.trainStop() }
 
-    fun resetTraining(deleteWeights: Boolean) = runTrainCommand(refreshAll = true) {
-        ipc.trainReset(deleteWeights = deleteWeights)
+    /** Clears the run's state so Start can launch a new one. Nothing on disk is deleted. */
+    fun resetTraining() = runTrainCommand(refreshAll = true) {
+        ipc.trainReset()
     }
 
     private fun runTrainCommand(
@@ -655,6 +701,18 @@ class DashboardScreenViewModel(
                     ipc.listGeneratedSamples(name = shownName, runId = shown?.runId)
                 }.jobs
             }.getOrDefault(emptyList())
+            // The pins live in the shown run's own log directory, so they follow the same run the
+            // checkpoints do. A read is skipped while a pin write is in flight: the write's own
+            // reply is the newer truth, and a read that started first would put the old list back.
+            val pins = if (pinsWriteInFlight) {
+                null
+            } else {
+                runCatching {
+                    withContext(IoDispatcher) {
+                        ipc.checkpointPins(name = shownName, runId = shown?.runId)
+                    }
+                }.getOrNull()
+            }
             val trainStatus = withContext(IoDispatcher) { ipc.trainStatus() }
             _uiState.update { state ->
                 val generated = generatedJobs
@@ -684,6 +742,8 @@ class DashboardScreenViewModel(
                     metrics = dashboard.metrics,
                     samples = samples.samples,
                     checkpoints = shownCheckpoints,
+                    checkpointPins = pins?.pins ?: state.checkpointPins,
+                    checkpointPinsFile = pins?.file ?: state.checkpointPinsFile,
                     generatedJobs = generated,
                     previewIndex = newPreview,
                     trainStatus = trainStatus,

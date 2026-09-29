@@ -57,6 +57,27 @@ data class CheckpointsResponse(
 )
 
 /**
+ * One checkpoint the user pinned in the Checkpoints section, kept in the run's own log directory
+ * (`checkpoint_pins.json`). [dir] and [step] are recorded with the path so a pin is still readable
+ * when its file is gone.
+ */
+@Serializable
+data class CheckpointPin(
+    val path: String = "",
+    val dir: String = "",
+    val step: Int? = null,
+    @SerialName("pinned_at") val pinnedAt: Double? = null,
+)
+
+@Serializable
+data class CheckpointPinsResponse(
+    @SerialName("run_id") val runId: String? = null,
+    /** The pin file itself, for the user to find; null when no run resolved. */
+    val file: String? = null,
+    val pins: List<CheckpointPin> = emptyList(),
+)
+
+/**
  * One run in the dashboard's history list, whatever `output_name` it was created with.
  * [current] is the run `state.json` is on — the only one the training controls act on —
  * and [live] that its process is still running.
@@ -310,10 +331,6 @@ data class ChartPickState(
     val checkpoint: CheckpointItem? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
-    val isSaving: Boolean = false,
-    val saveProgress: Float? = null,
-    val savedPath: String? = null,
-    val saveError: String? = null,
     val isFormOpen: Boolean = false,
     val prompt: String = "",
     val negativePrompt: String = "",
@@ -322,6 +339,17 @@ data class ChartPickState(
     val seed: String = "0",
     val formError: String? = null,
     val isGenerating: Boolean = false,
+)
+
+/**
+ * The outcome of one "Save As": [path] is the checkpoint that was copied, so both the Ctrl+click
+ * panel and the Checkpoints section's card can show the line only for the checkpoint it belongs to.
+ * [savedPath] is already formatted with the size the helper reported.
+ */
+data class CheckpointExport(
+    val path: String,
+    val savedPath: String? = null,
+    val error: String? = null,
 )
 
 data class DashboardUiState(
@@ -344,6 +372,17 @@ data class DashboardUiState(
     val samples: Map<String, List<SampleItem>> = emptyMap(),
     /** The displayed run's LoRA checkpoints, newest step first. */
     val checkpoints: List<CheckpointItem> = emptyList(),
+    /** Its pinned checkpoints, in the order they were pinned; these lead the section. */
+    val checkpointPins: List<CheckpointPin> = emptyList(),
+    /** The file the pins live in, shown when one is pinned. */
+    val checkpointPinsFile: String? = null,
+    /** Checkpoint path whose pin is on its way to the helper, if any. */
+    val pinningPath: String? = null,
+    val pinsError: String? = null,
+    /** Checkpoint whose "Save As" is open or copying; one export at a time (one OS save dialog). */
+    val exportInFlightPath: String? = null,
+    /** Where the last "Save As" landed, or why it failed. */
+    val exportResult: CheckpointExport? = null,
     /** Its one-off generation jobs, newest first, as stored under `{name}_samples/generated/`. */
     val generatedJobs: List<GeneratedSampleJob> = emptyList(),
     val generatedError: String? = null,

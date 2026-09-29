@@ -36,9 +36,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -92,6 +94,7 @@ import com.acite.axlranko.ui.pointerIconHand
 import com.acite.axlranko.ui.pointerIconNwseResize
 import coil3.compose.AsyncImage
 import com.acite.axlranko.model.ChartPickState
+import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.GeneratedSampleJob
@@ -280,10 +283,12 @@ fun DashboardScreen(
                         Spacer(Modifier.height(4.dp))
                     }
 
+                    val pinnedPaths = uiState.checkpointPins.map { it.path }.toSet()
                     val checkpointCards = checkpointRows(
                         checkpoints = uiState.checkpoints,
                         samples = uiState.samples,
                         jobs = uiState.generatedJobs,
+                        pinned = pinnedPaths,
                     )
                     // A generation of its own keeps the card busy, so the buttons follow both rules.
                     val runningBatchJob = runningBatch(uiState.generatedJobs)
@@ -302,12 +307,20 @@ fun DashboardScreen(
                         )
                     }
 
+                    if (checkpointCards.any { it.pinned }) {
+                        item { PinnedHintLine(uiState.checkpointPinsFile) }
+                    }
+                    uiState.pinsError?.let { message -> item { PinsErrorLine(message) } }
+
                     if (checkpointCards.isEmpty()) {
                         item { CheckpointsEmptyCard() }
                     } else {
                         // One lazy item per checkpoint: a finished run can hold dozens, and each
-                        // card asks for its own thumbnails.
-                        items(checkpointCards, key = { checkpointRowKey(it) }) { row ->
+                        // card asks for its own thumbnails. The pinned cards are the section's
+                        // prefix, so the divider between the two groups is one item too.
+                        val pinnedCards = checkpointCards.filter { it.pinned }
+                        val restCards = checkpointCards.filterNot { it.pinned }
+                        val card: @Composable (CheckpointRow) -> Unit = { row ->
                             CheckpointRowCard(
                                 row = row,
                                 thumbSize = uiState.sampleThumbSize,
@@ -317,10 +330,26 @@ fun DashboardScreen(
                                 starting = uiState.isGeneratingCheckpoint == row.checkpoint?.path,
                                 busyElsewhere = uiState.isGeneratingCheckpoint != null &&
                                     uiState.isGeneratingCheckpoint != row.checkpoint?.path,
+                                pinning = uiState.pinningPath == row.checkpoint?.path,
+                                pinEnabled = uiState.pinningPath == null,
+                                exportInFlightPath = uiState.exportInFlightPath,
+                                exportResult = uiState.exportResult,
                                 onOpen = { viewModel.openPreview(it) },
                                 onGenerate = viewModel::generateCheckpointSamples,
+                                onTogglePin = viewModel::toggleCheckpointPin,
+                                onSaveAs = viewModel::saveCheckpointAs,
                             )
                         }
+                        items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
+                        if (pinnedCards.isNotEmpty() && restCards.isNotEmpty()) {
+                            item {
+                                CheckpointsDivider(
+                                    pinned = pinnedCards.size,
+                                    rest = restCards.size,
+                                )
+                            }
+                        }
+                        items(restCards, key = { checkpointRowKey(it) }) { row -> card(row) }
                     }
 
                     item { Spacer(Modifier.height(24.dp)) }
@@ -356,6 +385,8 @@ fun DashboardScreen(
                 // mirroring api.py's `_gpu_busy`: a paused run is fine, it has given the card back.
                 gpuFree = generationAllowed(uiState.trainStatus),
                 newJobIds = uiState.sessionJobIds,
+                exportInFlightPath = uiState.exportInFlightPath,
+                exportResult = uiState.exportResult,
                 onResize = viewModel::setChartPanelSize,
                 onOpenSample = { viewModel.openPreview(it) },
                 onSaveAs = viewModel::saveCheckpointAs,
@@ -812,11 +843,101 @@ internal fun GenerationErrorLine(message: String) {
     )
 }
 
+/** A pin the helper refused — no run resolved, or the checkpoint file is not there any more. */
+@Composable
+internal fun PinsErrorLine(message: String) {
+    Text(
+        text = "Pin failed: $message",
+        style = MaterialTheme.typography.labelSmall,
+        color = rankoColors.qualityRed,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** Where the run's pins are kept, so the state the user asked for is findable on disk. */
+@Composable
+internal fun PinnedHintLine(file: String?) {
+    Text(
+        text = "Pinned checkpoints first · kept in ${file ?: "checkpoint_pins.json"}",
+        style = MaterialTheme.typography.labelSmall,
+        color = rankoColors.textDim,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** The line between the pinned cards and the rest of the section, with the split it makes. */
+@Composable
+internal fun CheckpointsDivider(pinned: Int, rest: Int) {
+    val colors = rankoColors
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        HorizontalDivider(modifier = Modifier.weight(1f), color = colors.accentPink.copy(alpha = 0.35f))
+        Text(
+            text = "$pinned pinned · $rest more",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.textDim,
+        )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = colors.accentPink.copy(alpha = 0.35f))
+    }
+}
+
+/**
+ * One checkpoint's "Save As" state: the copy in flight, where it landed, or why it failed.
+ * Shared by the Ctrl+click panel and the Checkpoints section's cards, which are the two places a
+ * checkpoint can be saved from.
+ */
+@Composable
+internal fun CheckpointExportStatus(inFlight: Boolean, result: CheckpointExport?) {
+    val colors = rankoColors
+    if (inFlight) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            LinearProgressIndicator(
+                color = colors.accentPink,
+                trackColor = colors.accentPink.copy(alpha = 0.18f),
+                modifier = Modifier.weight(1f).height(4.dp),
+            )
+            Text("Saving…", style = MaterialTheme.typography.labelSmall, color = colors.accentPink)
+        }
+    }
+    result?.savedPath?.let { path ->
+        Text(
+            text = "Saved → $path",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.qualityGreen,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    result?.error?.let { message ->
+        Text(
+            text = "Save failed: $message",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.qualityRed,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 /**
  * One card per LoRA checkpoint of the run being shown, with the images written at its step (the
  * training ones and any generated pass). A checkpoint with no images yet is still listed — that is
  * the point of a retunable cadence and an optional sampling switch — and can be sampled from here
  * whenever nothing else is using the GPU.
+ *
+ * A pinned checkpoint ([CheckpointRow.pinned]) leads the section, is drawn on an accent-tinted
+ * surface so it stands apart from the rest, and carries the pin button that put it there; the pin
+ * list is the run's own state, kept in its log directory by the helper.
  */
 @Composable
 internal fun CheckpointRowCard(
@@ -827,16 +948,24 @@ internal fun CheckpointRowCard(
     gpuFree: Boolean,
     starting: Boolean,
     busyElsewhere: Boolean,
+    pinning: Boolean,
+    pinEnabled: Boolean,
+    exportInFlightPath: String?,
+    exportResult: CheckpointExport?,
     onOpen: (SampleItem) -> Unit,
     onGenerate: (CheckpointItem) -> Unit,
+    onTogglePin: (CheckpointItem) -> Unit,
+    onSaveAs: (CheckpointItem) -> Unit,
 ) {
     val colors = rankoColors
     val checkpoint = row.checkpoint
     val slots = sampleSlots(row.samples, row.generated, newJobIds)
     val thumbWidth = thumbSize.dp
     val thumbHeight = thumbWidth * SAMPLE_THUMB_ASPECT
+    val saving = exportInFlightPath != null && exportInFlightPath == checkpoint?.path
+    val saveResult = exportResult?.takeIf { it.path == checkpoint?.path }
 
-    PorcelainCard {
+    PorcelainCard(emphasized = row.pinned) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -856,6 +985,21 @@ internal fun CheckpointRowCard(
                         color = Color.White,
                     )
                 }
+                if (row.pinned) {
+                    Box(
+                        modifier = Modifier
+                            .clip(rankoTokens.capsule)
+                            .background(colors.accentPink.copy(alpha = 0.18f))
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = "Pinned",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.accentPink,
+                        )
+                    }
+                }
                 Text(
                     text = checkpoint?.dir ?: "samples only",
                     style = MaterialTheme.typography.titleSmall,
@@ -866,6 +1010,17 @@ internal fun CheckpointRowCard(
                     modifier = Modifier.weight(1f),
                 )
                 if (checkpoint != null) {
+                    val saveLabel = if (saving) "Saving…" else "Save As"
+                    CapsuleButton(
+                        text = saveLabel,
+                        onClick = { onSaveAs(checkpoint) },
+                        enabled = exportInFlightPath == null,
+                        compact = true,
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(saveLabel, fontWeight = FontWeight.SemiBold)
+                    }
                     val label = if (starting) "Starting…" else "Generate samples"
                     CapsuleButton(
                         text = label,
@@ -876,6 +1031,24 @@ internal fun CheckpointRowCard(
                         Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(label, fontWeight = FontWeight.SemiBold)
+                    }
+                    val pinLabel = when {
+                        pinning -> "Pinning…"
+                        row.pinned -> "Unpin"
+                        else -> "Pin"
+                    }
+                    CapsuleButton(
+                        text = pinLabel,
+                        onClick = { onTogglePin(checkpoint) },
+                        enabled = pinEnabled,
+                        emphasized = row.pinned,
+                        compact = true,
+                    ) {
+                        Icon(
+                            imageVector = if (row.pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                            contentDescription = pinLabel,
+                            modifier = Modifier.size(14.dp),
+                        )
                     }
                 }
             }
@@ -945,6 +1118,9 @@ internal fun CheckpointRowCard(
                 }
             }
 
+            if (checkpoint != null) {
+                CheckpointExportStatus(inFlight = saving, result = saveResult)
+            }
             if (checkpoint != null && slots.isEmpty() && !gpuFree) {
                 Text(
                     text = "Pause or stop the run to render this checkpoint's sample sets.",
@@ -981,9 +1157,11 @@ private fun CheckpointPanelOverlay(
     previewOpen: Boolean,
     gpuFree: Boolean,
     newJobIds: Set<String>,
+    exportInFlightPath: String?,
+    exportResult: CheckpointExport?,
     onResize: (DpSize) -> Unit,
     onOpenSample: (SampleItem) -> Unit,
-    onSaveAs: () -> Unit,
+    onSaveAs: (CheckpointItem) -> Unit,
     onToggleForm: () -> Unit,
     onUpdateForm: (ChartPickState.() -> ChartPickState) -> Unit,
     onGenerate: (Int?) -> Unit,
@@ -1102,6 +1280,8 @@ private fun CheckpointPanelOverlay(
                         slotHeight = slotHeight,
                         gpuFree = gpuFree,
                         showSetBadges = showsSampleSetBadges(samples),
+                        exportInFlightPath = exportInFlightPath,
+                        exportResult = exportResult,
                         onOpenSample = onOpenSample,
                         onSaveAs = onSaveAs,
                         onToggleForm = onToggleForm,
@@ -1184,8 +1364,10 @@ private fun CheckpointPanelBody(
     slotHeight: Dp,
     gpuFree: Boolean,
     showSetBadges: Boolean,
+    exportInFlightPath: String?,
+    exportResult: CheckpointExport?,
     onOpenSample: (SampleItem) -> Unit,
-    onSaveAs: () -> Unit,
+    onSaveAs: (CheckpointItem) -> Unit,
     onToggleForm: () -> Unit,
     onUpdateForm: (ChartPickState.() -> ChartPickState) -> Unit,
     onGenerate: (Int?) -> Unit,
@@ -1233,15 +1415,20 @@ private fun CheckpointPanelBody(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        val savingCheckpoint = exportInFlightPath != null &&
+            exportInFlightPath == pick.checkpoint?.path
         CapsuleButton(
-            text = "Save As",
-            onClick = onSaveAs,
-            enabled = pick.checkpoint != null && !pick.isSaving,
+            text = if (savingCheckpoint) "Saving…" else "Save As",
+            onClick = { pick.checkpoint?.let(onSaveAs) },
+            enabled = pick.checkpoint != null && exportInFlightPath == null,
             compact = true,
         ) {
             Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Save As", fontWeight = FontWeight.SemiBold)
+            Text(
+                text = if (savingCheckpoint) "Saving…" else "Save As",
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         CapsuleButton(
             text = "Generate sample",
@@ -1256,41 +1443,10 @@ private fun CheckpointPanelBody(
         }
     }
 
-    if (pick.isSaving) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            LinearProgressIndicator(
-                progress = { pick.saveProgress ?: 0f },
-                modifier = Modifier.weight(1f).height(4.dp),
-            )
-            Text(
-                text = pick.saveProgress?.let { "Saving ${(it * 100).roundToInt()}%" } ?: "Saving…",
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.accentPink,
-            )
-        }
-    }
-    pick.savedPath?.let { path ->
-        Text(
-            text = "Saved → $path",
-            style = MaterialTheme.typography.labelSmall,
-            color = colors.qualityGreen,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-    pick.saveError?.let { message ->
-        Text(
-            text = "Save failed: $message",
-            style = MaterialTheme.typography.labelSmall,
-            color = colors.qualityRed,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+    CheckpointExportStatus(
+        inFlight = exportInFlightPath != null && exportInFlightPath == pick.checkpoint?.path,
+        result = exportResult?.takeIf { it.path == pick.checkpoint?.path },
+    )
 
     if (pick.isFormOpen) {
         GenerateSamplePanel(

@@ -2,6 +2,7 @@ package com.acite.axlranko
 
 import com.acite.axlranko.data.IpcRequest
 import com.acite.axlranko.data.IpcResponse
+import com.acite.axlranko.model.CheckpointPinsResponse
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
@@ -12,6 +13,7 @@ import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -328,6 +330,67 @@ class DashboardIpcTest {
     }
 
     @Test
+    fun checkpointPinsResponseParses() {
+        val raw = """
+            {
+              "run_id": "rein_20260911_120000",
+              "file": "/logs/rein_20260911_120000/checkpoint_pins.json",
+              "pins": [
+                {
+                  "path": "/out/rein_20260911_120000/rein_s000300/rein.safetensors",
+                  "dir": "rein_s000300",
+                  "step": 300,
+                  "pinned_at": 1757500000.5
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(CheckpointPinsResponse.serializer(), raw)
+        assertEquals("rein_20260911_120000", parsed.runId)
+        assertEquals("/logs/rein_20260911_120000/checkpoint_pins.json", parsed.file)
+        assertEquals(1, parsed.pins.size)
+        val pin = parsed.pins.first()
+        assertEquals("/out/rein_20260911_120000/rein_s000300/rein.safetensors", pin.path)
+        assertEquals("rein_s000300", pin.dir)
+        assertEquals(300, pin.step)
+        assertEquals(1757500000.5, pin.pinnedAt)
+    }
+
+    @Test
+    fun emptyPinListAndMissingRunParse() {
+        val parsed = json.decodeFromString(
+            CheckpointPinsResponse.serializer(),
+            """{"run_id": null, "file": null, "pins": []}""",
+        )
+        assertEquals(null, parsed.runId)
+        assertEquals(null, parsed.file)
+        assertTrue(parsed.pins.isEmpty())
+    }
+
+    @Test
+    fun checkpointPinSetRequestRoundTrip() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 22,
+                method = "checkpoint_pin_set",
+                params = buildJsonObject {
+                    put("path", "/out/rein_s000300/rein.safetensors")
+                    put("pinned", true)
+                    put("dir", "rein_s000300")
+                    put("step", 300)
+                    put("run_id", "rein_20260911_120000")
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        assertEquals("checkpoint_pin_set", decoded.method)
+        assertEquals("true", decoded.params["pinned"]?.jsonPrimitive?.content)
+        assertEquals("300", decoded.params["step"]?.jsonPrimitive?.content)
+        assertEquals("rein_20260911_120000", decoded.params["run_id"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun hardwareStatusParsesNvtopSnapshot() {
         val raw = """
             {
@@ -432,12 +495,14 @@ class DashboardIpcTest {
             IpcRequest(
                 id = 9,
                 method = "train_reset",
-                params = buildJsonObject { put("delete_weights", true) },
+                params = buildJsonObject { put("name", "rein") },
             ),
         )
         val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
         assertEquals("train_reset", decoded.method)
-        assertEquals("true", decoded.params["delete_weights"]?.jsonPrimitive?.content)
+        assertEquals("rein", decoded.params["name"]?.jsonPrimitive?.content)
+        // Reset clears the state and nothing else: there is no flag that deletes a run's weights.
+        assertNull(decoded.params["delete_weights"])
     }
 
     @Test

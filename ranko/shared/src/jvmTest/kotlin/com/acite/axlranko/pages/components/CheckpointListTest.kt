@@ -5,6 +5,7 @@ import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.SampleItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -255,5 +256,77 @@ class CheckpointListTest {
         assertEquals(0, slots[1].item.setIndex)
         assertEquals(1, slots[2].item.setIndex)
         assertTrue(slots.drop(1).all { it.job?.id == "a_sets_gen_1" })
+    }
+
+    @Test
+    fun pinnedCheckpointsLeadTheSection() {
+        val checkpoints = listOf(checkpoint(3050), checkpoint(3000), checkpoint(2950))
+        val plain = checkpointRows(checkpoints, emptyMap(), emptyList())
+        assertEquals(listOf(3050, 3000, 2950), plain.map { it.step })
+
+        val pinned = checkpointRows(
+            checkpoints,
+            emptyMap(),
+            emptyList(),
+            pinned = setOf(checkpoint(2950).path),
+        )
+        assertEquals(listOf(2950, 3050, 3000), pinned.map { it.step })
+        assertEquals(listOf(true, false, false), pinned.map { it.pinned })
+    }
+
+    @Test
+    fun pinningIsAStablePartitionNotAReSort() {
+        // Inside the pinned block the section keeps its own newest-step-first order, so a card the
+        // user pinned does not move when a new checkpoint is saved.
+        val checkpoints = listOf(checkpoint(3100), checkpoint(3050), checkpoint(3000))
+        val rows = checkpointRows(
+            checkpoints,
+            emptyMap(),
+            emptyList(),
+            pinned = setOf(checkpoint(3000).path, checkpoint(3050).path),
+        )
+        assertEquals(listOf(3050, 3000, 3100), rows.map { it.step })
+    }
+
+    @Test
+    fun aPinnedPathWithNoCheckpointIsNotDrawn() {
+        // Reset deletes weights and keeps the pin file; the pin survives on disk, but no card can
+        // stand for a checkpoint that is gone.
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = emptyMap(),
+            jobs = emptyList(),
+            pinned = setOf("/out/run/rein_s0200/rein.safetensors"),
+        )
+        assertEquals(listOf(3050), rows.map { it.step })
+        assertEquals(listOf(false), rows.map { it.pinned })
+    }
+
+    @Test
+    fun aSamplesOnlyRowIsNeverPinned() {
+        val rows = checkpointRows(
+            checkpoints = emptyList(),
+            samples = mapOf("3000" to listOf(sample(3000, 0))),
+            jobs = emptyList(),
+            pinned = setOf("samples-only-3000"),
+        )
+        assertEquals(1, rows.size)
+        assertFalse(rows[0].pinned)
+    }
+
+    @Test
+    fun thePinnedRowsAreTheOnesTheSectionShowsFirst() {
+        // The preview list follows the rows, so a pinned card's images open in the order drawn.
+        val checkpoints = listOf(checkpoint(3050), checkpoint(3000))
+        val rows = checkpointRows(
+            checkpoints = checkpoints,
+            samples = mapOf("3050" to listOf(sample(3050, 0)), "3000" to listOf(sample(3000, 0))),
+            jobs = emptyList(),
+            pinned = setOf(checkpoint(3000).path),
+        )
+        assertEquals(
+            listOf(sample(3000, 0).path, sample(3050, 0).path),
+            sectionImages(rows).map { it.path },
+        )
     }
 }

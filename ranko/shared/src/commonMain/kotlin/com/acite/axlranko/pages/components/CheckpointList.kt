@@ -17,10 +17,18 @@ internal data class CheckpointRow(
     val generated: List<GeneratedSampleJob>,
     /** A pass still rendering for this checkpoint, if any. */
     val running: GeneratedSampleJob?,
+    /** True when the user pinned this checkpoint; pinned rows lead the section. */
+    val pinned: Boolean = false,
 )
 
 /**
- * The Checkpoints section, in the order [checkpoints] arrived (newest step first).
+ * The Checkpoints section, in the order [checkpoints] arrived (newest step first), with the
+ * checkpoints in [pinned] lifted to the front.
+ *
+ * Pinning is a stable partition of the section's own order, not a second sort: the pinned block
+ * keeps the newest-step-first order the rest of the section uses, so a pinned card never jumps
+ * around when another checkpoint is saved. A pinned path that matches no checkpoint (Reset deleted
+ * its weights) is simply not drawn — the pin stays in the file, where it can still be removed.
  *
  * The section is checkpoint-driven — an image always belongs to the checkpoint its save wrote — so
  * a job is attached by the checkpoint it names, and the step is only the fallback for a record that
@@ -32,6 +40,7 @@ internal fun checkpointRows(
     checkpoints: List<CheckpointItem>,
     samples: Map<String, List<SampleItem>>,
     jobs: List<GeneratedSampleJob>,
+    pinned: Set<String> = emptySet(),
 ): List<CheckpointRow> {
     val done = jobs.filter { jobHasImages(it) }
     val rows = mutableListOf<CheckpointRow>()
@@ -88,7 +97,10 @@ internal fun checkpointRows(
             running = null,
         )
     }
-    return rows
+
+    if (pinned.isEmpty()) return rows
+    val (onTop, rest) = rows.partition { it.checkpoint?.path in pinned }
+    return (onTop + rest).map { row -> row.copy(pinned = row.checkpoint?.path in pinned) }
 }
 
 /**
