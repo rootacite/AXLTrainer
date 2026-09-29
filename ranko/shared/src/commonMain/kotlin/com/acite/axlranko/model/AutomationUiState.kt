@@ -140,6 +140,13 @@ data class AutomationUiState(
     val jobActionBusy: String = "",
     /** Job id waiting for the delete confirmation. */
     val pendingDeleteJob: String? = null,
+    // --- Gallery: one image / one prompt at a time ---
+    /** An image waiting for its confirmation (delete, or a redraw that overwrites it). */
+    val pendingImageAction: GalleryImagePrompt? = null,
+    /** The prompt whose text is open in the edit dialog (`null` = closed). */
+    val editingPrompt: PromptEditDraft? = null,
+    /** The prompt the "add N images" dialog is open for (`null` = closed), with its draft count. */
+    val extendingPrompt: PromptExtendDraft? = null,
 ) {
     /** Keys of the wizard pages that apply to the current spec, in order. */
     val applicablePageKeys: List<String>
@@ -187,6 +194,24 @@ data class AutomationUiState(
 fun jobImagePathFor(jobId: String, outputDir: String, name: String): String {
     val root = outputDir.trimEnd('/')
     return "$root/$jobId/images/$name"
+}
+
+/** One image of one job — what a per-image action needs to name its target. */
+data class GalleryImageRef(val jobId: String, val promptIndex: Int, val image: String)
+
+/** What a confirmation dialog over one image would do. */
+enum class GalleryImageAction { Delete, Regenerate }
+
+/** The image whose dialog is open, and what confirming it does. */
+data class GalleryImagePrompt(val ref: GalleryImageRef, val action: GalleryImageAction)
+
+/** The open "edit this prompt" dialog: which entry, and the text being edited. */
+data class PromptEditDraft(val jobId: String, val promptIndex: Int, val text: String)
+
+/** The open "add N images" dialog: which entry, and the count being typed. */
+data class PromptExtendDraft(val jobId: String, val promptIndex: Int, val count: String = "1") {
+    /** The count to send, or null while the field does not hold a usable number. */
+    val images: Int? get() = count.trim().toIntOrNull()?.takeIf { it in 1..16 }
 }
 
 /** A job's elapsed seconds: started → finished (or now, while it runs). */

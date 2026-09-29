@@ -58,6 +58,8 @@ data class PreviewImage(
     val title: String,
     val caption: String = "",
     val maxEdge: Int = 1024,
+    /** Cache revision of [path]: changes when the file behind it becomes a different image. */
+    val rev: String = "",
 )
 
 /**
@@ -184,7 +186,12 @@ fun ImagePreviewOverlay(
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
-                    model = BlobRef(current.path, maxEdge = current.maxEdge, quality = LocalThumbnailQuality.current),
+                    model = BlobRef(
+                        current.path,
+                        maxEdge = current.maxEdge,
+                        quality = LocalThumbnailQuality.current,
+                        rev = current.rev,
+                    ),
                     contentDescription = current.title,
                     contentScale = ContentScale.Fit,
                     filterQuality = FilterQuality.High,

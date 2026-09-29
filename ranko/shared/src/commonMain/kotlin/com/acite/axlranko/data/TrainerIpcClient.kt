@@ -546,6 +546,56 @@ class TrainerIpcClient {
         call("automation_job_delete", buildJsonObject { put("id", id) })
     }
 
+    /** Deletes one image (and its sidecar) of a job; the reply is that job's whole detail. */
+    suspend fun automationImageDelete(id: String, image: String): AutomationJobDetail {
+        val result = call(
+            "automation_image_delete",
+            buildJsonObject {
+                put("id", id)
+                put("image", image)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** Draws one image again with a new random seed, writing over it. */
+    suspend fun automationImageRegenerate(id: String, image: String): AutomationJobDetail {
+        val result = call(
+            "automation_image_regenerate",
+            buildJsonObject {
+                put("id", id)
+                put("image", image)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** Adds [count] images to one prompt entry, each from its own new random seed. */
+    suspend fun automationPromptExtend(id: String, promptIndex: Int, count: Int): AutomationJobDetail {
+        val result = call(
+            "automation_prompt_extend",
+            buildJsonObject {
+                put("id", id)
+                put("prompt_index", promptIndex)
+                put("count", count)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** Rewrites one prompt entry's text in the job record; nothing is rendered. */
+    suspend fun automationJobPromptEdit(id: String, promptIndex: Int, text: String): AutomationJobDetail {
+        val result = call(
+            "automation_job_prompt_edit",
+            buildJsonObject {
+                put("id", id)
+                put("prompt_index", promptIndex)
+                put("text", text)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     suspend fun datasetList(directory: String): DatasetListResult {
         val result = call("dataset_list", buildJsonObject { put("directory", directory) })
         return json.decodeFromJsonElement(result)

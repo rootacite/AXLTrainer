@@ -9,9 +9,13 @@ import com.acite.axlranko.data.PromptMatrixDocument
 import com.acite.axlranko.data.PromptProfileDocument
 import com.acite.axlranko.data.PromptProfileListResult
 import com.acite.axlranko.data.PromptProfileSaveResult
+import com.acite.axlranko.data.imageSeedAt
+import com.acite.axlranko.data.jobPassProgress
 import com.acite.axlranko.model.AutomationSettingsDraft
 import com.acite.axlranko.model.AutomationUiState
+import com.acite.axlranko.model.GalleryImageRef
 import com.acite.axlranko.model.JobFilter
+import com.acite.axlranko.model.PromptExtendDraft
 import com.acite.axlranko.model.PromptProfileItem
 import com.acite.axlranko.model.jobElapsedSeconds
 import com.acite.axlranko.model.jobImagePathFor
@@ -19,6 +23,7 @@ import com.acite.axlranko.model.jobProgress
 import com.acite.axlranko.model.promptExportFileName
 import com.acite.axlranko.model.promptExportText
 import com.acite.axlranko.model.promptProfileLabel
+import com.acite.axlranko.pages.components.automation.promptEntryFor
 import com.acite.axlranko.pages.components.automation.uiText
 import com.acite.axlranko.prompt.PromptLang
 import com.acite.axlranko.prompt.PromptMode
@@ -28,6 +33,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import com.acite.axlranko.data.IpcRequest
 
 /** The Automation page's payloads and its pure UI helpers. */
 class AutomationIpcTest {
@@ -275,6 +284,138 @@ class AutomationIpcTest {
         assertEquals(1, AutomationUiState(jobs = listed.jobs, jobFilter = JobFilter.Running).visibleJobs.size)
         assertEquals(1, AutomationUiState(jobs = listed.jobs, jobSearch = "101500").visibleJobs.size)
         assertEquals(0, AutomationUiState(jobs = listed.jobs, jobSearch = "nope").visibleJobs.size)
+    }
+
+    @Test
+    fun theGalleryImageActionsCarryTheirTarget() {
+        val detail = json.decodeFromString(
+            AutomationJobDetail.serializer(),
+            """
+            {"id": "Kirika_20260928_101500", "state": "done", "output_dir": "/repo/automation/jobs",
+             "prompts": [{"index": 0, "text": "alpha", "state": "done", "seed": 99,
+                          "images": ["p0001_01.png", "p0001_02.png"], "image_seeds": [11, 12]}]}
+            """.trimIndent(),
+        )
+        val prompt = detail.prompts.single()
+        assertEquals(listOf(11L, 12L), prompt.imageSeeds)
+        assertEquals(11L, imageSeedAt(prompt, 0))
+        assertEquals(12L, imageSeedAt(prompt, 1))
+        // A record from before the Gallery could redraw one image has no list: its single seed is
+        // what those images were drawn with, and what the page showed for them.
+        val older = prompt.copy(imageSeeds = emptyList())
+        assertEquals(99L, imageSeedAt(older, 0))
+        assertEquals(99L, imageSeedAt(older, 1))
+        assertEquals(null, imageSeedAt(prompt, 2), "a longer list has no seed for a name it lacks")
+
+        // Every reply is the job's whole detail, so one action needs one round trip.
+        assertEquals("Kirika_20260928_101500", detail.id)
+        val ref = GalleryImageRef(detail.id, 0, "p0001_02.png")
+        // The position the API takes (its stored `index`), which the row shows as `#1`.
+        assertEquals(0, promptEntryFor(detail, ref.image)?.first)
+        assertEquals("alpha", promptEntryFor(detail, ref.image)?.second?.text)
+        assertEquals(null, promptEntryFor(detail, "p0009_01.png"))
+    }
+
+    @Test
+    fun theImageActionRequestsRoundTrip() {
+        val delete = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 31,
+                method = "automation_image_delete",
+                params = buildJsonObject {
+                    put("id", "Kirika_20260928_101500")
+                    put("image", "p0001_01.png")
+                },
+            ),
+        )
+        val decodedDelete = json.decodeFromString(IpcRequest.serializer(), delete)
+        assertEquals("automation_image_delete", decodedDelete.method)
+        assertEquals("p0001_01.png", decodedDelete.params["image"]?.jsonPrimitive?.content)
+
+        val extend = json.decodeFromString(
+            IpcRequest.serializer(),
+            json.encodeToString(
+                IpcRequest.serializer(),
+                IpcRequest(
+                    id = 32,
+                    method = "automation_prompt_extend",
+                    params = buildJsonObject {
+                        put("id", "Kirika_20260928_101500")
+                        put("prompt_index", 3)
+                        put("count", 4)
+                    },
+                ),
+            ),
+        )
+        assertEquals("4", extend.params["count"]?.jsonPrimitive?.content)
+        assertEquals("3", extend.params["prompt_index"]?.jsonPrimitive?.content)
+
+        val edit = json.decodeFromString(
+            IpcRequest.serializer(),
+            json.encodeToString(
+                IpcRequest.serializer(),
+                IpcRequest(
+                    id = 33,
+                    method = "automation_job_prompt_edit",
+                    params = buildJsonObject {
+                        put("id", "Kirika_20260928_101500")
+                        put("prompt_index", 0)
+                        put("text", "a new prompt")
+                    },
+                ),
+            ),
+        )
+        assertEquals("a new prompt", edit.params["text"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun aRunningPassParsesOnTheJobAndOnTheListRow() {
+        val detail = json.decodeFromString(
+            AutomationJobDetail.serializer(),
+            """
+            {"id": "Kirika_20260928_101500", "state": "running", "output_dir": "/repo/automation/jobs",
+             "pass": {"mode": "append", "prompt_index": 1, "images_done": 2, "total_images": 4,
+                      "image": "p0002_03.png"},
+             "prompts": [{"index": 0, "text": "alpha", "state": "done", "seed": 99,
+                          "images": ["p0001_01.png"], "image_seeds": [99]}]}
+            """.trimIndent(),
+        )
+        val pass = detail.pass
+        assertEquals("append", pass?.mode)
+        assertEquals(1, pass?.promptIndex)
+        assertEquals("p0002_03.png", pass?.image)
+        assertEquals(0.5f, jobPassProgress(pass!!))
+        assertEquals(0f, jobPassProgress(pass.copy(imagesDone = 0)))
+        assertEquals(1f, jobPassProgress(pass.copy(imagesDone = 9)), "a counter that overshoots stays 0..1")
+        assertEquals(0f, jobPassProgress(pass.copy(totalImages = 0)))
+
+        // The job list carries the same block, which is what lets the row say what is running.
+        val listed = json.decodeFromString(
+            AutomationJobListResult.serializer(),
+            """
+            {"jobs": [{"id": "Kirika_20260928_101500", "state": "running", "total": 2, "done": 1,
+                       "images": 1, "pass": {"mode": "image", "prompt_index": 0, "images_done": 0,
+                                             "total_images": 1, "image": "p0001_01.png"}}]}
+            """.trimIndent(),
+        )
+        assertEquals("image", listed.jobs.single().pass?.mode)
+        assertEquals("p0001_01.png", listed.jobs.single().pass?.image)
+        // A job with no pass in flight (every job until one is started) still parses.
+        assertEquals(null, json.decodeFromString(
+            AutomationJobListResult.serializer(),
+            """{"jobs": [{"id": "old", "state": "done"}]}""",
+        ).jobs.single().pass)
+    }
+
+    @Test
+    fun theExtendDraftOnlySendsAUsableCount() {
+        assertEquals(1, PromptExtendDraft("job", 0).images, "a fresh dialog starts at one")
+        assertEquals(6, PromptExtendDraft("job", 0, count = "6").images)
+        assertEquals(null, PromptExtendDraft("job", 0, count = "").images)
+        assertEquals(null, PromptExtendDraft("job", 0, count = "0").images)
+        assertEquals(null, PromptExtendDraft("job", 0, count = "17").images)
+        assertEquals(null, PromptExtendDraft("job", 0, count = "many").images)
     }
 
     @Test

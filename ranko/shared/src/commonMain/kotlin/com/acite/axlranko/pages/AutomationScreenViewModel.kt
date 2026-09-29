@@ -3,6 +3,7 @@ package com.acite.axlranko.pages
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.acite.axlranko.data.AutomationSettings
+import com.acite.axlranko.data.AutomationJobDetail
 import com.acite.axlranko.data.AutomationWorkflow
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
@@ -11,7 +12,12 @@ import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.data.decodeBase64
 import com.acite.axlranko.model.AutomationSection
 import com.acite.axlranko.model.AutomationSettingsDraft
+import com.acite.axlranko.model.GalleryImageAction
+import com.acite.axlranko.model.GalleryImagePrompt
+import com.acite.axlranko.model.GalleryImageRef
 import com.acite.axlranko.model.JobFilter
+import com.acite.axlranko.model.PromptEditDraft
+import com.acite.axlranko.model.PromptExtendDraft
 import com.acite.axlranko.model.PromptSource
 import com.acite.axlranko.model.AutomationUiState
 import com.acite.axlranko.model.PromptProfileItem
@@ -94,6 +100,9 @@ class AutomationScreenViewModel(
                 if (_uiState.value.runningJob == null) break
                 refreshJobs()
             }
+            // The tick that found the job stopped: look once more at what it left behind, so the
+            // finished state (and the buttons it enables) is on screen without a click.
+            refreshJobs()
             pollJob = null
         }
     }
@@ -807,10 +816,33 @@ class AutomationScreenViewModel(
                 }
                 ensureJobPolling()
                 notifyDatasetIfNeeded()
-                val selected = _uiState.value.selectedJobId
-                if (selected.isNotEmpty() && _uiState.value.jobDetail?.id != selected) selectJob(selected)
+                refreshSelectedDetail()
             } catch (e: Exception) {
                 _uiState.update { it.copy(jobsLoading = false, jobsError = e.message ?: "读取任务失败") }
+            }
+        }
+    }
+
+    /**
+     * Re-reads the selected job's detail, which the poll does on every tick.
+     *
+     * A job that runs moves while the page looks at it — a pass writes images, a redraw swaps one,
+     * its per-image seeds change and its own state ends up `done` — and without this the Gallery
+     * kept the copy it loaded when the job was picked: new images stayed invisible and the
+     * per-image buttons stayed disabled until the job was clicked again.
+     */
+    private fun refreshSelectedDetail() {
+        if (_uiState.value.jobActionBusy != "") return
+        val selected = _uiState.value.selectedJobId
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val detail = ipc.automationJobGet(selected)
+                _uiState.update { state ->
+                    if (state.selectedJobId != selected) state else state.copy(jobDetail = detail)
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(jobsError = e.message ?: "读取任务失败") }
             }
         }
     }
@@ -893,6 +925,102 @@ class AutomationScreenViewModel(
                 refreshJobs()
             } catch (e: Exception) {
                 _uiState.update { it.copy(jobActionBusy = "", jobsError = e.message ?: "删除任务失败") }
+            }
+        }
+    }
+
+    // --- Gallery: one image / one prompt at a time ---
+
+    /** Asks before an image is overwritten or removed; the dialog is the confirmation. */
+    fun confirmImageAction(jobId: String, promptIndex: Int, image: String, action: GalleryImageAction) {
+        _uiState.update {
+            it.copy(pendingImageAction = GalleryImagePrompt(GalleryImageRef(jobId, promptIndex, image), action))
+        }
+    }
+
+    fun dismissImageAction() {
+        _uiState.update { it.copy(pendingImageAction = null) }
+    }
+
+    /** Runs what the open image dialog asked for: a redraw with a new seed, or a delete. */
+    fun runImageAction() {
+        val pending = _uiState.value.pendingImageAction ?: return
+        val ref = pending.ref
+        _uiState.update { it.copy(pendingImageAction = null) }
+        galleryDetailAction(ref.jobId) {
+            when (pending.action) {
+                GalleryImageAction.Delete -> ipc.automationImageDelete(ref.jobId, ref.image)
+                GalleryImageAction.Regenerate -> ipc.automationImageRegenerate(ref.jobId, ref.image)
+            }
+        }
+    }
+
+    fun openPromptEdit(jobId: String, promptIndex: Int, text: String) {
+        _uiState.update { it.copy(editingPrompt = PromptEditDraft(jobId, promptIndex, text), jobsError = null) }
+    }
+
+    fun updatePromptEdit(text: String) {
+        _uiState.update { state -> state.copy(editingPrompt = state.editingPrompt?.copy(text = text)) }
+    }
+
+    fun dismissPromptEdit() {
+        _uiState.update { it.copy(editingPrompt = null) }
+    }
+
+    /** Saves the edited text into the job record; nothing is rendered by this. */
+    fun savePromptEdit() {
+        val draft = _uiState.value.editingPrompt ?: return
+        if (draft.text.isBlank()) return
+        _uiState.update { it.copy(editingPrompt = null) }
+        galleryDetailAction(draft.jobId) { ipc.automationJobPromptEdit(draft.jobId, draft.promptIndex, draft.text.trim()) }
+    }
+
+    fun openPromptExtend(jobId: String, promptIndex: Int) {
+        _uiState.update { it.copy(extendingPrompt = PromptExtendDraft(jobId, promptIndex), jobsError = null) }
+    }
+
+    fun updatePromptExtend(count: String) {
+        val digits = count.filter { it.isDigit() }.take(2)
+        _uiState.update { state -> state.copy(extendingPrompt = state.extendingPrompt?.copy(count = digits)) }
+    }
+
+    fun dismissPromptExtend() {
+        _uiState.update { it.copy(extendingPrompt = null) }
+    }
+
+    /** Adds the drafted number of images to one prompt, each from its own new random seed. */
+    fun confirmPromptExtend() {
+        val draft = _uiState.value.extendingPrompt ?: return
+        val images = draft.images ?: return
+        _uiState.update { it.copy(extendingPrompt = null) }
+        galleryDetailAction(draft.jobId) { ipc.automationPromptExtend(draft.jobId, draft.promptIndex, images) }
+    }
+
+    /**
+     * One Gallery action that answers with the job's whole detail: the reply replaces the page's
+     * copy of that job (so a redraw's new seed shows at once) and the job list is refreshed to
+     * pick up the `running` state. The preview is dropped when the image it showed is gone.
+     */
+    private fun galleryDetailAction(jobId: String, block: suspend () -> AutomationJobDetail) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(jobActionBusy = jobId, jobsError = null) }
+            try {
+                val detail = block()
+                _uiState.update { state ->
+                    if (state.selectedJobId != jobId) {
+                        state.copy(jobActionBusy = "")
+                    } else {
+                        state.copy(
+                            jobActionBusy = "",
+                            jobDetail = detail,
+                            galleryPreviewIndex = state.galleryPreviewIndex
+                                ?.takeIf { index -> index < detail.prompts.sumOf { it.images.size } },
+                        )
+                    }
+                }
+                refreshJobs()
+            } catch (e: Exception) {
+                _uiState.update { it.copy(jobActionBusy = "", jobsError = e.message ?: e.toString()) }
             }
         }
     }

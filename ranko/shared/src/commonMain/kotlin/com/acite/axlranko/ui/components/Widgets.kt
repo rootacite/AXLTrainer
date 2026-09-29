@@ -192,9 +192,9 @@ fun RankoChoiceRow(
 }
 
 @Composable
-fun QuietTextButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun QuietTextButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val colors = rankoColors
-    TextButton(onClick = onClick, modifier = modifier) {
+    TextButton(onClick = onClick, enabled = enabled, modifier = modifier) {
         Text(text, color = colors.accentLilac, fontWeight = FontWeight.Medium)
     }
 }

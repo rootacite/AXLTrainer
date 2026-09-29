@@ -22,6 +22,14 @@ data class BlobRef(
     val maxEdge: Int = 256,
     val quality: Int,
     val format: String = "jpeg",
+    /**
+     * Asks for the bytes to be **revalidated** rather than served from the client cache, and takes
+     * part in the request identity, so a caller that knows the file behind [path] can become a
+     * different image sets something that changes with it — the Gallery passes the seed the job
+     * record credits that image to, and a redraw (same name, new pixels) then fetches the new
+     * bytes instead of the ones read the first time.
+     */
+    val rev: String = "",
 )
 
 val LocalThumbnailQuality = compositionLocalOf { 80 }
@@ -45,10 +53,16 @@ class BlobStore(private val ipc: TrainerIpcClient) {
     }
 
     suspend fun get(ref: BlobRef): ByteArray {
-        cacheLock.withLock {
-            val hash = hashByKey[key(ref)]
-            if (hash != null) {
-                bytesByHash[hash]?.let { return it }
+        // A ref that carries a revision does not trust what is cached: it goes through the mailbox,
+        // where the stat's hash (which the server derives from the file's mtime and size) either
+        // confirms the bytes we already hold or makes them a miss. Everything else — the whole
+        // dataset, the Dashboard's samples — keeps the fast path.
+        if (ref.rev.isEmpty()) {
+            cacheLock.withLock {
+                val hash = hashByKey[key(ref)]
+                if (hash != null) {
+                    bytesByHash[hash]?.let { return it }
+                }
             }
         }
         val waiter = BlobWaiter(ref, CompletableDeferred())

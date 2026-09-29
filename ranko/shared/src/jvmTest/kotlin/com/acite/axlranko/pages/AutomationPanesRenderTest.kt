@@ -17,6 +17,7 @@ import com.acite.axlranko.data.ComfyCheckedEntry
 import com.acite.axlranko.data.ComfyDiscovery
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
+import com.acite.axlranko.data.JobPass
 import com.acite.axlranko.data.JobPromptState
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.data.WorkflowMissingModel
@@ -24,6 +25,11 @@ import com.acite.axlranko.data.WorkflowTextNode
 import com.acite.axlranko.model.AutomationSection
 import com.acite.axlranko.model.AutomationSettingsDraft
 import com.acite.axlranko.model.AutomationUiState
+import com.acite.axlranko.model.GalleryImageAction
+import com.acite.axlranko.model.GalleryImagePrompt
+import com.acite.axlranko.model.GalleryImageRef
+import com.acite.axlranko.model.PromptEditDraft
+import com.acite.axlranko.model.PromptExtendDraft
 import com.acite.axlranko.pages.components.automation.ComfyPane
 import com.acite.axlranko.pages.components.automation.GalleryPane
 import com.acite.axlranko.pages.components.ImagePreviewOverlay
@@ -240,6 +246,71 @@ class AutomationPanesRenderTest {
                     selectedJobId = job.id,
                     jobDetail = detail,
                     pendingDeleteJob = job.id,
+                ),
+                // The per-image dialogs: a redraw (which overwrites the image), a delete, the
+                // prompt editor and the "add N images" count.
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job),
+                    selectedJobId = job.id,
+                    jobDetail = detail,
+                    pendingImageAction = GalleryImagePrompt(
+                        GalleryImageRef(job.id, 0, "p0001_01.png"),
+                        GalleryImageAction.Regenerate,
+                    ),
+                ),
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job),
+                    selectedJobId = job.id,
+                    jobDetail = detail,
+                    pendingImageAction = GalleryImagePrompt(
+                        GalleryImageRef(job.id, 0, "p0001_01.png"),
+                        GalleryImageAction.Delete,
+                    ),
+                ),
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job),
+                    selectedJobId = job.id,
+                    jobDetail = detail,
+                    editingPrompt = PromptEditDraft(job.id, 0, "a longer prompt being edited"),
+                ),
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job),
+                    selectedJobId = job.id,
+                    jobDetail = detail,
+                    extendingPrompt = PromptExtendDraft(job.id, 0, count = "4"),
+                ),
+                // A redraw and an append in flight: the job row says what is happening (a redraw
+                // does not move the job's own counters) and so does the card above the thumbnails,
+                // which is where the user is looking.
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(
+                        job.copy(
+                            state = "running",
+                            pass = JobPass(
+                                mode = "append",
+                                promptIndex = 0,
+                                imagesDone = 2,
+                                totalImages = 4,
+                                image = "p0001_03.png",
+                            ),
+                        ),
+                    ),
+                    selectedJobId = job.id,
+                    jobDetail = detail.copy(
+                        state = "running",
+                        pass = JobPass(
+                            mode = "image",
+                            promptIndex = 0,
+                            imagesDone = 0,
+                            totalImages = 1,
+                            image = "p0001_01.png",
+                        ),
+                    ),
                 ),
             ),
         )

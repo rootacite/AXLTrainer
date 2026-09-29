@@ -280,8 +280,22 @@ data class JobPromptState(
     val seed: Long? = null,
     @SerialName("prompt_id") val promptId: String = "",
     val images: List<String> = emptyList(),
+    /**
+     * The seed each image in [images] was drawn with, one per name. Empty on a job from before the
+     * Gallery redrew single images, where [seed] (the last pass's) is all there is — see
+     * [imageSeedAt].
+     */
+    @SerialName("image_seeds") val imageSeeds: List<Long?> = emptyList(),
     val error: String? = null,
 )
+
+/**
+ * The seed behind one of a prompt's images, `null` when it is not known. A record with no
+ * per-image list at all falls back to the prompt's single [JobPromptState.seed], which is what the
+ * Gallery showed for those images before it could redraw one.
+ */
+fun imageSeedAt(prompt: JobPromptState, imageIndex: Int): Long? =
+    if (prompt.imageSeeds.isEmpty()) prompt.seed else prompt.imageSeeds.getOrNull(imageIndex)
 
 @Serializable
 data class AutomationJobSummary(
@@ -301,6 +315,8 @@ data class AutomationJobSummary(
     @SerialName("positive_node") val positiveNode: String = "",
     val count: Int = 1,
     @SerialName("comfy_url") val comfyUrl: String = "",
+    /** The redraw/append pass in flight for this job, so the job list can say what it is doing. */
+    val pass: JobPass? = null,
     val error: String? = null,
 )
 
@@ -310,6 +326,26 @@ data class AutomationJobListResult(
 )
 
 /** A job plus its per-prompt detail; `summary` repeats the list shape for convenience. */
+/**
+ * What a targeted pass (a redraw or an append from the Gallery) is doing right now. The job's own
+ * counters stay still for a redraw — it replaces one image — so the record carries this while the
+ * pass runs and drops it (`null`) when the pass ends.
+ */
+@Serializable
+data class JobPass(
+    /** `image` (redraw one image in place) or `append` (add N images). */
+    val mode: String = "",
+    @SerialName("prompt_index") val promptIndex: Int = 0,
+    @SerialName("images_done") val imagesDone: Int = 0,
+    @SerialName("total_images") val totalImages: Int = 0,
+    /** The image the pass is working on (the redraw's target, or the last one written). */
+    val image: String? = null,
+)
+
+/** 0f..1f for a targeted pass's progress line. */
+fun jobPassProgress(pass: JobPass): Float =
+    if (pass.totalImages <= 0) 0f else (pass.imagesDone.toFloat() / pass.totalImages.toFloat()).coerceIn(0f, 1f)
+
 @Serializable
 data class AutomationJobDetail(
     val id: String = "",
@@ -319,6 +355,8 @@ data class AutomationJobDetail(
     @SerialName("log_tail") val logTail: String = "",
     @SerialName("output_dir") val outputDir: String = "",
     @SerialName("comfy_url") val comfyUrl: String = "",
+    /** The redraw/append pass in flight, if any. */
+    val pass: JobPass? = null,
     val error: String? = null,
 )
 

@@ -161,6 +161,36 @@ private val UI_TEXT: Map<String, Pair<String, String>> = mapOf(
     "browse" to ("浏览…" to "Browse…"),
     "yes" to ("确定" to "Yes"),
     "no" to ("取消" to "No"),
+    // Gallery: the per-image and per-prompt actions.
+    "regenerate_image" to ("用新种子重画" to "Redraw, new seed"),
+    "add_images" to ("再加几张…" to "Add images…"),
+    "edit_prompt" to ("改提示词…" to "Edit prompt…"),
+    "delete_image" to ("删除这张" to "Delete this image"),
+    "save" to ("保存" to "Save"),
+    "confirm_regenerate_image" to (
+        "用一个新的随机种子重画这张图？" to "Redraw this image with a new random seed?"
+        ),
+    "confirm_delete_image" to ("删除这张图？" to "Delete this image?"),
+    "overwrite_note" to (
+        "出图后覆盖这张，旧图不保留。" to "It replaces this image when it lands; the old one is not kept."
+        ),
+    "add_images_note" to (
+        "每一张各用一个新随机种子，追加在这条 prompt 下。" to
+            "Each one draws its own new random seed and is added under this prompt."
+        ),
+    "delete_last_image_note" to (
+        "如果这是这条 prompt 的最后一张图，整条记录也会一起删掉。" to
+            "If it is this prompt's last image, the whole record entry goes with it."
+        ),
+    "prompt_text" to ("提示词" to "Prompt"),
+    "images_count" to ("张数" to "Images"),
+    "pass_redraw" to ("正在用新种子重画 {image}" to "Redrawing {image} with a new seed"),
+    "pass_add" to ("正在追加 {done}/{total} 张" to "Adding image {done}/{total}"),
+    "pass_waiting" to ("已提交，等待出图…" to "Submitted, waiting for the image…"),
+    "prompt_edit_note" to (
+        "只改任务记录里的文本：已经出图的 .txt 边车保持当时真正发出去的原文，下次重新生成用新文本。" to
+            "Only the job record changes: the .txt beside an existing image keeps what was actually sent, and the next regeneration uses the new text."
+        ),
 )
 
 
