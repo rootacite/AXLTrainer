@@ -114,9 +114,9 @@ Rules and failure modes:
 
 ## Cleanup
 
-A run leaves samples, TensorBoard logs, and checkpoints behind. The dashboard's **Reset** button only clears the `finished`/`error` state so a new run can start: the run keeps its sample images and TensorBoard logs, which is what makes it browsable in the run history afterwards. Its optional checkbox deletes that run's LoRA checkpoints and nothing else.
+A run leaves samples, TensorBoard logs, and checkpoints behind. The dashboard's **Reset** button only clears the `finished`/`error` state so a new run can start: it deletes nothing. The run keeps its LoRA checkpoints, its sample images and its TensorBoard logs, which is what makes it browsable in the run history afterwards.
 
-Deleting a run's artifacts is `clean.py`, scoped to **one run**:
+Deleting a run's artifacts is `clean.py`, the only tool that removes a run's weights, scoped to **one run**:
 
 ```bash
 python clean.py                    # interactive: lists run directories, asks which to clean
@@ -128,7 +128,7 @@ It removes (same helper as Reset, `trainer/cleanup.py`):
 
 1. `{output_dir}/{run_id}/{name}_samples/` (generated samples included)
 2. `{logging_dir}/{run_id}/`
-3. Optionally (with confirmation / `delete_weights`) all `{output_dir}/{run_id}/{name}_*` checkpoint dirs.
+3. Optionally (after an interactive confirmation) all `{output_dir}/{run_id}/{name}_*` checkpoint dirs.
 
 The run directory itself is removed once it is empty. If no run directory can be resolved, Reset only clears the state — it does not touch legacy flat artifacts.
 

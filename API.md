@@ -422,6 +422,53 @@ Result:
 
 `step` / `epoch` come from the directory name (`{name}_s000100`, `{name}_e003_s000100`, `{name}_final`) with `ss_steps` / `ss_epoch` metadata as fallback, so `final` checkpoints still report the step they were saved at. `network_dim` / `network_alpha` come from the safetensors metadata and are `null` when absent. Use `path` as `[training].resume_lora_path`.
 
+### `checkpoint_pins`
+
+Read-only. The checkpoints one run pinned in the Dashboard's Checkpoints section, read from that run's own `checkpoint_pins.json` inside its log directory.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string \| null | No | Overrides `output_name`. |
+| `run_id` | string \| null | No | The run whose pins to read. Defaults to the run `state.json` is on. |
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "file": "/logs/rein_20260911_120000/checkpoint_pins.json",
+  "pins": [
+    {
+      "path": "/out/rein_20260911_120000/rein_s000300/rein.safetensors",
+      "dir": "rein_s000300",
+      "step": 300,
+      "pinned_at": 1757500000.5
+    }
+  ]
+}
+```
+
+`run_id` and `file` are `null`, and `pins` empty, when no run resolves. Pins belong to one run — the file lives in the run's own log directory — so they survive Ranko closing and are never shared with another run. `pins` is in the order the checkpoints were pinned. A pin whose file is gone (Reset deleted the weights) stays in the file until it is unpinned; the Dashboard draws no card for it.
+
+### `checkpoint_pin_set`
+
+Pin or unpin one checkpoint of one run; the reply is that run's whole pin list, in the shape of `checkpoint_pins`. The file is replaced atomically, and its directory is created when the run has none (a run whose TensorBoard directory was deleted still belongs to the history list).
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | Yes | The checkpoint file — `list_checkpoints`' `path`. |
+| `pinned` | bool | Yes | `true` pins, `false` unpins. |
+| `name` | string \| null | No | Overrides `output_name`. |
+| `run_id` | string \| null | No | Defaults to the run `state.json` is on. |
+| `dir` | string \| null | No | Recorded with the pin, for a pin whose file is later gone. |
+| `step` | int \| null | No | As above. |
+
+Errors: no run resolves, `path` is empty, or a pin names a path that is not a file (`checkpoint not found: …`). Unpinning never checks the file, so a pin left behind by a Reset can still be removed.
+
 ### `train_status`
 
 Reads `$AXL_RUNTIME_DIR` or `$XDG_RUNTIME_DIR/axltrainer/` or `/tmp/axltrainer-$UID/` (`state.json`). Reconciles a dead PID into `error`.
@@ -486,7 +533,7 @@ Fails if no live training PID, on an out-of-range value, and when neither field 
 
 ### `train_reset`
 
-Clears the on-disk trainer state back to `idle` so `train_start` can launch a new run. **Sample images and TensorBoard logs are kept** — they are what the dashboard's run history shows afterwards; only the LoRA weight directories are removable.
+Clears the on-disk trainer state back to `idle` so `train_start` can launch a new run. **Nothing is deleted** — the LoRA checkpoint directories, the sample images and the TensorBoard logs all stay, which is what makes the cleared run browsable in the run history afterwards. Weights are removed only by `python clean.py`, which asks before it does.
 
 Params:
 
@@ -494,11 +541,12 @@ Params:
 |---|---|---|---|
 | `name` | string \| null | No | Overrides `output_name`. |
 | `run_id` | string \| null | No | Run to clear. Resolved like `dashboard`. |
-| `delete_weights` | bool | No | If true, also remove the run's `{output_name}_*` checkpoint dirs. Default false. |
 
-The result carries `run_id` and `cleanup` (`run_dir`, `samples_dir`, `log_dir`, `weight_dirs`, `delete_samples`, `delete_logs`, `removed`, `skipped`, `errors`); `delete_samples` / `delete_logs` are always `false` here, so both paths land in `skipped`. When no run directory resolves, `run_id` is `null` and **nothing is deleted** — legacy flat artifacts are only reachable via `python clean.py --legacy-flat`.
+The result carries `run_id` and `cleanup` (`run_dir`, `samples_dir`, `log_dir`, `weight_dirs`, `delete_weights`, `delete_samples`, `delete_logs`, `removed`, `skipped`, `errors`); the three `delete_*` flags are always `false` here, so every path lands in `skipped` and `removed` is empty. A `delete_weights` param is not part of the method any more: Reset never removes a weight directory, and an older client still sending it changes nothing.
 
-Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper — it is the tool that deletes a run's samples and logs.
+When no run directory resolves, `run_id` is `null` and **nothing is deleted** — legacy flat artifacts are only reachable via `python clean.py --legacy-flat`.
+
+Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper — it is the tool that deletes a run's samples, logs and weights.
 
 ### `dataset_tag`
 
