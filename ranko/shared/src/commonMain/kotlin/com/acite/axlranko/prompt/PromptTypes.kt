@@ -134,6 +134,25 @@ val SPREAD_MARKERS: List<String> = listOf(
     "squatting",
 )
 val TOP_MARKERS: List<String> = listOf("girl on top", "cowgirl", "sitting on lap")
+
+/**
+ * Poses that hold both legs up against the body, so both arms are accounted for: the girl holds her
+ * own thighs (`mating press`, `anvil position`) or they are pinned (`full nelson`). A hand action on
+ * one of these has no arm left to perform it, and the model fills the gap with a third one, which is
+ * why [PromptGenerator.poseHoldsLegs] sends those draws to a partner instead of `solo`.
+ *
+ * Deliberately narrower than [SPREAD_MARKERS]: `spread legs`, `squatting` and `leg lift` hold
+ * nothing, so their hands are free.
+ */
+val LEGS_HELD_MARKERS: List<String> = listOf(
+    "mating press",
+    "anvil position",
+    "full nelson",
+    "legs up",
+    "folded",
+    "knees to chest",
+    "legs over head",
+)
 val LIE_MARKERS: List<String> = listOf(
     "lying",
     "on back",

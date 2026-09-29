@@ -271,6 +271,93 @@ class ChannelAndAnatomyTest {
     }
 
     @Test
+    fun aHandStageOnAHeldLegsPoseGetsAPartner() {
+        // `anal fingering` beside `full nelson` asks for a hand the pose has no arm for, and the
+        // model answers with a third one: the draw gets a partner instead of claiming she is alone.
+        val nelson = find(matrix.poses, "full nelson")
+        assertTrue(PromptGenerator.poseHoldsLegs(nelson))
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            poseAny = false,
+            poseKeys = setOf(nelson.key),
+            stageWeights = defaultStageWeights() + mapOf(
+                SexStage.During to 0.0,
+                SexStage.Fingering to 1.0,
+            ),
+            count = 6,
+        )
+        generatePrompts(spec, matrix, 51).forEach { line ->
+            val tags = tagsOf(line)
+            assertTrue(tags.contains("anal fingering"), line)
+            assertTrue(tags.contains("1boy"), line)
+            assertTrue(tags.contains("hetero"), line)
+            assertFalse(tags.contains("solo"), line)
+            // The stage still means no penis: a partner holding the legs, not a penetration.
+            assertFalse(tags.contains("penis"), line)
+            assertFalse(tags.contains("sex"), line)
+        }
+    }
+
+    @Test
+    fun aHandStageOnAFreeLegsPoseStaysSolo() {
+        // `mating press` holds the legs, `doggystyle` does not: the rule must not spread to the
+        // poses whose hands are free, or every fingering draw would grow a partner.
+        val dog = find(matrix.poses, "doggystyle")
+        assertFalse(PromptGenerator.poseHoldsLegs(dog))
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            poseAny = false,
+            poseKeys = setOf(dog.key),
+            stageWeights = defaultStageWeights() + mapOf(
+                SexStage.During to 0.0,
+                SexStage.Fingering to 1.0,
+            ),
+            count = 6,
+        )
+        generatePrompts(spec, matrix, 52).forEach { line ->
+            val tags = tagsOf(line)
+            // The channel is drawn per prompt, so this is either word; neither may bring a partner.
+            assertTrue(tags.contains("fingering") || tags.contains("anal fingering"), line)
+            assertTrue(tags.contains("solo"), line)
+            assertFalse(tags.contains("1boy"), line)
+            assertFalse(tags.contains("hetero"), line)
+        }
+    }
+
+    @Test
+    fun theHeldLegsMarkersPickTheFoldedPosesOnly() {
+        assertTrue(PromptGenerator.poseHoldsLegs(find(matrix.poses, "mating press")))
+        assertTrue(PromptGenerator.poseHoldsLegs(find(matrix.poses, "full nelson")))
+        assertFalse(PromptGenerator.poseHoldsLegs(find(matrix.poses, "cowgirl")))
+    }
+
+    @Test
+    fun theHeldLegsRuleLeavesTheOtherStagesAlone() {
+        // Object insertion is the same shape of problem but not what was asked for; it still draws
+        // solo, so this test fails loudly if someone extends HAND_ONLY_STAGES without meaning to.
+        val nelson = find(matrix.poses, "full nelson")
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            poseAny = false,
+            poseKeys = setOf(nelson.key),
+            stageWeights = defaultStageWeights() + mapOf(
+                SexStage.During to 0.0,
+                SexStage.ObjectInsertion to 1.0,
+            ),
+            count = 4,
+        )
+        generatePrompts(spec, matrix, 53).forEach { line ->
+            val tags = tagsOf(line)
+            assertTrue(tags.contains("anal object insertion"), line)
+            assertTrue(tags.contains("solo"), line)
+            assertFalse(tags.contains("1boy"), line)
+        }
+    }
+
+    @Test
     fun theAnalChannelIsWrittenWeighted() {
         assertEquals("(anal:1.2)", PromptGenerator.channelTag(PromptChannel.Anal))
         assertEquals("vaginal", PromptGenerator.channelTag(PromptChannel.Vaginal))

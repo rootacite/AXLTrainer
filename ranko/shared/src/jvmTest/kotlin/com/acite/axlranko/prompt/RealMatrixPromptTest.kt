@@ -3,6 +3,7 @@ package com.acite.axlranko.prompt
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -127,6 +128,48 @@ class RealMatrixPromptTest {
             prompts.forEach { line ->
                 assertTrue(line.startsWith(splitTags(loaded.spec.character).joinToString(", ")), line)
             }
+        }
+    }
+    @Test
+    fun onlyTheFoldedPosesCountAsHoldingTheirLegs() {
+        // What a `fingering` stage has no arm for: the poses that fold or pin the legs. The check is
+        // on the repo's own rows, because the data decides — 9 poses hold their legs, and
+        // `spread legs` / `squatting` / `leg lift` stay out of it even though SPREAD_MARKERS (the
+        // legs' shape, not who holds them) lists them.
+        val held = matrix.poses.filter { PromptGenerator.poseHoldsLegs(it) }.map { it.blob }
+        assertEquals(9, held.size, held.toString())
+        held.forEach {
+            assertTrue(it.contains("mating press") || it.contains("anvil") || it.contains("full nelson"), it)
+        }
+        listOf(
+            "missionary, spread legs, from above",
+            "squatting cowgirl position, squatting",
+            "seventh posture, on side, leg lift",
+            "doggystyle, all fours, from behind",
+        ).forEach { pose ->
+            assertFalse(PromptGenerator.poseHoldsLegs(find(matrix.poses, pose)), "$pose holds no legs")
+        }
+    }
+
+    @Test
+    fun aFingeringStageOnAHeldLegsPoseAsksForAPartner() {
+        // The three-handed draw this rule exists for, on the real matrix: `full nelson` with
+        // `anal fingering` used to be written as `solo`.
+        val nelson = find(matrix.poses, "full nelson")
+        val spec = defaultSpec().apply {
+            mode = PromptMode.Sex
+            exposure = listOf("open")
+            poseAny = false
+            poseKeys = setOf(nelson.key)
+            stageWeights = defaultStageWeights() + mapOf(SexStage.During to 0.0, SexStage.Fingering to 1.0)
+            count = 5
+        }
+        PromptGenerator.generate(spec, matrix, seed = 9).forEach { line ->
+            val tags = splitTags(line).toSet()
+            assertTrue(tags.contains("full nelson"), line)
+            assertTrue(tags.contains("anal fingering"), line)
+            assertTrue(tags.contains("1boy") && tags.contains("hetero"), line)
+            assertFalse(tags.contains("solo"), line)
         }
     }
 }

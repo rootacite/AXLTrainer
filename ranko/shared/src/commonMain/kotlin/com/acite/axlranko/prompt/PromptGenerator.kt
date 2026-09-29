@@ -453,12 +453,28 @@ object PromptGenerator {
     }
 
     /**
+     * True when the pose itself holds the legs up, leaving no free arm for a hand action: `mating
+     * press` and `anvil position` fold them against the body, `full nelson` pins them. See
+     * [LEGS_HELD_MARKERS].
+     */
+    fun poseHoldsLegs(pose: MatrixEntry): Boolean = containsMarker(pose.blob, LEGS_HELD_MARKERS)
+
+    /**
      * The channel word as the prompt writes it. The anal one carries its weight — a bare `anal`
      * beside a pose the model reads as vaginal is what gets dropped — while the vaginal one is a
      * plain tag.
      */
     fun channelTag(channel: PromptChannel): String =
         if (channel == PromptChannel.Anal) PromptLimits.ANAL_CHANNEL_TAG else channel.wire
+
+    /**
+     * The stages that put a hand on the body with no penis in play. On a pose that holds its own
+     * legs one of these has no arm to use, so [assemble] gives those draws a partner.
+     *
+     * `ObjectInsertion` is not here: the same geometry argues for it, but the maintainer asked for
+     * the fingering words specifically. Add it to this set if the artifact shows up there too.
+     */
+    private val HAND_ONLY_STAGES: Set<SexStage> = setOf(SexStage.Fingering)
 
     fun assemble(
         spec: PromptSpec,
@@ -480,8 +496,12 @@ object PromptGenerator {
             null
         }
         if (resolvedStage != null) {
-            if (resolvedStage in STAGES_WITH_PARTNER) extra.addAll(listOf("1boy", "hetero"))
-            else extra.add("solo")
+            // A hand action on a pose that already holds both legs has no arm left to do it, and the
+            // model answers with a third hand: those draws get a partner — his hand, her legs —
+            // instead of `solo`, which is the tag that claimed she was alone to begin with.
+            val withPartner = resolvedStage in STAGES_WITH_PARTNER ||
+                (resolvedStage in HAND_ONLY_STAGES && poseHoldsLegs(pose))
+            if (withPartner) extra.addAll(listOf("1boy", "hetero")) else extra.add("solo")
         } else {
             extra.add("solo")
         }
