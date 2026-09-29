@@ -33,7 +33,7 @@ internal fun checkpointRows(
     samples: Map<String, List<SampleItem>>,
     jobs: List<GeneratedSampleJob>,
 ): List<CheckpointRow> {
-    val done = jobs.filter { it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() }
+    val done = jobs.filter { jobHasImages(it) }
     val rows = mutableListOf<CheckpointRow>()
     val claimedSteps = mutableSetOf<Int>()
     val claimedJobs = mutableSetOf<String>()
@@ -107,6 +107,34 @@ internal fun sectionImages(rows: List<CheckpointRow>): List<SampleItem> =
 private fun belongsTo(job: GeneratedSampleJob, checkpoint: CheckpointItem): Boolean =
     job.checkpoint == checkpoint.path ||
         (job.checkpoint.isBlank() && job.step != null && job.step == checkpoint.step)
+
+/** The steps of the checkpoints that have one, ascending — what a range can cover. */
+internal fun checkpointSteps(rows: List<CheckpointRow>): List<Int> =
+    rows.mapNotNull { it.checkpoint?.step }.distinct().sorted()
+
+/** The checkpoints a `[from, to]` range covers, oldest step first (the order a batch renders in). */
+internal fun checkpointsInRange(rows: List<CheckpointRow>, from: Int, to: Int): List<CheckpointItem> =
+    rows.mapNotNull { it.checkpoint }
+        .filter { it.step != null && it.step in from..to }
+        .sortedWith(compareBy({ it.step ?: 0 }, { it.dir }))
+
+/**
+ * Why a range cannot be started, or null when it can. The strings the user typed are checked here
+ * so the button can be off with a reason beside it, before anything is sent.
+ */
+internal fun batchRangeError(rows: List<CheckpointRow>, from: String, to: String): String? {
+    val fromStep = from.trim().toIntOrNull()
+    val toStep = to.trim().toIntOrNull()
+    if (from.trim().isEmpty() || to.trim().isEmpty()) return "Enter a step range"
+    if (fromStep == null || toStep == null) return "Steps must be whole numbers"
+    if (fromStep < 0 || toStep < 0) return "Steps must be >= 0"
+    if (fromStep > toStep) return "From must not be greater than To"
+    if (checkpointSteps(rows).isEmpty()) return "This run has no checkpoints with a step"
+    if (checkpointsInRange(rows, fromStep, toStep).isEmpty()) {
+        return "No checkpoints between step $fromStep and $toStep"
+    }
+    return null
+}
 
 /**
  * Lazy-list key of a row: the checkpoint file, which is unique, or the step of a `samples only`

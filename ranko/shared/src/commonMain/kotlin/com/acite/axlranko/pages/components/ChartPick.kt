@@ -48,6 +48,8 @@ internal fun completesDoubleClick(
 internal const val JOB_RUNNING = "running"
 internal const val JOB_DONE = "done"
 internal const val JOB_ERROR = "error"
+/** A job that was asked to stop and finished stopping: its written images still count. */
+internal const val JOB_CANCELLED = "cancelled"
 
 /** Sample images shown side by side without scrolling. */
 internal const val SAMPLES_PER_ROW = 3
@@ -167,9 +169,11 @@ internal const val GENERATE_MIN_STEPS = 1
 internal const val GENERATE_MAX_STEPS = 150
 internal const val GENERATE_MAX_SEED = 4_294_967_295L
 
-/** Job modes as api.py writes them: one ad-hoc image, or one image per sample set. */
+/** Job modes as api.py writes them: one ad-hoc image, one image per sample set, or that sets pass
+ *  for every checkpoint of a step range (one process, one `sets` job per checkpoint). */
 internal const val JOB_MODE_SINGLE = "single"
 internal const val JOB_MODE_SETS = "sets"
+internal const val JOB_MODE_BATCH = "batch"
 
 /**
  * Null when the form can be submitted, otherwise the message shown in the panel. Mirrors the
@@ -258,9 +262,27 @@ internal fun generatedJobCaption(job: GeneratedSampleJob): String {
 /** Progress line while a job runs (`denoising 12/20`), or null once it is no longer running. */
 internal fun generatedJobProgress(job: GeneratedSampleJob?): String? {
     if (job == null || job.state != JOB_RUNNING) return null
+    if (job.cancelRequested) return "cancelling…"
     val total = job.totalSteps.takeIf { it > 0 } ?: return "denoising…"
     return "denoising ${job.currentStep.coerceAtMost(total)}/$total"
 }
+
+/**
+ * `3/8 checkpoints · 12/48 images` for a running batch (or `cancelling…`), or null when there is no
+ * batch left to report on. The batch record holds no images of its own: they belong to the per
+ * checkpoint `sets` jobs its cards show.
+ */
+internal fun batchProgressLabel(job: GeneratedSampleJob?): String? {
+    if (job == null || job.mode != JOB_MODE_BATCH || job.state != JOB_RUNNING) return null
+    if (job.cancelRequested) return "cancelling…"
+    val parts = mutableListOf("${job.checkpointIndex.coerceAtMost(job.totalCheckpoints)}/${job.totalCheckpoints} checkpoints")
+    if (job.totalImages > 0) parts += "${job.imagesDone.coerceAtMost(job.totalImages)}/${job.totalImages} images"
+    return parts.joinToString(" · ")
+}
+
+/** The running batch of a job list, if one is going. */
+internal fun runningBatch(jobs: List<GeneratedSampleJob>): GeneratedSampleJob? =
+    jobs.firstOrNull { it.mode == JOB_MODE_BATCH && it.state == JOB_RUNNING }
 
 /**
  * Progress of a whole-set pass: `set 2/6 · image 3/12 · denoising 12/35`, or null when the job is
@@ -268,6 +290,7 @@ internal fun generatedJobProgress(job: GeneratedSampleJob?): String? {
  */
 internal fun generatedJobSetProgress(job: GeneratedSampleJob?): String? {
     if (job == null || job.state != JOB_RUNNING) return null
+    if (job.cancelRequested) return "cancelling…"
     if (job.mode != JOB_MODE_SETS) return null
     val parts = mutableListOf<String>()
     if (job.totalSets > 0 && job.currentSet > 0) parts += "set ${job.currentSet}/${job.totalSets}"
@@ -316,12 +339,19 @@ internal fun nearestSampledStep(samples: Map<String, List<SampleItem>>, step: In
         .minWithOrNull(compareBy({ abs(it - step) }, { it }))
 }
 
+/**
+ * Whether a job has images to show: anything that is no longer running — finished, cancelled, or
+ * one that failed part way. Its `files` are on disk either way, so they belong on the card.
+ */
+internal fun jobHasImages(job: GeneratedSampleJob): Boolean =
+    job.state != JOB_RUNNING && generatedSampleItems(job).isNotEmpty()
+
 /** Finished generation jobs for [step], in the order they were listed (newest first). */
 internal fun generatedJobsForStep(jobs: List<GeneratedSampleJob>, step: Int?): List<GeneratedSampleJob> =
     if (step == null) {
         emptyList()
     } else {
-        jobs.filter { it.step == step && it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() }
+        jobs.filter { it.step == step && jobHasImages(it) }
     }
 
 /**
@@ -336,10 +366,7 @@ internal fun panelJobsForStep(
     checkpoint: CheckpointItem?,
 ): List<GeneratedSampleJob> {
     val path = checkpoint?.path
-    val own = jobs.filter {
-        it.state == JOB_DONE && generatedSampleItems(it).isNotEmpty() &&
-            path != null && it.checkpoint == path
-    }
+    val own = jobs.filter { jobHasImages(it) && path != null && it.checkpoint == path }
     return (generatedJobsForStep(jobs, step) + own).distinctBy { it.id }
 }
 

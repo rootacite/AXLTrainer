@@ -6,6 +6,7 @@ import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.previewList
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -22,6 +23,7 @@ class GeneratedSampleTest {
         steps: Int? = 20,
         seed: Long? = 12345,
         checkpoint: String = checkpoint(3050).path,
+        cancelRequested: Boolean = false,
     ) = GeneratedSampleJob(
         id = id,
         state = state,
@@ -33,6 +35,7 @@ class GeneratedSampleTest {
         checkpoint = checkpoint,
         currentStep = currentStep,
         totalSteps = totalSteps,
+        cancelRequested = cancelRequested,
     )
 
     private fun checkpoint(step: Int) = CheckpointItem(
@@ -169,6 +172,58 @@ class GeneratedSampleTest {
         assertEquals("denoising…", generatedJobProgress(job(state = JOB_RUNNING, totalSteps = 0)))
         assertNull(generatedJobProgress(job(state = JOB_DONE)))
         assertNull(generatedJobProgress(null))
+    }
+
+    @Test
+    fun aRunningBatchReportsItsOwnProgress() {
+        val batch = GeneratedSampleJob(
+            id = "rein_s100-600_batch_gen_20260929_230000",
+            state = JOB_RUNNING,
+            mode = JOB_MODE_BATCH,
+            fromStep = 100,
+            toStep = 600,
+            checkpointIndex = 3,
+            totalCheckpoints = 8,
+            imagesDone = 12,
+            totalImages = 48,
+        )
+        assertEquals("3/8 checkpoints · 12/48 images", batchProgressLabel(batch))
+        assertEquals(batch, runningBatch(listOf(job(id = "other"), batch)))
+
+        // Nothing to report once it is over, when it is another kind of job, or when it is stopping.
+        assertNull(batchProgressLabel(batch.copy(state = JOB_DONE)))
+        assertNull(batchProgressLabel(batch.copy(mode = JOB_MODE_SETS)))
+        assertNull(batchProgressLabel(job()))
+        assertNull(batchProgressLabel(null))
+        assertEquals("cancelling…", batchProgressLabel(batch.copy(cancelRequested = true)))
+        assertNull(runningBatch(listOf(batch.copy(state = JOB_DONE))))
+    }
+
+    @Test
+    fun aCancellingJobShowsThatInsteadOfACounter() {
+        assertEquals("cancelling…", generatedJobProgress(job(state = JOB_RUNNING, cancelRequested = true)))
+        assertEquals(
+            "cancelling…",
+            generatedJobSetProgress(
+                GeneratedSampleJob(
+                    id = "pass",
+                    state = JOB_RUNNING,
+                    mode = JOB_MODE_SETS,
+                    cancelRequested = true,
+                    currentStep = 3,
+                    totalSteps = 20,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun imagesCountOnceTheJobIsNoLongerRunning() {
+        assertFalse(jobHasImages(job(state = JOB_RUNNING)))
+        assertFalse(jobHasImages(job(state = JOB_DONE, imagePath = null)))
+        assertTrue(jobHasImages(job(state = JOB_DONE)))
+        assertTrue(jobHasImages(job(state = JOB_CANCELLED)))
+        assertTrue(jobHasImages(job(state = JOB_ERROR)))
     }
 
     @Test

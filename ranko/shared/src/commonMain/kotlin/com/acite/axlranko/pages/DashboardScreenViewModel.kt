@@ -337,6 +337,61 @@ class DashboardScreenViewModel(
         }
     }
 
+    /**
+     * "Sample range": one detached job that renders the config's sample sets for every checkpoint
+     * whose step is inside `fromStep..toStep`, oldest first.
+     */
+    fun startSampleBatch(fromStep: Int, toStep: Int) {
+        if (_uiState.value.isStartingBatch) return
+        _uiState.update { it.copy(isStartingBatch = true, batchError = null) }
+        viewModelScope.launch {
+            try {
+                val selected = _uiState.value.selectedRun
+                val response = withContext(IoDispatcher) {
+                    ipc.generateCheckpointSamplesBatch(
+                        fromStep = fromStep,
+                        toStep = toStep,
+                        name = selected?.outputName,
+                        runId = selected?.runId ?: _uiState.value.runId,
+                    )
+                }
+                sessionJobIds += response.job.id
+                _uiState.update { state ->
+                    state.copy(
+                        sessionJobIds = sessionJobIds.toSet(),
+                        isStartingBatch = false,
+                        generatedJobs = (listOf(response.job) + state.generatedJobs).distinctBy { it.id },
+                    )
+                }
+                startGeneratedPolling()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isStartingBatch = false, batchError = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    /** Ask the running generation (the batch one included) to stop; its images so far stay. */
+    fun cancelGeneration(id: String? = null) {
+        viewModelScope.launch {
+            try {
+                val response = withContext(IoDispatcher) { ipc.cancelGeneration(id) }
+                _uiState.update { state ->
+                    state.copy(
+                        batchError = null,
+                        generatedJobs = (
+                            listOf(response.job) + state.generatedJobs.filterNot { it.id == response.job.id }
+                            ).distinctBy { it.id },
+                    )
+                }
+                startGeneratedPolling()
+            } catch (e: Exception) {
+                _uiState.update { it.copy(batchError = e.message ?: e.toString()) }
+            }
+        }
+    }
+
     private suspend fun fetchGeneratedJobs(runId: String, name: String? = null): List<GeneratedSampleJob> =
         try {
             withContext(IoDispatcher) { ipc.listGeneratedSamples(name = name, runId = runId) }.jobs

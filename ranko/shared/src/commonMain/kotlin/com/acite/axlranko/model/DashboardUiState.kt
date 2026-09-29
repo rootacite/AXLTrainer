@@ -111,6 +111,18 @@ data class GeneratedSampleJob(
     val error: String? = null,
     @SerialName("current_step") val currentStep: Int = 0,
     @SerialName("total_steps") val totalSteps: Int = 0,
+    /** A cancel was asked for; the process is winding down (the job is still `running`). */
+    @SerialName("cancel_requested") val cancelRequested: Boolean = false,
+    /** Set on a `sets` job that a `batch` job started, tying it to its range. */
+    @SerialName("batch_id") val batchId: String? = null,
+    @SerialName("batch_index") val batchIndex: Int = 0,
+    @SerialName("batch_total") val batchTotal: Int = 0,
+    /** On a `batch` job: how far it is through its own work list. */
+    @SerialName("checkpoint_index") val checkpointIndex: Int = 0,
+    @SerialName("total_checkpoints") val totalCheckpoints: Int = 0,
+    @SerialName("current_checkpoint") val currentCheckpoint: String? = null,
+    @SerialName("from_step") val fromStep: Int? = null,
+    @SerialName("to_step") val toStep: Int? = null,
     @SerialName("started_at") val startedAt: Double = 0.0,
 )
 
@@ -348,6 +360,9 @@ data class DashboardUiState(
     val settingsError: String? = null,
     /** Checkpoint path whose whole-set sample pass is being started, if any. */
     val isGeneratingCheckpoint: String? = null,
+    /** True while a step-range batch is being handed to the helper. */
+    val isStartingBatch: Boolean = false,
+    val batchError: String? = null,
     val hardware: HardwareStatus = HardwareStatus(),
     val hardwareHistory: HardwareHistory = HardwareHistory(),
 )

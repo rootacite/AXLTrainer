@@ -117,8 +117,12 @@ import com.acite.axlranko.pages.components.SAMPLE_SLOT_SPACING
 import com.acite.axlranko.pages.components.SAMPLE_THUMB_ASPECT
 import com.acite.axlranko.pages.components.SampleSlot
 import com.acite.axlranko.pages.components.TrainControlCard
+import com.acite.axlranko.pages.components.batchProgressLabel
+import com.acite.axlranko.pages.components.batchRangeError
 import com.acite.axlranko.pages.components.checkpointPanelWidth
 import com.acite.axlranko.pages.components.checkpointRowKey
+import com.acite.axlranko.pages.components.checkpointSteps
+import com.acite.axlranko.pages.components.checkpointsInRange
 import com.acite.axlranko.pages.components.checkpointRowLabel
 import com.acite.axlranko.pages.components.checkpointRows
 import com.acite.axlranko.pages.components.clampPanelOrigin
@@ -131,6 +135,7 @@ import com.acite.axlranko.pages.components.nearestSampledStep
 import com.acite.axlranko.pages.components.panelJobsForStep
 import com.acite.axlranko.pages.components.placePanelOrigin
 import com.acite.axlranko.pages.components.runningJob
+import com.acite.axlranko.pages.components.runningBatch
 import com.acite.axlranko.pages.components.sampleColumns
 import com.acite.axlranko.pages.components.sampleSetBadge
 import com.acite.axlranko.pages.components.sampleSlotWidth
@@ -280,11 +285,21 @@ fun DashboardScreen(
                         samples = uiState.samples,
                         jobs = uiState.generatedJobs,
                     )
-                    val gpuFree = generationAllowed(uiState.trainStatus)
+                    // A generation of its own keeps the card busy, so the buttons follow both rules.
+                    val runningBatchJob = runningBatch(uiState.generatedJobs)
+                    val gpuFree = generationAllowed(uiState.trainStatus) && runningJob(uiState.generatedJobs) == null
                     val showSetBadges = showsSampleSetBadges(uiState.samples)
 
-                    uiState.generatedError?.let { message ->
-                        item { GenerationErrorLine(message) }
+                    item {
+                        SampleRangeRow(
+                            rows = checkpointCards,
+                            batch = runningBatchJob,
+                            starting = uiState.isStartingBatch,
+                            canStart = gpuFree,
+                            note = uiState.batchError ?: uiState.generatedError,
+                            onSampleRange = viewModel::startSampleBatch,
+                            onCancel = { viewModel.cancelGeneration() },
+                        )
                     }
 
                     if (checkpointCards.isEmpty()) {
@@ -637,6 +652,139 @@ private fun HeaderSlider(
             onValueChange = onChange,
             valueRange = range
         )
+    }
+}
+
+/**
+ * Above the cards: the step range a batch would cover and the button that starts it, plus the
+ * progress of the batch in flight with the button that stops it. The range is prefilled with the
+ * run's own steps, so "all of them" is one click.
+ */
+@Composable
+internal fun SampleRangeRow(
+    rows: List<CheckpointRow>,
+    batch: GeneratedSampleJob?,
+    starting: Boolean,
+    canStart: Boolean,
+    note: String?,
+    onSampleRange: (Int, Int) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val colors = rankoColors
+    val steps = checkpointSteps(rows)
+    val defaultFrom = steps.firstOrNull()?.toString() ?: ""
+    val defaultTo = steps.lastOrNull()?.toString() ?: ""
+    var from by remember(defaultFrom) { mutableStateOf(defaultFrom) }
+    var to by remember(defaultTo) { mutableStateOf(defaultTo) }
+    val error = batchRangeError(rows, from, to)
+    val fromStep = from.trim().toIntOrNull()
+    val toStep = to.trim().toIntOrNull()
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        batch?.let { running ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "Sampling steps ${running.fromStep ?: 0}–${running.toStep ?: 0} · " +
+                        (batchProgressLabel(running) ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.accentPink,
+                    modifier = Modifier.weight(1f),
+                )
+                CapsuleButton(
+                    text = "Stop",
+                    onClick = onCancel,
+                    enabled = !running.cancelRequested,
+                    compact = true,
+                ) {
+                    Text("Stop", fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (running.totalImages > 0) {
+                LinearProgressIndicator(
+                    progress = {
+                        running.imagesDone.toFloat().coerceAtMost(running.totalImages.toFloat()) /
+                            running.totalImages
+                    },
+                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                )
+            }
+        }
+
+        if (steps.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "Sample range",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textDim,
+                )
+                val editable = canStart && batch == null
+                OutlinedTextField(
+                    value = from,
+                    onValueChange = { text -> from = text.filter { it.isDigit() }.take(7) },
+                    singleLine = true,
+                    enabled = editable,
+                    modifier = Modifier.width(96.dp),
+                    label = { Text("from") },
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    colors = rankoFieldColors(),
+                    shape = rankoTokens.panel,
+                )
+                OutlinedTextField(
+                    value = to,
+                    onValueChange = { text -> to = text.filter { it.isDigit() }.take(7) },
+                    singleLine = true,
+                    enabled = editable,
+                    modifier = Modifier.width(96.dp),
+                    label = { Text("to") },
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    colors = rankoFieldColors(),
+                    shape = rankoTokens.panel,
+                )
+                val covered = if (fromStep != null && toStep != null) {
+                    checkpointsInRange(rows, fromStep, toStep).size
+                } else {
+                    0
+                }
+                CapsuleButton(
+                    text = if (starting) "Starting…" else "Sample range",
+                    onClick = { if (fromStep != null && toStep != null) onSampleRange(fromStep, toStep) },
+                    enabled = editable && !starting && error == null,
+                    compact = true,
+                ) {
+                    Text(if (starting) "Starting…" else "Sample range", fontWeight = FontWeight.SemiBold)
+                }
+                if (batch == null && covered > 0) {
+                    Text(
+                        text = "$covered checkpoint(s)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.textDim,
+                    )
+                }
+            }
+
+            val reason = when {
+                batch != null -> null
+                !canStart -> "Pause the run, or stop it, to free the GPU"
+                else -> error
+            }
+            reason?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textDim,
+                )
+            }
+        }
+
+        note?.let { message -> GenerationErrorLine(message) }
     }
 }
 

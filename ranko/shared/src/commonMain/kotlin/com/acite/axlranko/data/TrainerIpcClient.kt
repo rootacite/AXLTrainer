@@ -271,6 +271,38 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /**
+     * Render the config's sample sets for every checkpoint whose step is inside `fromStep..toStep`,
+     * oldest first, as one detached job. Refused while a live trainer is using the GPU and while
+     * another generation is running.
+     */
+    suspend fun generateCheckpointSamplesBatch(
+        fromStep: Int,
+        toStep: Int,
+        name: String? = null,
+        runId: String? = null,
+    ): GenerateSampleResponse {
+        val result = call(
+            "generate_checkpoint_samples_batch",
+            buildJsonObject {
+                put("from_step", fromStep)
+                put("to_step", toStep)
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /** Ask a running generation job (the batch one included) to stop; [id] null means the running one. */
+    suspend fun cancelGeneration(id: String? = null): GenerateSampleResponse {
+        val result = call(
+            "cancel_generation",
+            buildJsonObject { id?.let { put("id", it) } },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     suspend fun configGet(): ConfigDocument {
         val result = call("config_get", JsonObject(emptyMap()))
         return json.decodeFromJsonElement(result)

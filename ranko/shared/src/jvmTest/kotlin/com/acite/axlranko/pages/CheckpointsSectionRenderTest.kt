@@ -14,9 +14,11 @@ import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.JOB_DONE
+import com.acite.axlranko.pages.components.JOB_MODE_BATCH
 import com.acite.axlranko.pages.components.JOB_MODE_SETS
 import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.checkpointRowKey
+import com.acite.axlranko.pages.components.runningBatch
 import com.acite.axlranko.pages.components.checkpointRows
 import com.acite.axlranko.ui.theme.RankoTheme
 import java.awt.GraphicsEnvironment
@@ -43,6 +45,7 @@ class CheckpointsSectionRenderTest {
         val error: String? = null,
         val generatingPath: String? = null,
         val gpuFree: Boolean = true,
+        val startingBatch: Boolean = false,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -64,6 +67,19 @@ class CheckpointsSectionRenderTest {
         repeatIdx = repeat,
         path = "/out/rein_20260911_120000/rein_samples/rein_${step.toString().padStart(6, '0')}_p${set}_$repeat.png",
     )
+
+    private fun batchJob(id: String, index: Int, total: Int, images: Int = 48, done: Int = 12) =
+        GeneratedSampleJob(
+            id = id,
+            state = JOB_RUNNING,
+            mode = JOB_MODE_BATCH,
+            fromStep = 100,
+            toStep = 600,
+            checkpointIndex = index,
+            totalCheckpoints = total,
+            imagesDone = done,
+            totalImages = images,
+        )
 
     private fun setsJob(id: String, step: Int, state: String, images: Int = 6, done: Int = 0) =
         GeneratedSampleJob(
@@ -104,7 +120,17 @@ class CheckpointsSectionRenderTest {
                                     current.samples,
                                     current.jobs,
                                 )
-                                current.error?.let { message -> item { GenerationErrorLine(message) } }
+                                item {
+                                    SampleRangeRow(
+                                        rows = rows,
+                                        batch = runningBatch(current.jobs),
+                                        starting = current.startingBatch,
+                                        canStart = current.gpuFree,
+                                        note = current.error,
+                                        onSampleRange = { _, _ -> },
+                                        onCancel = {},
+                                    )
+                                }
                                 if (rows.isEmpty()) {
                                     item { CheckpointsEmptyCard() }
                                 } else {
@@ -193,6 +219,25 @@ class CheckpointsSectionRenderTest {
                     error = "RuntimeError: base model is gone",
                 ),
                 Case(checkpoints = emptyList()),
+                // A range batch in flight: the progress line with its Stop button, above the cards
+                // (each showing the pass that has already reached it).
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+                    samples = mapOf("3000" to listOf(sample(3000, 0))),
+                    jobs = listOf(
+                        batchJob("rein_s100-600_batch_gen_1", index = 3, total = 8),
+                        setsJob("done_sets_gen_2", 3000, JOB_DONE, done = 6),
+                        setsJob("live_sets_gen_3", 3050, JOB_RUNNING, done = 1),
+                    ),
+                ),
+                // The same batch being stopped, and a range that is only starting.
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    jobs = listOf(
+                        batchJob("rein_s100-600_batch_gen_4", index = 5, total = 8).copy(cancelRequested = true),
+                    ),
+                ),
+                Case(checkpoints = listOf(checkpoint(3050)), startingBatch = true),
             ),
         )
     }

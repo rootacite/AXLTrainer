@@ -35,6 +35,7 @@ class CheckpointListTest {
         state: String = JOB_DONE,
         mode: String = JOB_MODE_SETS,
         files: List<String> = listOf("/out/run/rein_samples/generated/${id}_p0_0.png"),
+        startedAt: Double = 0.0,
     ) = GeneratedSampleJob(
         id = id,
         state = state,
@@ -42,6 +43,7 @@ class CheckpointListTest {
         step = step,
         checkpoint = checkpointPath,
         files = files,
+        startedAt = startedAt,
     )
 
     @Test
@@ -145,14 +147,14 @@ class CheckpointListTest {
     }
 
     @Test
-    fun aRunningJobThatFailedIsNotASample() {
+    fun aRunningJobIsShownAsProgressNotAsASample() {
         val rows = checkpointRows(
             checkpoints = listOf(checkpoint(3050)),
             samples = emptyMap(),
-            jobs = listOf(job("failed", 3050, state = JOB_ERROR)),
+            jobs = listOf(job("running", 3050, state = JOB_RUNNING)),
         )
         assertTrue(rows[0].generated.isEmpty())
-        assertNull(rows[0].running)
+        assertEquals("running", rows[0].running?.id)
     }
 
     @Test
@@ -165,6 +167,61 @@ class CheckpointListTest {
         // A finished job with no file at all is not a sample; with no images the step has no row.
         assertTrue(rows[0].generated.isEmpty())
         assertEquals(listOf(3050), rows.map { it.step })
+    }
+
+    @Test
+    fun theRangeCoversTheCheckpointsInsideItOldestFirst() {
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3000), checkpoint(1000), checkpoint(2000), checkpoint(null)),
+            samples = emptyMap(),
+            jobs = emptyList(),
+        )
+        assertEquals(listOf(1000, 2000, 3000), checkpointSteps(rows))
+        assertEquals(
+            listOf(1000, 2000),
+            checkpointsInRange(rows, 0, 2500).map { it.step },
+        )
+        assertEquals(listOf(2000, 3000), checkpointsInRange(rows, 2000, 3000).map { it.step })
+        assertTrue(checkpointsInRange(rows, 5000, 6000).isEmpty())
+        // A checkpoint without a step can neither be placed nor sampled by a range.
+        assertTrue(checkpointsInRange(rows, 0, 1_000_000).none { it.step == null })
+    }
+
+    @Test
+    fun theRangeCheckExplainsItself() {
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(1000), checkpoint(3000)),
+            samples = emptyMap(),
+            jobs = emptyList(),
+        )
+        assertEquals("Enter a step range", batchRangeError(rows, "", "10"))
+        assertEquals("Steps must be whole numbers", batchRangeError(rows, "x", "10"))
+        assertEquals("Enter a step range", batchRangeError(rows, "10", ""))
+        assertEquals("No checkpoints between step 1500 and 2500", batchRangeError(rows, "1500", " 2500 "))
+        assertEquals("From must not be greater than To", batchRangeError(rows, "30", "10"))
+        assertEquals("No checkpoints between step 1500 and 2500", batchRangeError(rows, "1500", "2500"))
+        assertNull(batchRangeError(rows, "1000", "3000"))
+        assertNull(batchRangeError(rows, "0", "9999999"))
+        // A run with no stepped checkpoints says so rather than offering an empty batch.
+        val noSteps = checkpointRows(listOf(checkpoint(null)), emptyMap(), emptyList())
+        assertEquals("This run has no checkpoints with a step", batchRangeError(noSteps, "0", "10"))
+    }
+
+    @Test
+    fun aCancelledOrFailedPassStillShowsTheImagesItWrote() {
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = emptyMap(),
+            jobs = listOf(
+                job("cancelled_sets_gen_1", step = 3050, state = JOB_CANCELLED, startedAt = 10.0),
+                job("failed_sets_gen_2", step = 3050, state = JOB_ERROR, startedAt = 20.0),
+            ),
+        )
+        // Both wrote files before stopping, and files on disk belong on the card.
+        assertEquals(
+            listOf("failed_sets_gen_2", "cancelled_sets_gen_1"),
+            rows[0].generated.map { it.id },
+        )
     }
 
     @Test
