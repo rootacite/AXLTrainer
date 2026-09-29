@@ -1,11 +1,17 @@
 """Run one Automation job: push prompts through a ComfyUI workflow, keep the images.
 
     python -u trainer/run_automation.py --spec <job.json> [--only-failed]
+                                        [--image p0003_01.png | --append 2 --images 4]
 
 `api.py` writes the job record (see `trainer/automation.py`) and spawns this detached,
 so a long batch survives Ranko closing. Progress, seeds and ComfyUI's own file names go
 back into the job file; the images land in `<job>/images/` under our own names
 (`p0003_01.png`) so the order never depends on ComfyUI's `filename_prefix`.
+
+`--only-failed` re-runs the prompts that produced nothing yet. The two targeted forms run
+exactly one prompt entry instead, which is what the Gallery's per-image buttons ask for:
+`--image` redraws that one image in place (new random seed, its sidecar rewritten), and
+`--append N` adds N images to the entry, each from its own random seed.
 
 A SIGTERM (the Cancel button) stops between prompts and inside a history poll, then the
 job is marked `cancelled` — the trainer's own rule that a half-finished run keeps what
@@ -23,7 +29,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 # `python trainer/run_automation.py` puts trainer/ on sys.path, `import api` does not;
 # support both (see AGENT.md "Import dualism").
@@ -160,7 +166,37 @@ def write_sidecar(path: Path, prompt: str, seed: int, prompt_id: str, comfy_name
     )
 
 
-def run_job(spec_path: Path, only_failed: bool = False) -> int:
+def aligned_seeds(entry: Mapping[str, Any], names: list[str]) -> list[Any]:
+    """One seed per name. A record from before the Gallery kept per-image seeds — or one whose
+    list does not line up with its names — falls back to the entry's single `seed`, which is the
+    number the Gallery showed for those images anyway."""
+    seeds = entry.get("image_seeds")
+    if isinstance(seeds, list) and len(seeds) == len(names):
+        return list(seeds)
+    row = entry.get("seed")
+    return [row if isinstance(row, int) else None] * len(names)
+
+
+def output_name(
+    plan: Mapping[str, Any],
+    index: int,
+    image_index: int,
+    names: list[str],
+    images_dir: Path,
+) -> str:
+    """Where one rendered image lands. A redraw writes over the name it was asked to replace, a
+    normal pass numbers the batch (`p0003_01.png`…), and an append takes the next free number so
+    a name that was deleted cannot come back."""
+    fixed = plan.get("fixed")
+    if isinstance(fixed, list) and image_index <= len(fixed):
+        return str(fixed[image_index - 1])
+    if plan.get("redraw") and not fixed:
+        on_disk = [path.name for path in images_dir.glob(f"p{index + 1:04d}_*.png")]
+        return automation.image_name(index, automation.next_image_number(sorted(set(names) | set(on_disk)), index))
+    return automation.image_name(index, image_index)
+
+
+def run_job(spec_path: Path, only_failed: bool = False, target: Optional[Mapping[str, Any]] = None) -> int:
     spec = automation.read_job(spec_path)
     if spec is None:
         print(f"[automation] unreadable spec: {spec_path}", file=sys.stderr)
@@ -214,58 +250,131 @@ def run_job(spec_path: Path, only_failed: bool = False) -> int:
         client = comfy.ComfyClient(url)
         automation.update_job(job_id, output_dir, comfy_url=client.server)
 
+        # What this pass runs. A normal pass walks every entry and queues each once with the
+        # configured images-per-prompt; a targeted pass (the Gallery's per-image buttons) runs
+        # exactly one entry — `image` redraws that one image in place, `append` adds `images` more,
+        # each from its own random seed.
+        mode = str((target or {}).get("mode") or "")
+        plans: list[dict[str, Any]] = []
+        if not mode:
+            for position, prompt in enumerate(prompts):
+                if not isinstance(prompt, dict):
+                    continue
+                if only_failed and prompt.get("state") == automation.PROMPT_STATE_DONE:
+                    continue
+                plans.append({"index": position, "queues": 1, "batch": count, "redraw": False, "fixed": None})
+        elif mode == "image":
+            wanted = str((target or {}).get("name") or "")
+            position = automation.prompt_entry_index(prompts, wanted)
+            if position is None:
+                raise comfy.ComfyError(f"no prompt holds the image {wanted}")
+            plans.append({"index": position, "queues": 1, "batch": 1, "redraw": True, "fixed": [wanted]})
+        else:
+            position = int((target or {}).get("index") or 0)
+            if automation.prompt_entry_at(prompts, position) is None:
+                raise comfy.ComfyError(f"no prompt at index {position}")
+            plans.append(
+                {
+                    "index": position,
+                    "queues": max(1, int((target or {}).get("images") or 1)),
+                    "batch": 1,
+                    "redraw": True,
+                    "fixed": None,
+                }
+            )
+        if mode:
+            _log(f"{mode} pass: entry {plans[0]['index']}, {plans[0]['queues']} image(s)")
+
+        planned_images = sum(int(plan["queues"]) for plan in plans)
+        written_images = 0
+        if mode:
+            automation.set_pass(
+                job_id,
+                output_dir,
+                {
+                    "mode": mode,
+                    "prompt_index": plans[0]["index"],
+                    "images_done": 0,
+                    "total_images": planned_images,
+                    "image": None,
+                },
+            )
+
         consecutive_failures = 0
         completed_any = False
         counter = 0
-        for index, prompt in enumerate(prompts):
-            if not isinstance(prompt, dict):
-                continue
-            prompt_text = str(prompt.get("text") or "")
-            state = prompt.get("state")
-            if only_failed and state == automation.PROMPT_STATE_DONE:
-                continue
+        for plan in plans:
             if stop.requested:
                 break
-            counter += 1
-            _record_prompt(
-                job_id,
-                output_dir,
-                index,
-                state=automation.PROMPT_STATE_RUNNING,
-                error=None,
-                seed=None,
-                prompt_id=None,
-                images=[],
-            )
+            index = plan["index"]
+            prompt_entry = automation.prompt_entry_at(prompts, index) or {}
+            prompt_text = str(prompt_entry.get("text") or "")
+            names = [str(name) for name in prompt_entry.get("images") or []] if plan["redraw"] else []
+            seeds: list[Any] = aligned_seeds(prompt_entry, names) if plan["redraw"] else []
+            if plan["redraw"]:
+                # A redraw keeps the images the entry already has; only their seeds are rewritten.
+                _record_prompt(job_id, output_dir, index, state=automation.PROMPT_STATE_RUNNING, error=None)
+            else:
+                _record_prompt(
+                    job_id,
+                    output_dir,
+                    index,
+                    state=automation.PROMPT_STATE_RUNNING,
+                    error=None,
+                    seed=None,
+                    prompt_id=None,
+                    images=[],
+                )
             try:
-                seed = secrets.randbits(63)
-                workflow = copy.deepcopy(base_workflow)
-                set_positive_prompt(workflow, positive, prompt_text)
-                set_batch_size(workflow, count)
-                changed_seeds = set_seed(workflow, seed)
-                _log(f"[{counter}] seed={seed} count={count} seed nodes={changed_seeds}")
-                prompt_id = client.queue_prompt(workflow)
-                _record_prompt(job_id, output_dir, index, prompt_id=prompt_id, seed=seed)
-                _log(f"[{counter}] queued {prompt_id}")
-                entry = client.wait_for_prompt(prompt_id, poll_interval=poll, should_stop=lambda: stop.requested)
-                found = saved_images(entry, save_nodes)
-                if not found:
-                    raise comfy.ComfyError("the prompt finished but SaveImage returned no image")
-                names: list[str] = []
-                for image_index, image in enumerate(found, start=1):
-                    data = client.get_image(image["filename"], image["subfolder"], image["type"])
-                    name = automation.image_name(index, image_index)
-                    (images / name).write_bytes(data)
-                    write_sidecar(images / name.replace(".png", ".txt"), prompt_text, seed, prompt_id, image["filename"])
-                    names.append(name)
-                    _record_prompt(job_id, output_dir, index, images=names)
-                    _log(f"[{counter}] [{image_index}/{len(found)}] {name} ({len(data)} bytes)")
+                for _ in range(plan["queues"]):
+                    if stop.requested:
+                        break
+                    counter += 1
+                    seed = secrets.randbits(63)
+                    workflow = copy.deepcopy(base_workflow)
+                    set_positive_prompt(workflow, positive, prompt_text)
+                    set_batch_size(workflow, plan["batch"])
+                    changed_seeds = set_seed(workflow, seed)
+                    _log(f"[{counter}] seed={seed} count={plan['batch']} seed nodes={changed_seeds}")
+                    prompt_id = client.queue_prompt(workflow)
+                    _record_prompt(job_id, output_dir, index, prompt_id=prompt_id, seed=seed)
+                    _log(f"[{counter}] queued {prompt_id}")
+                    entry = client.wait_for_prompt(prompt_id, poll_interval=poll, should_stop=lambda: stop.requested)
+                    found = saved_images(entry, save_nodes)
+                    if not found:
+                        raise comfy.ComfyError("the prompt finished but SaveImage returned no image")
+                    for image_index, image in enumerate(found, start=1):
+                        data = client.get_image(image["filename"], image["subfolder"], image["type"])
+                        name = output_name(plan, index, image_index, names, images)
+                        (images / name).write_bytes(data)
+                        write_sidecar(images / name.replace(".png", ".txt"), prompt_text, seed, prompt_id, image["filename"])
+                        if name in names:
+                            seeds[names.index(name)] = seed
+                        else:
+                            names.append(name)
+                            seeds.append(seed)
+                        _record_prompt(job_id, output_dir, index, images=names, image_seeds=seeds)
+                        _log(f"[{counter}] [{image_index}/{len(found)}] {name} ({len(data)} bytes)")
+                        if mode:
+                            written_images += 1
+                            automation.set_pass(
+                                job_id,
+                                output_dir,
+                                {
+                                    "mode": mode,
+                                    "prompt_index": index,
+                                    "images_done": written_images,
+                                    "total_images": planned_images,
+                                    "image": name,
+                                },
+                            )
                 _record_prompt(
                     job_id,
                     output_dir,
                     index,
                     state=automation.PROMPT_STATE_DONE,
                     images=names,
+                    image_seeds=seeds,
                     finished_at=time.time(),
                 )
                 completed_any = True
@@ -280,6 +389,8 @@ def run_job(spec_path: Path, only_failed: bool = False) -> int:
                     index,
                     state=automation.PROMPT_STATE_ERROR,
                     error=f"{type(exc).__name__}: {exc}",
+                    images=names,
+                    image_seeds=seeds,
                     finished_at=time.time(),
                 )
                 consecutive_failures += 1
@@ -289,6 +400,7 @@ def run_job(spec_path: Path, only_failed: bool = False) -> int:
                     ) from exc
     except Exception as exc:  # noqa: BLE001 - the job file is what the client reads
         traceback.print_exc()
+        automation.set_pass(job_id, output_dir, None)
         automation.update_job(
             job_id,
             output_dir,
@@ -297,6 +409,10 @@ def run_job(spec_path: Path, only_failed: bool = False) -> int:
             finished_at=time.time(),
         )
         return 1
+
+    if mode:
+        # The pass is over (done, stopped or failed): the Gallery's progress line goes with it.
+        automation.set_pass(job_id, output_dir, None)
 
     if stop.requested:
         _log(f"stopped on {stop.reason}")
@@ -356,8 +472,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run one Automation job against ComfyUI")
     parser.add_argument("--spec", required=True, help="job JSON written by api.py")
     parser.add_argument("--only-failed", action="store_true", help="skip the prompts that already produced images")
+    parser.add_argument("--image", help="redraw this one image in place, with a new random seed")
+    parser.add_argument("--append", type=int, help="append images to this prompt index")
+    parser.add_argument("--images", type=int, default=1, help="how many images an --append pass adds")
     args = parser.parse_args(argv)
-    return run_job(Path(args.spec), only_failed=args.only_failed)
+
+    if args.image and args.append is not None:
+        print("[automation] --image and --append are two different passes", file=sys.stderr)
+        return 2
+    target: Optional[dict[str, Any]] = None
+    if args.image:
+        target = {"mode": "image", "name": str(args.image)}
+    elif args.append is not None:
+        target = {"mode": "append", "index": int(args.append), "images": max(1, int(args.images))}
+    return run_job(Path(args.spec), only_failed=args.only_failed, target=target)
 
 
 if __name__ == "__main__":

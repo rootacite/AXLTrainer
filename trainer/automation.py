@@ -549,6 +549,76 @@ def image_name(prompt_index: int, image_index: int) -> str:
     return f"p{prompt_index + 1:04d}_{image_index:02d}.png"
 
 
+def prompt_entry_index(prompts: Any, image: str) -> Optional[int]:
+    """Position of the entry whose `images` hold this name, or None when no entry does."""
+    if not isinstance(prompts, list):
+        return None
+    for position, entry in enumerate(prompts):
+        if not isinstance(entry, dict):
+            continue
+        names = entry.get("images")
+        if isinstance(names, list) and any(str(name) == image for name in names):
+            return position
+    return None
+
+
+def prompt_entry_at(prompts: Any, index: int) -> Optional[dict[str, Any]]:
+    """The entry an `index` names. Positions are the identity: every writer (`job_start`,
+    `_record_prompt`) addresses the list by position and keeps the stored `index` equal to it."""
+    if not isinstance(prompts, list) or index < 0 or index >= len(prompts):
+        return None
+    entry = prompts[index]
+    return entry if isinstance(entry, dict) else None
+
+
+def next_image_number(names: Any, prompt_index: int) -> int:
+    """One past the highest `_NN` this prompt's names already use — the number an appended
+    image gets, so a name deleted from the record can never be handed out twice."""
+    prefix = f"p{prompt_index + 1:04d}_"
+    highest = 0
+    for name in names if isinstance(names, list) else []:
+        text = str(name)
+        if not text.startswith(prefix):
+            continue
+        head = text[len(prefix):].split(".", 1)[0]
+        try:
+            number = int(head)
+        except ValueError:
+            continue
+        highest = max(highest, number)
+    return highest + 1
+
+
+def drop_image(prompts: Any, image: str) -> list[dict[str, Any]]:
+    """Remove one image from the record: its name and its seed, and — when it was that prompt's
+    last image — the whole entry, which is what "the prompt is gone" means here.
+
+    The remaining entries are renumbered so the stored `index` keeps matching the position
+    (the invariant `job_start` establishes and the runner writes by). Image files are not renamed.
+    """
+    kept: list[dict[str, Any]] = []
+    for entry in prompts if isinstance(prompts, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        names = [str(name) for name in entry.get("images") or []]
+        if image not in names:
+            kept.append(dict(entry))
+            continue
+        seeds = list(entry.get("image_seeds") or [])
+        position = names.index(image)
+        names.pop(position)
+        if position < len(seeds):
+            seeds.pop(position)
+        if not names:
+            continue
+        updated = dict(entry)
+        updated["images"] = names
+        if "image_seeds" in entry:
+            updated["image_seeds"] = seeds
+        kept.append(updated)
+    return [{**entry, "index": position} for position, entry in enumerate(kept)]
+
+
 def read_job(path: Union[str, Path]) -> Optional[dict[str, Any]]:
     return _read_json(Path(path))
 
@@ -568,6 +638,24 @@ def update_job(job_id: str, output_dir: Optional[Union[str, Path]] = None, **fie
     payload["updated_at"] = time.time()
     atomic_write_json(path, payload)
     return payload
+
+
+def set_pass(
+    job_id: str,
+    output_dir: Optional[Union[str, Path]] = None,
+    payload: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Record what a targeted pass is doing right now, or clear it (`payload = None`).
+
+    The Gallery shows this as its progress line: a redraw of one image keeps the job's own
+    counters still (`total` / `done` do not move), so the record has to say which pass is
+    running, which prompt it belongs to and how many of its images are already written.
+    """
+    path = job_path(job_id, output_dir)
+    job = read_job(path) or {"id": job_id}
+    job["pass"] = dict(payload) if payload else None
+    job["updated_at"] = time.time()
+    atomic_write_json(path, job)
 
 
 def list_jobs(output_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
@@ -618,6 +706,9 @@ def job_summary(job: Mapping[str, Any]) -> dict[str, Any]:
         "positive_node": job.get("positive_node"),
         "count": job.get("count"),
         "comfy_url": job.get("comfy_url"),
+        # What a redraw/append pass is doing right now: the job's own counters do not move for a
+        # redraw, so the list would otherwise have nothing to show while it runs.
+        "pass": job.get("pass"),
         "error": job.get("error"),
     }
 

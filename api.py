@@ -1346,13 +1346,24 @@ def _automation_runner_script() -> Path:
     return script
 
 
-def _spawn_automation_job(job_id: str, output_dir: str, only_failed: bool = False) -> int:
+def _spawn_automation_job(
+    job_id: str,
+    output_dir: str,
+    only_failed: bool = False,
+    image: str = "",
+    append: Optional[int] = None,
+    images: int = 1,
+) -> int:
     spec_path = automation.job_path(job_id, output_dir)
     log = automation.log_path(job_id, output_dir)
     log.parent.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-u", str(_automation_runner_script()), "--spec", str(spec_path)]
     if only_failed:
         command.append("--only-failed")
+    if image:
+        command += ["--image", str(image)]
+    elif append is not None:
+        command += ["--append", str(int(append)), "--images", str(int(images))]
     with open(log, "a", encoding="utf-8") as handle:
         proc = subprocess.Popen(
             command,
@@ -1443,18 +1454,8 @@ def handle_automation_job_list(_params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_automation_job_get(params: dict[str, Any]) -> dict[str, Any]:
-    job_id = str(params.get("id") or "")
-    if not job_id:
-        raise ValueError("id is required")
     settings = automation.load_settings()
-    for job in automation.reconcile_jobs(settings["output_dir"]):
-        if str(job.get("id")) != job_id:
-            continue
-        payload = dict(job)
-        payload["summary"] = automation.job_summary(job)
-        payload["log_tail"] = _automation_log_tail(automation.log_path(job_id, job.get("output_dir") or settings["output_dir"]))
-        return _json_safe(payload)
-    raise ValueError(f"no job named {job_id}")
+    return _automation_job_detail(_automation_job(str(params.get("id") or ""), settings), settings)
 
 
 def _automation_log_tail(path: Path, lines: int = 40) -> str:
@@ -1525,6 +1526,147 @@ def handle_automation_job_retry_failed(params: dict[str, Any]) -> dict[str, Any]
     raise ValueError(f"no job named {job_id}")
 
 
+def _automation_job(job_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """The one job a request names; `ValueError` when no job has that id."""
+    if not job_id:
+        raise ValueError("id is required")
+    for job in automation.reconcile_jobs(settings["output_dir"]):
+        if str(job.get("id")) == job_id:
+            return job
+    raise ValueError(f"no job named {job_id}")
+
+
+def _automation_job_detail(job: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """The payload `automation_job_get` answers with, so a Gallery action needs one round trip."""
+    job_id = str(job.get("id") or "")
+    payload = dict(job)
+    payload["summary"] = automation.job_summary(job)
+    output_dir = job.get("output_dir") or settings["output_dir"]
+    payload["log_tail"] = _automation_log_tail(automation.log_path(job_id, output_dir))
+    return _json_safe(payload)
+
+
+def _automation_idle_job(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    """(job, settings, output_dir, job_id) for an action that must not touch a running job."""
+    settings = automation.load_settings()
+    job = _automation_job(str(params.get("id") or ""), settings)
+    job_id = str(job.get("id"))
+    if job.get("state") == automation.STATE_RUNNING and is_pid_alive(job.get("pid")):
+        raise ValueError(f"{job_id} is still running")
+    return job, settings, str(job.get("output_dir") or settings["output_dir"]), job_id
+
+
+def _automation_image_path(job_id: str, output_dir: str, image: str) -> Path:
+    """One image of a job, refusing a name that is not a bare file name inside its own directory."""
+    root = automation.images_dir(job_id, output_dir)
+    target = root / image
+    if not image or target.parent != root:
+        raise ValueError(f"not an image name: {image}")
+    return target
+
+
+def _automation_prompt_index(params: dict[str, Any]) -> int:
+    raw = params.get("prompt_index")
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"prompt_index must be a number, not {raw!r}") from None
+
+
+def handle_automation_image_delete(params: dict[str, Any]) -> dict[str, Any]:
+    """Delete one image (and the sidecar beside it) from a job's directory and record.
+
+    The record is the truth about which images a prompt has, so the name must be one it holds.
+    Deleting the last image of a prompt drops that entry — there is nothing left to describe —
+    and the remaining entries renumber so their `index` keeps matching their position.
+    """
+    job, settings, output_dir, job_id = _automation_idle_job(params)
+    image = str(params.get("image") or "")
+    prompts = job.get("prompts")
+    if automation.prompt_entry_index(prompts, image) is None:
+        raise ValueError(f"no prompt of {job_id} holds the image {image}")
+    target = _automation_image_path(job_id, output_dir, image)
+    for path in (target, target.with_suffix(".txt")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    updated = automation.update_job(job_id, output_dir, prompts=automation.drop_image(prompts, image))
+    return _automation_job_detail(updated, settings)
+
+
+def handle_automation_image_regenerate(params: dict[str, Any]) -> dict[str, Any]:
+    """Draw one image again with a new random seed, writing over that image and its sidecar."""
+    job, settings, output_dir, job_id = _automation_idle_job(params)
+    image = str(params.get("image") or "")
+    if automation.prompt_entry_index(job.get("prompts"), image) is None:
+        raise ValueError(f"no prompt of {job_id} holds the image {image}")
+    _automation_image_path(job_id, output_dir, image)
+    pid = _spawn_automation_job(job_id, output_dir, image=image)
+    updated = automation.update_job(
+        job_id,
+        output_dir,
+        state=automation.STATE_RUNNING,
+        pid=pid,
+        error=None,
+        finished_at=None,
+    )
+    return _automation_job_detail(updated, settings)
+
+
+def handle_automation_prompt_extend(params: dict[str, Any]) -> dict[str, Any]:
+    """Add `count` images to one prompt entry, each from its own new random seed."""
+    job, settings, output_dir, job_id = _automation_idle_job(params)
+    index = _automation_prompt_index(params)
+    if automation.prompt_entry_at(job.get("prompts"), index) is None:
+        raise ValueError(f"{job_id} has no prompt at index {index}")
+    count = params.get("count", 1)
+    try:
+        images = int(count)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"count must be a number, not {count!r}") from None
+    if not automation.MIN_COUNT <= images <= automation.MAX_COUNT:
+        raise ValueError(f"count must be {automation.MIN_COUNT}..{automation.MAX_COUNT}")
+    pid = _spawn_automation_job(job_id, output_dir, append=index, images=images)
+    updated = automation.update_job(
+        job_id,
+        output_dir,
+        state=automation.STATE_RUNNING,
+        pid=pid,
+        error=None,
+        finished_at=None,
+    )
+    return _automation_job_detail(updated, settings)
+
+
+def handle_automation_job_prompt_edit(params: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite the text of one prompt entry.
+
+    Only the record changes: the images already rendered keep their sidecars, which are the
+    record of what was actually sent, and the next regeneration uses the new text. Editing is
+    allowed while the job runs — the runner never writes `text` back, and a record update
+    re-reads the file, so neither side can drop the other's fields.
+    """
+    settings = automation.load_settings()
+    job = _automation_job(str(params.get("id") or ""), settings)
+    job_id = str(job.get("id"))
+    output_dir = str(job.get("output_dir") or settings["output_dir"])
+    index = _automation_prompt_index(params)
+    prompts = job.get("prompts")
+    entry = automation.prompt_entry_at(prompts, index)
+    if entry is None:
+        raise ValueError(f"{job_id} has no prompt at index {index}")
+    text = str(params.get("text") or "").strip()
+    if not text:
+        raise ValueError("text is empty")
+    if len(text) > automation.MAX_PROMPT_CHARS:
+        raise ValueError(f"text must be at most {automation.MAX_PROMPT_CHARS} characters")
+    updated_prompts = list(prompts)
+    updated_prompts[index] = {**entry, "text": text}
+    updated = automation.update_job(job_id, output_dir, prompts=updated_prompts)
+    return _automation_job_detail(updated, settings)
+
+
 def handle_automation_job_delete(params: dict[str, Any]) -> dict[str, Any]:
     job_id = str(params.get("id") or "")
     settings = automation.load_settings()
@@ -1592,6 +1734,10 @@ _HANDLERS = {
     "automation_job_cancel": handle_automation_job_cancel,
     "automation_job_retry_failed": handle_automation_job_retry_failed,
     "automation_job_delete": handle_automation_job_delete,
+    "automation_image_delete": handle_automation_image_delete,
+    "automation_image_regenerate": handle_automation_image_regenerate,
+    "automation_prompt_extend": handle_automation_prompt_extend,
+    "automation_job_prompt_edit": handle_automation_job_prompt_edit,
     "tag_lexicon": handle_tag_lexicon,
     "dataset_list": handle_dataset_list,
     "caption_write": handle_caption_write,
@@ -1635,6 +1781,10 @@ _CONTROL_METHODS = frozenset(
         "automation_job_cancel",
         "automation_job_retry_failed",
         "automation_job_delete",
+        "automation_image_delete",
+        "automation_image_regenerate",
+        "automation_prompt_extend",
+        "automation_job_prompt_edit",
         "caption_write",
         "dataset_drop",
         "dataset_shuffle",

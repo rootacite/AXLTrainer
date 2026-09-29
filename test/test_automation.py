@@ -398,6 +398,59 @@ class AutomationStoreTest(unittest.TestCase):
         self.assertEqual(["a", "b"], automation.normalize_prompts(["a", "b"]))
         with self.assertRaises(ValueError):
             automation.normalize_prompts("")
+
+    def test_the_entry_holding_an_image_is_found_by_name(self):
+        prompts = [
+            {"index": 0, "images": ["p0001_01.png", "p0001_02.png"]},
+            {"index": 1, "images": ["p0002_01.png"]},
+            {"index": 2, "images": []},
+        ]
+        self.assertEqual(0, automation.prompt_entry_index(prompts, "p0001_02.png"))
+        self.assertEqual(1, automation.prompt_entry_index(prompts, "p0002_01.png"))
+        self.assertIsNone(automation.prompt_entry_index(prompts, "p0009_01.png"))
+        self.assertIsNone(automation.prompt_entry_index("nonsense", "p0001_01.png"))
+        self.assertEqual(prompts[1], automation.prompt_entry_at(prompts, 1))
+        self.assertIsNone(automation.prompt_entry_at(prompts, 9))
+        self.assertIsNone(automation.prompt_entry_at(prompts, -1))
+
+    def test_the_next_image_number_is_one_past_the_highest(self):
+        names = ["p0001_01.png", "p0001_02.png", "p0002_07.png", "nonsense.png"]
+        self.assertEqual(3, automation.next_image_number(names, 0))
+        self.assertEqual(8, automation.next_image_number(names, 1))
+        self.assertEqual(1, automation.next_image_number([], 0))
+        # A name for another prompt never moves this prompt's counter.
+        self.assertEqual(1, automation.next_image_number(names, 4))
+
+    def test_dropping_the_last_image_of_a_prompt_drops_the_entry(self):
+        prompts = [
+            {"index": 0, "text": "one", "images": ["p0001_01.png", "p0001_02.png"], "image_seeds": [1, 2]},
+            {"index": 1, "text": "two", "images": ["p0002_01.png"], "image_seeds": [3]},
+            {"index": 2, "text": "three", "images": ["p0003_01.png"]},
+        ]
+        kept = automation.drop_image(prompts, "p0002_01.png")
+        self.assertEqual([0, 1], [entry["index"] for entry in kept], "the entry is gone and the rest renumber")
+        self.assertEqual(["one", "three"], [entry["text"] for entry in kept])
+        self.assertEqual(["p0001_01.png", "p0001_02.png"], kept[0]["images"])
+        self.assertEqual(["p0003_01.png"], kept[1]["images"])
+
+    def test_dropping_one_of_several_images_keeps_the_entry(self):
+        prompts = [
+            {"index": 0, "text": "one", "images": ["p0001_01.png", "p0001_02.png"], "image_seeds": [11, 12]},
+        ]
+        kept = automation.drop_image(prompts, "p0001_01.png")
+        self.assertEqual([0], [entry["index"] for entry in kept])
+        self.assertEqual(["p0001_02.png"], kept[0]["images"], "the seed that went with it goes too")
+        self.assertEqual([12], kept[0]["image_seeds"])
+        self.assertEqual("one", kept[0]["text"])
+
+    def test_dropping_from_a_record_without_seeds_leaves_it_without_them(self):
+        kept = automation.drop_image([{"index": 0, "images": ["p0004_01.png", "p0004_02.png"]}], "p0004_01.png")
+        self.assertEqual(["p0004_02.png"], kept[0]["images"])
+        self.assertNotIn("image_seeds", kept[0], "an older record does not grow the field")
+
+    def test_dropping_a_name_no_entry_holds_changes_nothing(self):
+        prompts = [{"index": 0, "text": "one", "images": ["p0001_01.png"], "image_seeds": [1]}]
+        self.assertEqual(prompts, automation.drop_image(prompts, "p0009_01.png"))
         with self.assertRaises(ValueError):
             automation.normalize_prompts([f"p{i}" for i in range(automation.MAX_PROMPTS + 1)])
         with self.assertRaises(ValueError):
@@ -574,6 +627,133 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(queued_before + 1, len(self.stub.queued), "the finished prompt must not be re-queued")
         self.assertEqual([automation.PROMPT_STATE_DONE] * 2, [p["state"] for p in job["prompts"]])
         self.assertEqual(2, len(list(automation.images_dir(job_id, self.output_dir).glob("p*.png"))))
+
+    def test_regenerating_one_image_overwrites_it_with_a_new_seed(self):
+        job_id = self._job(["only prompt"])
+        _proc, job = self._run(job_id)
+        name = job["prompts"][0]["images"][0]
+        self.assertEqual([job["prompts"][0]["seed"]], job["prompts"][0]["image_seeds"])
+        target = automation.images_dir(job_id, self.output_dir) / name
+        before_bytes = target.read_bytes()
+        before_seed = job["prompts"][0]["seed"]
+        sidecar = target.with_suffix(".txt")
+        self.assertIn(f"seed: {before_seed}", sidecar.read_text(encoding="utf-8"))
+
+        self.stub.image = b"\x89PNG-other-bytes"
+        proc, job = self._run(job_id, "--image", name)
+
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual([name], job["prompts"][0]["images"], "a redraw replaces the image, it adds none")
+        self.assertEqual(1, len(list(automation.images_dir(job_id, self.output_dir).glob("p*.png"))))
+        after_seed = job["prompts"][0]["image_seeds"][0]
+        self.assertNotEqual(before_seed, after_seed)
+        self.assertEqual(after_seed, job["prompts"][0]["seed"])
+        self.assertEqual(self.stub.image, target.read_bytes())
+        self.assertIn(f"seed: {after_seed}", sidecar.read_text(encoding="utf-8"))
+        self.assertEqual(automation.PROMPT_STATE_DONE, job["prompts"][0]["state"])
+        self.assertEqual(1, self.stub.queued[-1]["4"]["inputs"]["batch_size"], "one image per redraw")
+
+    def test_append_adds_images_each_with_its_own_seed(self):
+        job_id = self._job(["only prompt"])
+        _proc, job = self._run(job_id)
+        first_seed = job["prompts"][0]["image_seeds"][0]
+
+        proc, job = self._run(job_id, "--append", "0", "--images", "3")
+
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        images = automation.images_dir(job_id, self.output_dir)
+        self.assertEqual(
+            ["p0001_01.png", "p0001_02.png", "p0001_03.png", "p0001_04.png"],
+            sorted(path.name for path in images.glob("p*.png")),
+        )
+        self.assertEqual(["p0001_01.png", "p0001_02.png", "p0001_03.png", "p0001_04.png"], job["prompts"][0]["images"])
+        seeds = job["prompts"][0]["image_seeds"]
+        self.assertEqual(4, len(seeds))
+        self.assertEqual(first_seed, seeds[0])
+        self.assertEqual(3, len(set(seeds[1:])), "each appended image drew its own random seed")
+        for name, seed in zip(job["prompts"][0]["images"], seeds):
+            sidecar = (images / name).with_suffix(".txt").read_text(encoding="utf-8")
+            self.assertIn(f"seed: {seed}", sidecar)
+        self.assertEqual(automation.PROMPT_STATE_DONE, job["prompts"][0]["state"])
+        self.assertEqual([1, 1, 1], [w["4"]["inputs"]["batch_size"] for w in self.stub.queued[-3:]])
+
+    def test_a_targeted_pass_leaves_the_other_prompts_alone(self):
+        job_id = self._job(["first", "second"], count=1)
+        _proc, job = self._run(job_id)
+        second = job["prompts"][1]
+        queued_before = len(self.stub.queued)
+
+        proc, job = self._run(job_id, "--image", job["prompts"][0]["images"][0])
+
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual(queued_before + 1, len(self.stub.queued))
+        self.assertEqual(second, job["prompts"][1], "the untouched prompt keeps its seed and images")
+
+    def test_a_pass_that_names_nothing_is_refused(self):
+        job_id = self._job(["only prompt"])
+        self._run(job_id)
+        queued_before = len(self.stub.queued)
+        for extra in (["--image", "p0009_01.png"], ["--append", "7", "--images", "2"]):
+            proc, job = self._run(job_id, *extra)
+            self.assertEqual(1, proc.returncode, extra)
+            self.assertEqual(automation.STATE_ERROR, job["state"], extra)
+            self.assertIn("ComfyError", job["error"], extra)
+        self.assertEqual(queued_before, len(self.stub.queued), "nothing may be queued for a pass that cannot run")
+
+    def test_image_and_append_are_two_different_passes(self):
+        job_id = self._job(["only prompt"])
+        proc, _job = self._run(job_id, "--image", "p0001_01.png", "--append", "0")
+        self.assertEqual(2, proc.returncode)
+        self.assertIn("two different passes", proc.stderr)
+
+    def test_a_targeted_pass_reports_its_progress_while_it_runs(self):
+        job_id = self._job(["only prompt"])
+        _proc, job = self._run(job_id)
+        name = job["prompts"][0]["images"][0]
+
+        # A redraw keeps the job's own counters still, so the record has to say what it is doing.
+        seen = self._run_and_watch(job_id, ["--image", name])
+        self.assertEqual("image", seen["mode"])
+        self.assertEqual(0, seen["prompt_index"])
+        self.assertEqual(1, seen["total_images"])
+        self.assertIsNone(automation.read_job(automation.job_path(job_id, self.output_dir)).get("pass"))
+
+        # An append walks its own images; the closest the record gets to a finished count is what
+        # a poll can catch, and the last one written clears the line again.
+        seen = self._run_and_watch(job_id, ["--append", "0", "--images", "3"], expect_done=1)
+        self.assertEqual("append", seen["mode"])
+        self.assertEqual(3, seen["total_images"])
+        self.assertGreaterEqual(seen["images_done"], 1)
+        self.assertIsNotNone(seen["image"])
+        self.assertIsNone(automation.read_job(automation.job_path(job_id, self.output_dir)).get("pass"))
+
+    def _run_and_watch(self, job_id, extra, expect_done=0, timeout=60.0):
+        """Run one pass, and return its `pass` block as a poll caught it (the last one seen)."""
+        self.stub.delay = 1.5
+        spec = automation.job_path(job_id, self.output_dir)
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(RUNNER), "--spec", str(spec), *extra],
+            env=self.env,
+            cwd=str(REPO),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        seen = None
+        deadline = time.time() + timeout
+        while time.time() < deadline and proc.poll() is None:
+            job = automation.read_job(automation.job_path(job_id, self.output_dir))
+            block = job.get("pass") if job else None
+            if isinstance(block, dict):
+                seen = block
+                if block.get("images_done", 0) >= expect_done and expect_done > 0:
+                    break
+            time.sleep(0.05)
+        proc.wait(timeout=timeout)
+        self.stub.delay = 0
+        self.assertIsNotNone(seen, f"the pass of {extra} was never recorded")
+        return seen
 
     def test_cancel_stops_between_prompts(self):
         self.stub.hang_calls = {1}
@@ -786,6 +966,160 @@ class AutomationApiTest(unittest.TestCase):
         job = self._wait_for(job_id)
         self.assertEqual(0, job["summary"]["failed"], job)
         self.assertEqual(queued_before + 1, len(self.stub.queued))
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_regenerating_an_image_swaps_its_seed_and_uses_the_edited_text(self):
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["original text"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        name = job["prompts"][0]["images"][0]
+        before = job["prompts"][0]["image_seeds"][0]
+
+        api.dispatch("automation_job_prompt_edit", {"id": job_id, "prompt_index": 0, "text": "edited text"})
+        edited = api.dispatch("automation_job_get", {"id": job_id})
+        self.assertEqual("edited text", edited["prompts"][0]["text"])
+
+        api.dispatch("automation_image_regenerate", {"id": job_id, "image": name})
+        job = self._wait_for(job_id)
+
+        self.assertEqual([name], job["prompts"][0]["images"], "a redraw replaces the image in place")
+        self.assertEqual(1, job["summary"]["images"])
+        self.assertNotEqual(before, job["prompts"][0]["image_seeds"][0])
+        self.assertEqual("edited text", self.stub.positive_texts()[-1], "the redraw sends the new text")
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_extending_a_prompt_appends_images_and_seeds(self):
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["only prompt"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        first = job["prompts"][0]["images"][0]
+
+        api.dispatch("automation_prompt_extend", {"id": job_id, "prompt_index": 0, "count": 3})
+        job = self._wait_for(job_id)
+
+        images = automation.images_dir(job_id, self.output_dir)
+        self.assertEqual(4, job["summary"]["images"])
+        self.assertEqual(["p0001_01.png", "p0001_02.png", "p0001_03.png", "p0001_04.png"], job["prompts"][0]["images"])
+        self.assertEqual([first] + sorted(job["prompts"][0]["images"][1:]), job["prompts"][0]["images"])
+        self.assertEqual(4, len(set(job["prompts"][0]["image_seeds"])))
+        self.assertEqual(4, len(list(images.glob("p*.png"))))
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_deleting_the_last_image_drops_the_prompt_entry(self):
+        self._settings(count=2)
+        job_id = api.dispatch("automation_job_start", {"prompts": ["solo", "second"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        images = automation.images_dir(job_id, self.output_dir)
+        first, second = job["prompts"][0]["images"]
+
+        # One of the prompt's two images: the entry survives with the other one.
+        api.dispatch("automation_image_delete", {"id": job_id, "image": first})
+        job = api.dispatch("automation_job_get", {"id": job_id})
+        self.assertEqual([second], job["prompts"][0]["images"])
+        self.assertFalse((images / first).exists())
+        self.assertFalse((images / first).with_suffix(".txt").exists(), "the sidecar goes with the image")
+        self.assertEqual(1, len(job["prompts"][0]["image_seeds"]), "its seed went with it")
+        self.assertTrue((images / second).exists())
+
+        # Its last image: the entry is gone and the remaining entries renumber.
+        api.dispatch("automation_image_delete", {"id": job_id, "image": second})
+        job = api.dispatch("automation_job_get", {"id": job_id})
+        self.assertEqual(["second"], [entry["text"] for entry in job["prompts"]])
+        self.assertEqual([0], [entry["index"] for entry in job["prompts"]])
+        self.assertEqual(2, len(job["prompts"][0]["images"]), "the other prompt is untouched")
+        self.assertEqual(2, len(list(images.glob("p*.png"))))
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_the_image_handlers_refuse_what_they_cannot_do(self):
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["only prompt"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        name = job["prompts"][0]["images"][0]
+
+        for params in (
+            {"id": job_id, "image": "p0009_01.png"},   # no prompt holds that name
+            {"id": "nope", "image": name},             # no such job
+            {"id": job_id, "image": ""},
+        ):
+            with self.assertRaises(ValueError):
+                api.dispatch("automation_image_delete", params)
+            with self.assertRaises(ValueError):
+                api.dispatch("automation_image_regenerate", params)
+        for params in (
+            {"id": job_id, "prompt_index": 7, "count": 1},
+            {"id": job_id, "prompt_index": 0, "count": 0},
+            {"id": job_id, "prompt_index": 0, "count": 17},
+            {"id": job_id, "prompt_index": 0, "count": "many"},
+            {"id": job_id, "prompt_index": "first", "count": 1},
+        ):
+            with self.assertRaises(ValueError):
+                api.dispatch("automation_prompt_extend", params)
+        for params in (
+            {"id": job_id, "prompt_index": 0, "text": "   "},
+            {"id": job_id, "prompt_index": 7, "text": "x"},
+            {"id": job_id, "prompt_index": 0, "text": "x" * 4001},
+        ):
+            with self.assertRaises(ValueError):
+                api.dispatch("automation_job_prompt_edit", params)
+        # The record is untouched by all of that.
+        job = api.dispatch("automation_job_get", {"id": job_id})
+        self.assertEqual([name], job["prompts"][0]["images"])
+        self.assertEqual("only prompt", job["prompts"][0]["text"])
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_image_delete_refuses_a_name_that_leaves_the_job_directory(self):
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["only prompt"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        outside = self.output_dir / "outside.png"
+        outside.write_bytes(b"\x89PNG-outside")
+        # A hand-edited record must not be able to name a path outside the job's images.
+        prompts = job["prompts"]
+        prompts[0]["images"] = ["../../outside.png"]
+        automation.update_job(job_id, self.output_dir, prompts=prompts)
+        with self.assertRaises(ValueError) as ctx:
+            api.dispatch("automation_image_delete", {"id": job_id, "image": "../../outside.png"})
+        self.assertIn("not an image name", str(ctx.exception))
+        self.assertTrue(outside.exists())
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_the_image_actions_refuse_while_the_job_runs(self):
+        self._settings()
+        self.stub.hang_calls = {1}
+        job_id = api.dispatch("automation_job_start", {"prompts": ["hang", "later"]})["job"]["id"]
+        self._wait_until(lambda: self.stub.queued)
+        for method, params in (
+            ("automation_image_delete", {"id": job_id, "image": "p0001_01.png"}),
+            ("automation_image_regenerate", {"id": job_id, "image": "p0001_01.png"}),
+            ("automation_prompt_extend", {"id": job_id, "prompt_index": 0, "count": 1}),
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                api.dispatch(method, params)
+            self.assertIn("still running", str(ctx.exception))
+        # Editing the text is a record-only change, so it is allowed while the job runs.
+        edited = api.dispatch("automation_job_prompt_edit", {"id": job_id, "prompt_index": 0, "text": "fixed"})
+        self.assertEqual("fixed", edited["prompts"][0]["text"])
+        api.dispatch("automation_job_cancel", {"id": job_id})
+        api.dispatch("automation_job_delete", {"id": job_id})
+
+    def test_a_redrawn_image_changes_the_hash_the_client_revalidates_against(self):
+        # The Gallery's thumbnails are revalidated by comparing the server's blob hash, which the
+        # server derives from the file's mtime and size — so a redraw has to end in a different
+        # hash for the new pixels to replace the cached ones on the client.
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["only prompt"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        name = job["prompts"][0]["images"][0]
+        image = automation.images_dir(job_id, self.output_dir) / name
+        params = {"paths": [str(image)], "max_edge": 128, "quality": 80, "format": "png"}
+        before = api.dispatch("blob_stat", params)["items"][0]["hash"]
+
+        self.stub.image = _png_bytes(color=(200, 10, 10))
+        api.dispatch("automation_image_regenerate", {"id": job_id, "image": name})
+        self._wait_for(job_id)
+
+        after = api.dispatch("blob_stat", params)["items"][0]["hash"]
+        self.assertNotEqual(before, after, "the same hash would keep the client on the old picture")
         api.dispatch("automation_job_delete", {"id": job_id})
 
     def _wait_for(self, job_id, timeout=60.0):
