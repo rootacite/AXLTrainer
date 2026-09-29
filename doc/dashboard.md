@@ -197,8 +197,41 @@ of the app uses, so no new image path exists.
 - Thumbnails are grouped per prompt and wrap instead of scrolling sideways; the slider sets their
   size (80–360 px). Clicking one opens the same fullscreen preview the Dashboard uses, with the
   caption (seed, `prompt_id`, prompt), prev/next, **Save this image…** (the image at full size) and
-  **Copy prompt**.
+  **Copy prompt**, plus the per-image actions below.
+- **Per-image actions** — every one of them sits on the Gallery page itself; the fullscreen preview
+  is a viewer with no buttons at all (arrow keys, drag to change image, click outside / `Esc` to
+  close). Each thumbnail carries three corner discs — **↻** top-left redraws that image, **✕**
+  top-right deletes it, **⤓** bottom-right saves it to your machine — and its prompt row has
+  **Copy prompt**, **改提示词…** (edit that prompt's text) and **再加几张…** (add N more images):
+  - **Redraw** queues that one prompt again with a new random seed and writes the result **over the
+    same file** (its `.txt` sidecar is rewritten, and the image's entry in the record's
+    `image_seeds` becomes the new seed). The ↻ disc asks first, and says so: the image it replaces
+    is gone.
+  - **Add images** queues the prompt N times (1–16), each with its own new random seed, and appends
+    the results after the images the prompt already has (`p0003_02.png`, `p0003_03.png`…). Nothing
+    is overwritten, so this is how you fish for a better take on the same prompt.
+  - **Edit prompt** rewrites that prompt's text in the job record only. The `.txt` beside an image
+    that already exists keeps what was actually sent to ComfyUI — that is the record of what made
+    it — and the next redraw or added image uses the new text.
+  - **Delete** removes one image and its sidecar; deleting a prompt's last image removes that prompt
+    from the record too (the remaining prompts keep their images and are renumbered). Deleting never
+    touches other prompts' images, and the job's `Retry failed` is not what brings a deleted image
+    back: ask for a redraw or more images instead.
+  - While the job runs these actions are off (the runner owns the record and the folder); each one
+    answers with the job's whole detail, so the page updates in one round trip and the job list
+    shows it as `running` again while the pass is in flight.
+  - **Progress while a pass runs**: the job's own counters do not move for a redraw (it replaces one
+    image), so the record carries what the pass is doing and it is shown **on the record being
+    worked on** — a bar and a line under that group's own header (`Adding image 2/4`,
+    `Redrawing p0001_01.png with a new seed`), right above the images it changes, so there is
+    nothing to scroll up for. The job row in the list at the top carries the same line at job level,
+    for when the job list is what you are looking at. The page also follows a running job on its
+    own: it re-reads the job's detail every poll, so images appear as they land, a redrawn one shows
+    the new picture, and the buttons come back the moment the pass ends — no need to click the job
+    again.
 - A job only knows the images it recorded; a prompt that failed shows its error instead of thumbs.
+  Each thumbnail is labelled with the seed that drew it (a job from before this feature has one seed
+  for the whole prompt, and shows that instead).
 
 ## How it talks to the trainer
 
