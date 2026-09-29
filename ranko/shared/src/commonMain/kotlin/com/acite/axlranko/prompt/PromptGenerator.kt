@@ -452,6 +452,14 @@ object PromptGenerator {
         return out
     }
 
+    /**
+     * The channel word as the prompt writes it. The anal one carries its weight — a bare `anal`
+     * beside a pose the model reads as vaginal is what gets dropped — while the vaginal one is a
+     * plain tag.
+     */
+    fun channelTag(channel: PromptChannel): String =
+        if (channel == PromptChannel.Anal) PromptLimits.ANAL_CHANNEL_TAG else channel.wire
+
     fun assemble(
         spec: PromptSpec,
         pose: MatrixEntry,
@@ -490,7 +498,7 @@ object PromptGenerator {
             val hole = channel ?: PromptChannel.Vaginal
             if (resolvedStage in STAGES_PENETRATING && hole in HOLE_CHANNELS) {
                 extra.add("sex")
-                extra.add(hole.wire)
+                extra.add(channelTag(hole))
             }
             extra.addAll(anatomyTags(pose, hole, includePenis = resolvedStage in STAGES_WITH_PARTNER))
             extra.addAll(stageTags(resolvedStage, hole))

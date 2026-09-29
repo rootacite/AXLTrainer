@@ -81,6 +81,12 @@ object PromptLimits {
     const val VAGINAL_RATIO_DEFAULT = 0.5
     const val NUDE_SENTINEL = "__nude__"
     const val OPEN_MARK = "(open clothes)"
+
+    /**
+     * The anal channel word is written weighted: next to a pose the model reads as vaginal, a bare
+     * `anal` is the element that goes missing, so the prompt asks for it at 1.2.
+     */
+    const val ANAL_CHANNEL_TAG = "(anal:1.2)"
 }
 
 val SEX_STAGES: List<SexStage> = SexStage.ORDER

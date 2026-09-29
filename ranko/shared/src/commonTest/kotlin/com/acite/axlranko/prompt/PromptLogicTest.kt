@@ -112,6 +112,15 @@ internal fun testFace(vararg overrides: Pair<String, FacePick>): Map<String, Fac
 
 internal fun tagsOf(line: String): Set<String> = splitTags(line).toSet()
 
+/**
+ * The anal channel word is only ever written weighted (`(anal:1.2)`), so "no anal here" means
+ * neither form is in the line — the bare token is what the weight replaced.
+ */
+internal fun assertNoAnalChannel(tags: Set<String>, message: String) {
+    assertFalse(tags.contains("anal"), message)
+    assertFalse(tags.contains(PromptLimits.ANAL_CHANNEL_TAG), message)
+}
+
 internal fun find(entries: List<MatrixEntry>, needle: String): MatrixEntry =
     entries.firstOrNull { it.blob.contains(needle) }
         ?: throw AssertionError("no entry containing '$needle'")
@@ -252,12 +261,29 @@ class ChannelAndAnatomyTest {
         )
         generatePrompts(spec, matrix, 6).forEach { line ->
             val tags = tagsOf(line)
-            assertTrue(tags.contains("anal"), line)
+            assertTrue(tags.contains(PromptLimits.ANAL_CHANNEL_TAG), line)
+            assertFalse(tags.contains("anal"), line)
             assertFalse(tags.contains("vaginal"), line)
             assertTrue(tags.contains("penis"), line)
             assertTrue(tags.contains("anus"), line)
             assertTrue(tags.contains("ass"), line)
         }
+    }
+
+    @Test
+    fun theAnalChannelIsWrittenWeighted() {
+        assertEquals("(anal:1.2)", PromptGenerator.channelTag(PromptChannel.Anal))
+        assertEquals("vaginal", PromptGenerator.channelTag(PromptChannel.Vaginal))
+        // The weight is what keeps the element from being dropped, so it may not be filtered out.
+        assertFalse(isForbiddenTag(PromptLimits.ANAL_CHANNEL_TAG))
+
+        val anal = tagsOf(assembleLine(SexStage.During, PromptChannel.Anal))
+        assertTrue(anal.contains(PromptLimits.ANAL_CHANNEL_TAG), anal.toString())
+        assertFalse(anal.contains("anal"), anal.toString())
+
+        val vaginal = tagsOf(assembleLine(SexStage.During, PromptChannel.Vaginal))
+        assertTrue(vaginal.contains("vaginal"), vaginal.toString())
+        assertFalse(vaginal.any { it.contains("anal") }, vaginal.toString())
     }
 
     @Test
@@ -610,7 +636,7 @@ class SexStageTest {
     fun theDuringStageMatchesTheOldSexLine() {
         val tags = tagsOf(assembleLine(SexStage.During, PromptChannel.Anal))
         assertTrue(tags.contains("sex"))
-        assertTrue(tags.contains("anal"))
+        assertTrue(tags.contains(PromptLimits.ANAL_CHANNEL_TAG))
         assertTrue(tags.contains("penis"))
         assertTrue(tags.contains("1boy"))
         assertFalse(tags.contains("ejaculation"))
@@ -654,7 +680,7 @@ class SexStageTest {
         assertFalse(tags.contains("penis"))
         assertFalse(tags.contains("1boy"))
         assertFalse(tags.contains("sex"))
-        assertFalse(tags.contains("anal"))
+        assertNoAnalChannel(tags, tags.toString())
     }
 
     @Test
@@ -768,7 +794,7 @@ class NoneChannelAndObjectStageTest {
             assertTrue(tags.contains("1boy"), line)
             assertFalse(tags.contains("sex"), line)
             assertFalse(tags.contains("vaginal"), line)
-            assertFalse(tags.contains("anal"), line)
+            assertNoAnalChannel(tags, line)
             assertFalse(tags.contains("pussy"), line)
             assertFalse(tags.contains("anus"), line)
             assertFalse(tags.contains("imminent vaginal"), line)
@@ -792,7 +818,7 @@ class NoneChannelAndObjectStageTest {
                 assertTrue(tags.contains("penis"), line)
                 assertFalse(tags.contains("sex"), line)
                 assertFalse(tags.contains("vaginal"), line)
-                assertFalse(tags.contains("anal"), line)
+                assertNoAnalChannel(tags, line)
             }
         }
     }
@@ -817,7 +843,7 @@ class NoneChannelAndObjectStageTest {
             assertFalse(tags.contains("penis"), line)
             assertFalse(tags.contains("1boy"), line)
             assertFalse(tags.contains("sex"), line)
-            assertFalse(tags.contains("anal"), line)
+            assertNoAnalChannel(tags, line)
             assertFalse(tags.contains("ejaculation"), line)
             assertFalse(tags.contains("presenting"), line)
             assertFalse(tags.contains("imminent anal"), line)
