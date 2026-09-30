@@ -77,13 +77,13 @@ Statistics and Tag dataset surfaces act on the folder selected there. `[[validat
 | `sdxl_base_v1-0` | yes | `stable-diffusion-xl-v1-base/lora` | `https://github.com/Stability-AI/generative-models` | `1.0.0` |
 | `sd3.5-large` | **no** (UI slot only) | `stable-diffusion-v3-5-large/lora` | `https://github.com/Stability-AI/sd3.5` | `1.0.0` |
 
-These also populate `modelspec.*` and `ss_base_model_version` on every `.safetensors`. `modelspec.prediction_type` is `v_prediction` when `[training].is_vpred` is true, otherwise `epsilon` (SDXL). Selecting `sd3.5-large` is valid config; `train_start` / `build_train_objects` fail before loading weights.
+These also populate `modelspec.*` and `ss_base_model_version` on every `.safetensors`. `modelspec.prediction_type` and `ss_v_pred` record what the **base** declared (`v_prediction` for a v-pred base, otherwise `epsilon`), and sample rendering uses the same value. Selecting `sd3.5-large` is valid config; `train_start` / `build_train_objects` fail before loading weights.
 
 ### `[training]` — core training settings
 
 | Key | Default (file) | Notes |
 | --- | --- | --- |
-| `is_vpred` | `false` | If `true`, the DDIM scheduler uses `v_prediction` + `rescale_betas_zero_snr`; otherwise `epsilon` prediction. |
+| — | — | There is **no** prediction-type switch: it is read from the base. A single-file checkpoint carries two marker tensors (`v_pred`, `ztsnr`) that say what it was trained to predict — the same keys ComfyUI reads in `supported_models.py:229`; a diffusers directory answers with its own `scheduler/scheduler_config.json`. `TrainConfig.prediction_type` / `zero_terminal_snr` are derived from that on every construction (like `run_dir`, not a config key), the noise scheduler and the loss target follow it, and so does sample rendering (`trainer/models.py` `sample_scheduler_kwargs`). A base stripped of its markers cannot be detected — use the original file. |
 | `min_snr_gamma` | `5.0` | **Defined but not used in the training math** (kept for metadata compatibility). |
 | `seed` | `1145141919` | Global training seed. |
 | `mixed_precision` | `"bf16"` | `"bf16"` / `"fp16"` / `"no"`. |
@@ -185,6 +185,7 @@ bucket and the leftover bars carry loss weight 0, so they neither train nor coun
 | `sample_seed` | `0` | `0` = unique random seed per image (printed to the log); otherwise `seed + repeat_idx` (fallback for `seed`). |
 | `sample_repeat` | `3` | Number of samples per checkpoint (fallback for `repeat`). |
 | `guidance_scale` | `6.0` | CFG scale (fallback for `guidance_scale`). |
+| `guidance_rescale` | `0.0` | CFG-rescale strength (fallback for `guidance_rescale`): `0.0` leaves the CFG output alone, `1.0` replaces it with the standard-deviation-matched one. This is ComfyUI's `RescaleCFG` node and diffusers' `guidance_rescale` (both from [2305.08891](https://huggingface.co/papers/2305.08891)); the shipped config asks for `0.6`. It lifts the crushed shadows and burnt highlights a v-pred/zero-SNR base produces at a low CFG — same prompt and seed, `0.6` took the black-pixel share of a sample from 15.3 % to 7.7 % — and cannot rescue a prompt the model itself collapses on. |
 
 #### `[[validation.samples]]` — one block per prompt set
 
@@ -200,6 +201,7 @@ width = 1152
 height = 768
 steps = 35
 guidance_scale = 6.0
+guidance_rescale = 0.6
 seed = 1
 repeat = 3
 ```
@@ -207,14 +209,15 @@ repeat = 3
 | Key | Required | Falls back to |
 | --- | --- | --- |
 | `prompt` | yes | `sample_prompts` |
-| `negative`, `width`, `height`, `steps`, `guidance_scale`, `seed`, `repeat` | no | the `[validation]` scalar of the same shape |
+| `negative`, `width`, `height`, `steps`, `guidance_scale`, `guidance_rescale`, `seed`, `repeat` | no | the `[validation]` scalar of the same shape |
 | `name` | no | the prompt's first tag, else `Set N` |
 
 - **No blocks at all** = exactly one set built from the scalars above, i.e. the single-prompt
   behaviour. `validation.sample_*` overrides (used by `test/verify_mask_pipeline.py`) keep working
   in that case.
 - **Ranges** (enforced by `trainer/config.py` and by the Utils form): `width`/`height` 64–4096,
-  `steps` 1–150, `guidance_scale` 0–30, `seed` 0–2³²−1, `repeat` 1–32, `prompt` non-empty.
+  `steps` 1–150, `guidance_scale` 0–30, `guidance_rescale` 0–1, `seed` 0–2³²−1, `repeat` 1–32,
+  `prompt` non-empty.
   A violation aborts the run at startup with the offending index (`validation.samples[2]: steps …`).
 - **Seed**: inside a set the nth image uses `seed + n` (`0` = a fresh random seed per image). Two
   sets that share a seed therefore start from the same noise, so only the prompt differs.

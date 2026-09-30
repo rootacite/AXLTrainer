@@ -47,6 +47,8 @@ The HIP toolchain notes for this stack (the wheel layout, the four environment f
 | Generated sample fails with "no LoRA tensors ... match this SDXL LoRA layout" | The checkpoint is not a kohya SDXL LoRA for this base (or is corrupt). Its `.log` next to the PNG has the traceback. |
 | Sample generation runs out of VRAM | Close other GPU users, reduce the run's `sample_width`/`sample_height`, or generate after the training process has exited. |
 | `sample_seed = 0` images look random across runs | That's intentional — `0` means "random seed per repeat" (printed in the log). Set a fixed seed for reproducibility. |
+| Samples of a **v-pred base** (e.g. NoobAI XL vPred) come out as noise | The sampler resolved epsilons for a model trained on velocities. Point `[model_spec]` at the original checkpoint: its `v_pred` / `ztsnr` marker tensors (or a diffusers directory's `scheduler/scheduler_config.json`) are read automatically — there is no switch to set (see [Configuration](configuration.md)). A base whose markers were stripped by a converter must be replaced by the original file. |
+| Samples of a v-pred base are near-black or blow out, while the same prompt is fine in ComfyUI | Usually the prompt, not the trainer. NoobAI XL vPred reads lighting tags such as `soft lighting, warm light` as "there is no background light" and collapses the scene to black in **ComfyUI too** — drop the tag (`warm atmosphere` and no lighting tag both render normally). The contrast itself is what `guidance_rescale` is for: the shipped `0.6` (ComfyUI's `RescaleCFG`) took a sample's black-pixel share from 15.3 % to 7.7 % at the same seed. |
 
 ## Environment variables
 

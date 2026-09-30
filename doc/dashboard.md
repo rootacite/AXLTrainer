@@ -137,6 +137,22 @@ of the app uses, so no new image path exists.
 
 - The tag matrix is the repo's `input_matrix.txt` (read over IPC, never edited here); the status
   line shows its path and line count, and **Reload** re-reads it after you edit the file by hand.
+- A pose row that names its own place (`on bed`, `on sofa`, `on sand`, `on desk`, `on railing`,
+  `at water`, `against tree`, `looking outside`, `praying`, …) is only paired with a scene that
+  carries it, and that beats the coarser pose classification — `sitting, resting head on desk,
+  sleeping` reads as lying to it and used to land on a sofa. A row that names two places accepts
+  either (`on railing` + `looking outside` is a rooftop or a window). The table is `POSE_PLACES` in
+  `prompt/PromptTypes.kt`; a place no scene carries warns and falls back to the whole scene list.
+- The pose pool is per mode: SFW draws `SFW_POSES`, SEX draws `POSES`, and **NSFW draws
+  `SFW_POSES` + `QUESTIONABLE_POSES`** — never the sex rows, whose run-up the SEX mode's stage page
+  already covers. A `QUESTIONABLE_POSES` row states its own clothing and body exposure (`panties`,
+  `open shirt, nipples`, `covering breasts`, `steam, towel, sideboob`, …), so no outfit is picked
+  for it, `nude` / `open clothes` are never written, and the chest/belly settings of this page do
+  not apply — the row decides. What a row leaves open the sampler fills aggressively: an unstated
+  chest goes bare (`topless, nipples`, `breasts hanging, nipples` for a hanging one, `sideboob,
+  nipples` from the side, nothing when it is not in frame), an unstated bottom goes `bottomless`. The
+  words are `POSE_CHEST_WORDS` / `POSE_BOTTOM_WORDS` in `prompt/PromptTypes.kt` and the fill is
+  `PromptGenerator.stateFill`; every questionable row also keeps its own place constraints.
 - **Profiles** are the `prompt_profiles/*.json` files, listed with their format version, size and
   mtime. Loading one opens the configuration list; a v1 or v2 profile is upgraded in memory (the
   row then shows what changed, e.g. `upgraded from v2 to v3`) and is only rewritten when you save.
