@@ -1,10 +1,12 @@
 migraphx_cache/
+miopen_cache/
 .venv/
 model.onnx
 project_dump.md
 __pycache__/
 .vscode/
 tagger/selected_tags.csv
+tagger2/config.json
 
 *.apk
 *.aar

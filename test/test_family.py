@@ -44,6 +44,7 @@ atexit.register(shutil.rmtree, _FIXTURE_DIR, ignore_errors=True)
 TrainConfig = _fixture_config.TrainConfig
 
 import api
+import trainer.family_sdxl
 from trainer.checkpoints import (
     infer_network_type,
     read_lora_metadata,
@@ -72,6 +73,7 @@ from trainer.family_sdxl import (
     _convert_peft_to_kohya_bf16,
     build_kohya_to_peft_map,
     enable_te_gradient_checkpointing,
+    load_sdxl_pipeline,
     te_lora_targets,
     unet_lora_targets,
 )
@@ -178,6 +180,41 @@ class FamilyCatalogTest(unittest.TestCase):
         )
 
 
+class SingleFileLoaderTest(unittest.TestCase):
+    """A single-file checkpoint has no pipeline config of its own: diffusers resolves it from a Hub
+    repo, and that lookup must stay inside the local snapshot."""
+
+    def test_a_checkpoint_is_loaded_cache_only(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "base.safetensors"
+            path.write_bytes(b"")
+            with mock.patch.object(
+                trainer.family_sdxl.StableDiffusionXLPipeline,
+                "from_single_file",
+                return_value="pipe",
+            ) as loader:
+                loaded = load_sdxl_pipeline(str(path), torch.bfloat16)
+
+        self.assertEqual(loaded, "pipe")
+        args, kwargs = loader.call_args
+        self.assertEqual(args[0], str(path))
+        self.assertTrue(kwargs["local_files_only"])
+        self.assertIsNone(kwargs["feature_extractor"])
+
+    def test_a_directory_is_loaded_without_the_flag(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(
+                trainer.family_sdxl.StableDiffusionXLPipeline,
+                "from_pretrained",
+                return_value="pipe",
+            ) as loader:
+                loaded = load_sdxl_pipeline(raw, torch.bfloat16)
+
+        self.assertEqual(loaded, "pipe")
+        _, kwargs = loader.call_args
+        self.assertNotIn("local_files_only", kwargs)
+
+
 class TeCheckpointHelperTest(unittest.TestCase):
     def test_calls_transformers_and_input_grad_hooks(self):
         class Stub:
@@ -268,15 +305,20 @@ class MetadataPredictionTypeTest(unittest.TestCase):
         )
         self.assertEqual(meta["modelspec.prediction_type"], "epsilon")
         self.assertEqual(meta["ss_v_pred"], "0")
+        self.assertEqual(meta["ss_min_snr_gamma"], "0.0")  # code default: off
         self.assertEqual(meta["ss_base_model_version"], cfg.base_model_version)
         self.assertEqual(meta["ss_network_type"], "standard")
         self.assertNotIn("ss_network_args", meta)
+
+        with_gamma = TrainConfig(min_snr_gamma=5.0)
+        meta = build_kohya_metadata(with_gamma, 1, None, False, prediction_type="epsilon")
+        self.assertEqual(meta["ss_min_snr_gamma"], "5.0")
 
     def test_vpred_base(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "vpred.safetensors"
             save_file({"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}, str(base))
-            cfg = TrainConfig(pretrained_model_name_or_path=str(base))
+            cfg = TrainConfig(pretrained_model_name_or_path=str(base), min_snr_gamma=5.0)
         family = resolve_family(cfg)
         self.assertEqual(family.prediction_type(cfg), "v_prediction")
         meta = build_kohya_metadata(
@@ -284,6 +326,8 @@ class MetadataPredictionTypeTest(unittest.TestCase):
         )
         self.assertEqual(meta["modelspec.prediction_type"], "v_prediction")
         self.assertEqual(meta["ss_v_pred"], "1")
+        # The file asked for 5.0; the artifact records what ran (the weighting is off for v-pred).
+        self.assertEqual(meta["ss_min_snr_gamma"], "0.0")
 
     def test_the_training_scheduler_follows_the_base(self):
         """The noise scheduler (and so the loss target) is eps for an eps base, v-pred + zsnr

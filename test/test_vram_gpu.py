@@ -4,6 +4,7 @@ import unittest
 
 import torch
 from torch import nn
+from diffusers import DDIMScheduler
 
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trainer import control
 from trainer.device_swap import SwapContext, run_pause, run_resume
 from trainer.cache import prepare_encoding_devices
-from trainer.family_sdxl import enable_te_gradient_checkpointing
+from trainer.family_sdxl import enable_te_gradient_checkpointing, min_snr_weight
 from trainer.sampling import (
     _offload_text_encoders,
     _prepare_decode_devices,
@@ -184,6 +185,31 @@ class SamplingOffloadGpuTest(unittest.TestCase):
         loss = linear(torch.randn(2, 8, device=self.device)).sum()
         loss.backward()
         self.assertIsNotNone(linear.weight.grad)
+
+
+@unittest.skipUnless(_HAS_CUDA, "CUDA/ROCm GPU required")
+class MinSnrDeviceGpuTest(unittest.TestCase):
+    def test_the_snr_table_follows_the_timesteps_to_the_training_device(self):
+        """The scheduler keeps `alphas_cumprod` on the CPU while a batch's timesteps live on the
+        training device; indexing the table with them has to move it first (what diffusers'
+        `add_noise`/`get_velocity` do). A CPU-only test cannot see this."""
+        scheduler = DDIMScheduler.from_config(
+            {
+                "beta_start": 0.00085,
+                "beta_end": 0.012,
+                "beta_schedule": "scaled_linear",
+                "num_train_timesteps": 1000,
+                "prediction_type": "epsilon",
+            }
+        )
+        self.assertEqual(scheduler.alphas_cumprod.device.type, "cpu")
+
+        timesteps = torch.tensor([0, 500, 999], device="cuda")
+        weight = min_snr_weight(timesteps, scheduler, 5.0)
+        self.assertEqual(weight.device.type, "cuda")
+        self.assertTrue(torch.isfinite(weight).all())
+        self.assertLess(float(weight[0]), 0.01)  # snr 1175 at t=0, so 5/1175
+        self.assertEqual(float(weight[2]), 1.0)  # snr 0.005 at t=999 stays unweighted
 
 
 if __name__ == "__main__":

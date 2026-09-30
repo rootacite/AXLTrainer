@@ -348,11 +348,18 @@ def _load_into_module(
 
 def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeline:
     path_obj = Path(path)
+    is_checkpoint = path_obj.is_file()
     loader_func = (
         StableDiffusionXLPipeline.from_single_file
-        if path_obj.is_file()
+        if is_checkpoint
         else StableDiffusionXLPipeline.from_pretrained
     )
+    # A single-file checkpoint carries no pipeline config, so diffusers resolves the component
+    # configs from `stabilityai/stable-diffusion-xl-base-1.0` (single_file_utils.py:164). Without
+    # `local_files_only` that is a Hub metadata request on every load: 0.6 s and one outbound
+    # connection here, a stall where no proxy is configured. The flag keeps it inside the cached
+    # snapshot, and diffusers falls back to downloading it (with a warning) when it is absent.
+    cache_only = {"local_files_only": True} if is_checkpoint else {}
     # diffusers 0.40 lazy-imports guiders → kornia.geometry, which still uses @torch.jit.script
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -364,7 +371,29 @@ def load_sdxl_pipeline(path: str, dtype: torch.dtype) -> StableDiffusionXLPipeli
             str(path_obj),
             dtype=dtype,
             feature_extractor=None,
+            **cache_only,
         )
+
+
+def min_snr_weight(
+    timesteps: torch.Tensor,
+    noise_scheduler: Any,
+    gamma: float,
+) -> torch.Tensor:
+    """`min(snr, gamma) / snr` per sample — the Min-SNR weighting scheme (one weight per sample).
+
+    kohya's `apply_snr_weight` for an epsilon target (`library/custom_train_functions.py:69-77`),
+    read off the scheduler's own `alphas_cumprod` so the table belongs to the schedule training
+    actually uses. The table is moved to the timesteps' device first (a scheduler keeps it on the
+    CPU while a batch's timesteps are on the training device — what diffusers' own `add_noise` and
+    `get_velocity` do). The two guards only cover a degenerate schedule: `alphas_cumprod == 0`
+    would divide 0/0, and a fully noised step is left unweighted rather than poisoned with NaN.
+    """
+    alphas = noise_scheduler.alphas_cumprod.to(device=timesteps.device, dtype=torch.float32)
+    alphas = alphas[timesteps]
+    snr = alphas / (1.0 - alphas).clamp_min(1e-12)
+    weight = torch.minimum(snr, torch.full_like(snr, float(gamma))) / snr
+    return torch.nan_to_num(weight, nan=1.0, posinf=1.0).clamp(max=1.0)
 
 
 class SdxlFamily:
@@ -638,7 +667,13 @@ class SdxlFamily:
             target = noise
         err = F.mse_loss(model_pred.float(), target.float(), reduction="none")
         err = apply_loss_mask(err, extra.get("loss_mask"))
-        return err.mean()
+        per_sample = err.mean(dim=(1, 2, 3))
+        gamma = float(getattr(cfg, "min_snr_gamma", 0.0) or 0.0)
+        if gamma > 0:  # 0 when the base is v-prediction - see TrainConfig.__post_init__
+            per_sample = per_sample * min_snr_weight(timesteps, noise_scheduler, gamma).to(
+                per_sample.dtype
+            )
+        return per_sample.mean()
 
     def compute_loss(
         self,

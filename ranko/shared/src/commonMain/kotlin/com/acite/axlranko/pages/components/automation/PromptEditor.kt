@@ -70,6 +70,9 @@ class PromptEditorActions(
     val toggleClothing: (List<String>) -> Unit,
     val setChest: (String) -> Unit,
     val setBelly: (String) -> Unit,
+    val setFigure: (List<String>) -> Unit,
+    val setPussyShape: (List<String>) -> Unit,
+    val setPussyHair: (List<String>) -> Unit,
     val setFaceGroup: (String, FacePick) -> Unit,
     val toggleFaceTag: (String, String) -> Unit,
     val setSceneAny: () -> Unit,
@@ -92,11 +95,14 @@ private val PAGE_RAIL_LABELS: Map<String, Pair<String, String>> = mapOf(
     "clothing" to ("服装" to "Clothing"),
     "chest" to ("胸部" to "Chest"),
     "belly" to ("腹部" to "Belly"),
+    "figure" to ("体型" to "Figure"),
     "face" to ("表情" to "Face"),
     "scene" to ("场景" to "Scene"),
     "family" to ("家族" to "Family"),
     "ratio" to ("比例" to "Ratio"),
     "stages" to ("阶段" to "Stages"),
+    "pussy_shape" to ("阴部形状" to "Pussy shape"),
+    "pussy_hair" to ("阴毛" to "Pubic hair"),
     "pose" to ("姿势" to "Pose"),
     "count" to ("数量" to "Count"),
 )
@@ -113,11 +119,14 @@ private fun pageTitleKey(pageKey: String): String = when (pageKey) {
     "clothing" -> "clothing_title"
     "chest" -> "chest_title"
     "belly" -> "belly_title"
+    "figure" -> "figure_title"
     "face" -> "face_title"
     "scene" -> "scene_title"
     "family" -> "family_title"
     "ratio" -> "ratio_title"
     "stages" -> "stage_title"
+    "pussy_shape" -> "pussy_shape_title"
+    "pussy_hair" -> "pussy_hair_title"
     "pose" -> "pose_title"
     "count" -> "count_title"
     else -> "character_title"
@@ -127,6 +136,7 @@ private fun pageHintKey(pageKey: String): String? = when (pageKey) {
     "character" -> "character_hint"
     "ratio" -> "ratio_hint"
     "stages" -> "stage_hint"
+    "pussy_shape", "pussy_hair" -> "pussy_hint"
     "face" -> "footer_face"
     else -> null
 }
@@ -217,6 +227,40 @@ private fun ChoiceFlow(content: @Composable FlowRowScope.() -> Unit) {
         maxItemsInEachRow = 3,
         content = content,
     )
+}
+
+/**
+ * A single-pick matrix group ([PromptSpec.figure] and the two pussy groups): one row of the group,
+ * or none. Their labels are the matrix comments, which need the whole width, so this is the
+ * check-list shape of the pose page with one tick at a time — clicking the ticked row clears it, and
+ * the `off` chip is that same state under a name.
+ */
+@Composable
+private fun SingleRowList(
+    entries: List<MatrixEntry>,
+    lang: PromptLang,
+    offLabel: String,
+    selected: List<String>,
+    onSelect: (List<String>) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        CapsuleChoice(text = offLabel, selected = selected.isEmpty(), onClick = { onSelect(emptyList()) })
+        Column(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            entries.forEach { entry ->
+                TickRow(
+                    label = optionLabel(entry, lang),
+                    checked = entry.key == selected,
+                    onClick = { onSelect(if (entry.key == selected) emptyList() else entry.key) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -411,6 +455,32 @@ fun PromptPageEditor(
                 selected = spec.belly,
                 onSelect = actions.setBelly,
             )
+
+            "figure", "pussy_shape", "pussy_hair" -> {
+                val entries = when (pageKey) {
+                    "figure" -> matrix?.figure.orEmpty()
+                    "pussy_shape" -> matrix?.pussyShape.orEmpty()
+                    else -> matrix?.pussyHair.orEmpty()
+                }
+                val selected = when (pageKey) {
+                    "figure" -> spec.figure
+                    "pussy_shape" -> spec.pussyShape
+                    else -> spec.pussyHair
+                }
+                SingleRowList(
+                    entries = entries,
+                    lang = lang,
+                    offLabel = t(lang, "pick_off"),
+                    selected = selected,
+                    onSelect = { key ->
+                        when (pageKey) {
+                            "figure" -> actions.setFigure(key)
+                            "pussy_shape" -> actions.setPussyShape(key)
+                            else -> actions.setPussyHair(key)
+                        }
+                    },
+                )
+            }
 
             "face" -> FACE_GROUPS.forEach { group ->
                 PorcelainCard {

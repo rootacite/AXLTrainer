@@ -53,7 +53,23 @@ Failure:
 {"id": 1, "ok": false, "error": "unknown method: foo"}
 ```
 
-`id` is echoed back. Match replies on `id`. Control methods (`train_*`, dataset mutations, config/profile writes) are serialized on the server. `blob_stat` / `blob_batch` do not hold that lock while encoding. Blank frames/lines are ignored.
+`id` is echoed back. Match replies on `id`. Blank frames/lines are ignored.
+
+**One client at a time.** The helper serves a single client session and does **no locking of its own**: ordering its own calls is the client's job (Ranko does it with one read/write lock per resource, `IpcResources.kt`). A connection is admitted by its first request:
+
+* `hello {client, instance, lane}` — who is asking. The first instance to say hello **owns** the helper; the same instance may open as many connections as it likes (one per lane, see below), which is how the desktop app runs its control, poll, blob and long-running traffic on separate sockets. `client` is a display name (`axlranko-desktop`, `axlranko-web`), `instance` identifies this run of that client, `lane` is free text for logs. The reply is `{owner, client, instance, since, connections}`.
+* **Any other instance is refused** and its connection closed:
+
+  ```json
+  {"id": 1, "ok": false, "code": "CLIENT_BUSY",
+   "error": "axlranko-desktop owns the training helper (since 12:01:44); close it and retry",
+   "holder": {"client": "axlranko-desktop", "instance": "axlranko-51e107b5", "since": 1790780504.1, "connections": 3}}
+  ```
+
+  There is no takeover request: the helper is released when the owner's last connection has been gone for five seconds, and then the next `hello` owns it.
+* A request that arrives without a `hello` claims a *free* helper, exactly like an anonymous one — the path a script or an older client takes. While another client owns the helper, such a connection is refused the same way. A connection that never sends a request (the desktop's `helperListening` probe) claims nothing.
+
+A connection is served **in order by one thread**, so a slow call delays what is queued behind it on *that* connection — which is why the client keeps separate ones: `control` (every write, so their order is the order they were made in), `poll` (reads), `blob`, and `long` (a tagger, an export: anything that can hold a resource for minutes). Two calls that must not overlap are kept apart by the client's resource table, not by the server.
 
 ## Methods
 
@@ -70,6 +86,8 @@ Result:
 ### `dashboard`
 
 Reads the latest TensorBoard scalars under `{logging_dir}/{run_id}` and the current training config.
+
+The reply carries the run's whole history (it is what the charts draw), and the helper keeps one event-file reader per run directory: a repeated poll reads only the events written since the last one (measured: 4.6 ms instead of 255 ms on a 24 k-point run; a live run's poll after 200 more steps took 20 ms). The reader is rebuilt when the newest event file changes or shrinks, so a restart in the same directory cannot serve stale numbers. What is left of a long run's poll is the size of the reply itself, not the disk read.
 
 Params:
 
@@ -489,6 +507,8 @@ While sampling, `sampling` is `{active, repeat, repeats, denoise_step, denoise_s
 
 `settings` is `{save_every_n_steps, sampling_enabled, next_save_step}`: the checkpoint cadence, the sampling switch and the step the next checkpoint is written at, as the trainer is actually running them. It starts from `config.toml` and follows `train_settings` (below); `next_save_step` moves whenever a checkpoint is written, and a cadence change restarts it from the step that adopted the change (`0` = no checkpoint is scheduled).
 
+`requested` is `null`, or `{save_every_n_steps, sampling_enabled}`: a change `train_settings` accepted that the trainer has not adopted yet. It answers a click immediately — a switch flipped while a sample pass is running is accepted at once and lands when that pass ends — so a client shows the requested value and says when it applies instead of waiting for `settings` to catch up. It is `null` when nothing is outstanding, and also when no live PID is left to adopt a request (a run that ended keeps its `settings.json` until Reset).
+
 ### `train_start`
 
 Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does not stop training. Stdout/stderr append to `train.log` in the runtime dir.
@@ -524,10 +544,13 @@ Params (at least one):
 | `save_every_n_steps` | integer | No | `>= 1` (or `0` to stop writing checkpoints). The next checkpoint is written `N` steps after the step that adopts the change. |
 | `sampling_enabled` | bool | No | Whether a checkpoint save also renders the `[[validation.samples]]` images. `false` = checkpoints only. |
 
+A field the request leaves out keeps the run's value: the one in `settings.json` when it is there (`train_start` keeps that file complete), otherwise the values the run published in `settings` — so flipping the sampling switch alone can never change the cadence.
+
 The request is written to `settings.json` in the runtime dir; the trainer adopts it at its next
 optimizer step (after a pause, at the step the run resumes with) and publishes the effective values
-back through `train_status.settings`. The reply is the `train_status` payload, which still carries
-the previous values until then.
+back through `train_status.settings`. The reply is the `train_status` payload, so it carries the
+change in `requested` right away and keeps the old values in `settings` until the trainer adopts
+it — a sample pass already running finishes first, which is why the two differ for a while.
 
 Fails if no live training PID, on an out-of-range value, and when neither field is given.
 
@@ -550,23 +573,28 @@ Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and
 
 ### `dataset_tag`
 
-Runs `tagger/main.py` with the same interpreter as `api.py` (the `axl` env). Writes WD-tagger captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call.
+Runs `tagger2/main.py` (the Pixai tagger v1: ViTDet, 30 877 Danbooru tags, PyTorch/ROCm) with the same interpreter as `api.py` (the `axl` env). Writes comma-separated captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call. The legacy WD14 ONNX script (`tagger/main.py`) still runs by hand; its `selected_tags.csv` is what `tag_lexicon` reads for the Chinese tag names.
 
 Params:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `directory` | string \| null | No | Dataset folder. Defaults to `[environment].train_data_dir`. |
-| `threshold` | number | No | Minimum tag confidence, `0.0`–`1.0`. Default `0.35`. |
-| `batch_size` | integer | No | ONNX batch size. Default `1` (MIGraphX compiles once per shape; use `8` only after you accept a one-time recompile). |
+| `threshold` | number | No | Lowest confidence a tag may keep, `0.0`–`1.0`. Default `0.35`. The model's own per-category calibrated threshold is the floor underneath it (`max(calibrated, threshold)`). |
+| `categories` | list[string] \| string | No | Which of the model's six categories reach the caption: `general` (default), `character`, `copyright`, `style`, `meta`, `rating`. Unknown names are refused by the script. |
+| `batch_size` | integer | No | Images per forward pass, `>= 1`. Omitting it leaves the script's own default (`1`; measured to make no difference on the author's GPU). |
 
 Result:
 
 ```json
 {
   "directory": "/abs/path",
+  "engine": "pixai-tagger-v1.0",
+  "categories": ["general"],
   "threshold": 0.35,
-  "provider": "MIGraphXExecutionProvider",
+  "thresholds": { "general": 0.35 },
+  "provider": "pixai-tagger-v1.0 on cuda:0",
+  "device": "cuda:0",
   "total": 100,
   "processed": 100,
   "failed": 0,
@@ -575,7 +603,36 @@ Result:
 }
 ```
 
-Fails if the folder is missing, `threshold` is out of range, or a training process is in a GPU-using status (`starting` / `encoding` / `training` / `sampling` / `pausing` / `resuming` / `stopping`). Pause (`paused`) is allowed because weights are offloaded. The tagger is a child process so GPU memory is released when it exits.
+Fails if the folder is missing, `threshold` is out of range, a training process is in a GPU-using status (`starting` / `encoding` / `training` / `sampling` / `pausing` / `resuming` / `stopping`), or the model is not in the local Hugging Face cache (the script never reaches the Hub on its own; `--download` is the one-time fetch). Pause (`paused`) is allowed because weights are offloaded. The tagger is a child process so GPU memory is released when it exits.
+
+### `tagger_info`
+
+Read-only, no GPU: what the tagger can write, straight from the model's own `config.json` (`tagger2/main.py --info`). Ranko's Auto-tag card uses it for the category switches and for the calibrated values it draws on the threshold slider.
+
+Result:
+
+```json
+{
+  "available": true,
+  "engine": "pixai-tagger-v1.0",
+  "model": "pixai-labs/pixai-tagger-v1.0",
+  "model_path": "/home/…/snapshots/9fe10ad…",
+  "cache_dir": "/repo/tagger2/miopen_cache",
+  "categories": [
+    { "key": "general", "count": 15043, "calibrated": 0.17 },
+    { "key": "character", "count": 8308, "calibrated": 0.27 },
+    { "key": "copyright", "count": 2460, "calibrated": 0.24 },
+    { "key": "style", "count": 4917, "calibrated": 0.15 },
+    { "key": "meta", "count": 145, "calibrated": 0.17 },
+    { "key": "rating", "count": 4, "calibrated": 0.41 }
+  ],
+  "default_categories": ["general"],
+  "reason": ""
+}
+```
+
+Never fails: with the model not cached, `available` is `false`, `categories` is empty and `reason` says how to fetch it. The same shape is returned when the helper itself cannot run.
+
 
 ### `hardware_status`
 
@@ -645,6 +702,7 @@ After connect Ranko does not open trainer files. Paths in these methods are allo
 - `mask_get` / `mask_write` / `mask_delete` `{directory, stem, png_base64?}`. Lossless PNG only.
 - `blob_stat` / `blob_batch` `{paths, max_edge, quality?, format?}`. `max_edge` is required (32–4096, contain, never upscale). Default `quality=80`, `format=jpeg`. JPEG/WebP flatten transparency onto black before encoding (dropping the alpha channel would leak leftover RGB in transparent pixels). Result items carry `hash` (SHA-256 of the processed bytes), `width`/`height`, `cache` (`hit`/`miss`), and for `blob_batch` `base64`. A bad path is a per-item `error`, not a failed RPC. Encode fans out across `AXL_BLOB_WORKERS` spawn processes (`trainer/blobcodec.py`, torch-free). Hits live under `/tmp/axlranko/blob-cache/` capped at 1/4 of host RAM. The cache key includes a codec version, so a flatten/resize change does not reuse bytes from an older encoder.
 - `tag_lexicon` `{}` → `{text}` of `tagger/selected_tags.csv`.
+- `tagger_info` `{}` → the tagger's `{available, engine, model, model_path, cache_dir, categories, default_categories, reason}` (see the method above). Read-only and never failing.
 - `checkpoint_export` `{source, dest}` server-local copy. `dest` must end `.safetensors`; refuse `source == dest`.
 - `fs_listdir` `{path}` → `{path, parent, entries: [{name, path, is_dir, size, mtime_ms}]}`. Lists one directory after `Path.resolve()` (so `..` cannot escape). A file path errors. Unreadable children are skipped. No file bytes.
 - `fs_roots` `{}` → `{roots: [{name, path}]}` with Home, Repo, each train-data folder, Output, Logs.

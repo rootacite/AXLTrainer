@@ -512,6 +512,34 @@ class LiveSettingsTest(unittest.TestCase):
             0,
         )
 
+    def test_request_settings_falls_back_to_the_running_values(self):
+        # No `settings.json` at all (a run started by hand with `bash start_train.sh`): a request
+        # that names one field must not write the default 0 for the other.
+        baseline = {"save_every_n_steps": 50, "sampling_enabled": True, "next_save_step": 3350}
+        self.assertEqual(
+            control.request_settings(sampling_enabled=False, baseline=baseline),
+            {"save_every_n_steps": 50, "sampling_enabled": False},
+        )
+        # The file wins over the baseline for a field it does carry: it is the newer request.
+        control.settings_path().write_text(
+            '{"save_every_n_steps": 100, "sampling_enabled": true}', encoding="utf-8"
+        )
+        self.assertEqual(
+            control.request_settings(sampling_enabled=False, baseline=baseline),
+            {"save_every_n_steps": 100, "sampling_enabled": False},
+        )
+        # The request itself wins over both.
+        self.assertEqual(
+            control.request_settings(save_every_n_steps=7, baseline=baseline),
+            {"save_every_n_steps": 7, "sampling_enabled": False},
+        )
+        # A baseline without a usable value leaves the old default in place.
+        control.settings_path().unlink()
+        self.assertEqual(
+            control.request_settings(sampling_enabled=True, baseline={"save_every_n_steps": "lots"}),
+            {"save_every_n_steps": 0, "sampling_enabled": True},
+        )
+
     def test_publish_settings_lands_in_the_state_block(self):
         settings = control.LiveSettings.from_config(self._config(save_every_n_steps=7))
         control.publish_settings(settings)

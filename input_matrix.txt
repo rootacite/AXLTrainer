@@ -754,3 +754,37 @@ mirror, standing, bra, panties, looking at viewer
 # 对着观众如照镜，内衣全身。卧室
 holding clothes, covering breasts, standing
 # 站着把脱下的衣服挡在胸前
+
+PUSSY_SHAPE:
+cleft of venus
+# 闭拢的一条缝，大阴唇并住，小阴唇不翻出。日文常说的「スジ / ワレメ」
+fat mons
+# 耻丘和外侧鼓起来，看起来厚、肉多
+labia
+# 让小阴唇被画出来，不再是一条光缝
+long labia
+# 小阴唇明显伸出来、变长
+dark labia
+# 颜色加深
+clitoris, erect clitoris
+# 把阴蒂画出来 / 更鼓
+
+PUSSY_HAIR:
+pubic hair
+# 有毛
+shaved pussy
+# 无毛
+
+FIGURE:
+petite
+# 娇小。骨架小、胸臀都不抢，接近平板
+slim, slender
+# 四肢细，腰还在，曲线很浅
+curvy
+# 胸臀开始反差，但仍是动漫常体
+narrow waist, wide hips, thick thighs
+# 腰臀比拉开，腿根有肉
+plump
+# 四肢和腹都带肉，还没到肥胖
+fat
+# 整体增厚，曲线被体积盖住

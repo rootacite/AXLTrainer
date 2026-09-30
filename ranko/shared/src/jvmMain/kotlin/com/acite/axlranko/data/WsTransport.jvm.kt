@@ -143,3 +143,5 @@ internal actual fun spawnHelperIfNeeded(host: String, port: Int) {
 internal actual fun stopSpawnedHelper() {
     JvmHelperProcess.stopSpawned()
 }
+
+internal actual val clientName: String = "axlranko-desktop"

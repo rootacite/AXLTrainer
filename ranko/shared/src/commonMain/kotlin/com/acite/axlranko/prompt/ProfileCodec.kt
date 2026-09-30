@@ -119,6 +119,9 @@ object ProfileCodec {
             ),
             "chest" to JsonPrimitive(spec.chest),
             "belly" to JsonPrimitive(spec.belly),
+            "figure" to tagsToJson(spec.figure),
+            "pussy_shape" to tagsToJson(spec.pussyShape),
+            "pussy_hair" to tagsToJson(spec.pussyHair),
             "face" to JsonObject(
                 FACE_GROUPS.associate { group -> group.id to faceToJson(faceChoice(spec, group)) },
             ),
@@ -131,6 +134,9 @@ object ProfileCodec {
             keys.sortedWith(compareBy({ it.size }, { it.joinToString("\u0000") }))
                 .map { key -> JsonArray(key.map { JsonPrimitive(it) }) },
         )
+
+    /** One row's tags, for a single-pick group; an empty array is its "off". */
+    private fun tagsToJson(tags: List<String>): JsonArray = JsonArray(tags.map { JsonPrimitive(it) })
 
     private fun faceToJson(value: FacePick): JsonElement = when (value) {
         is FacePick.Tags -> JsonArray(value.tags.map { JsonPrimitive(it) })
@@ -193,9 +199,28 @@ object ProfileCodec {
             stageWeights = stageWeightsAt(data),
             chest = chest,
             belly = belly,
+            figure = pickAt(data, "figure"),
+            pussyShape = pickAt(data, "pussy_shape"),
+            pussyHair = pickAt(data, "pussy_hair"),
             face = faceAt(data),
             count = count,
         )
+    }
+
+    /**
+     * A single-pick group's stored row tags. A profile written before the group existed has no key,
+     * and `[]` is the wizard's own "off", so both read as no pick. The tags are not checked against
+     * the matrix: like `clothing_keys`, the codec does not depend on it.
+     */
+    private fun pickAt(data: JsonObject, key: String): List<String> {
+        val raw = data[key] ?: return emptyList()
+        if (raw is JsonNull) return emptyList()
+        val array = raw as? JsonArray ?: throw ProfileException("$key must be a list of tag strings")
+        return array.map { element ->
+            val text = (element as? JsonPrimitive)?.contentOrNull
+            if (text.isNullOrEmpty()) throw ProfileException("$key must be a list of tag strings")
+            text
+        }
     }
 
     private fun numberOrNull(element: JsonElement?): Double? = asNumber(element)

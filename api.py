@@ -1,4 +1,5 @@
 import argparse
+import functools
 import ipaddress
 import json
 import logging
@@ -12,9 +13,9 @@ import threading
 import time
 import traceback
 from collections import defaultdict
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
@@ -41,6 +42,7 @@ from trainer.control import (
     log_path,
     mark_starting,
     publish_settings,
+    read_settings,
     reconcile,
     request as request_train_command,
     request_settings,
@@ -98,6 +100,70 @@ def _train_config_dict() -> dict[str, Any]:
     return _json_safe(data)
 
 
+_TB_CACHE_LOCK = threading.Lock()
+_TB_CACHE: dict[str, "_TbEntry"] = {}
+_TB_CACHE_MAX = 8
+_TB_BUILDS = 0
+
+
+@dataclass
+class _TbEntry:
+    """One run directory's reader: the event file it read last, how big it was, and the reader."""
+
+    path: Path
+    size: int
+    accumulator: Any
+
+
+def reset_tensorboard_cache() -> None:
+    """Drop every cached reader; the next read starts from an empty file."""
+    global _TB_BUILDS
+    with _TB_CACHE_LOCK:
+        _TB_CACHE.clear()
+        _TB_BUILDS = 0
+
+
+def tensorboard_cache_stats() -> dict[str, int]:
+    """`{entries, builds}`: how many run directories are cached, and how many readers were built."""
+    with _TB_CACHE_LOCK:
+        return {"entries": len(_TB_CACHE), "builds": _TB_BUILDS}
+
+
+def _tensorboard_reader(log_dir: str) -> Optional[Any]:
+    """This run directory's `EventAccumulator`, reloaded in place. Caller holds `_TB_CACHE_LOCK`.
+
+    A poll asks for the whole history every time (`dashboard`) and the history only grows, so a
+    fresh `EventAccumulator(...).Reload()` per call re-read the file from the start — 343 ms at
+    24 k points, and worse as the run got longer. Reusing the reader and reloading it reads only
+    what was appended. It is rebuilt when the newest event file changes (a new run in the same
+    directory, or a second writer) or gets smaller (a rewrite), so a stale reader cannot outlive
+    the file it was reading.
+    """
+    global _TB_BUILDS
+    key = str(Path(log_dir).resolve())
+    event_files = list(Path(log_dir).rglob("events.out.tfevents.*"))
+    if not event_files:
+        _TB_CACHE.pop(key, None)
+        return None
+    latest = max(event_files, key=os.path.getmtime)
+    try:
+        size = latest.stat().st_size
+    except OSError:
+        return None
+    entry = _TB_CACHE.get(key)
+    if entry is not None and entry.path == latest and size >= entry.size:
+        entry.size = size
+        entry.accumulator.Reload()
+        return entry.accumulator
+    accumulator = EventAccumulator(str(latest.parent), size_guidance={"scalars": 0})
+    accumulator.Reload()
+    _TB_BUILDS += 1
+    _TB_CACHE[key] = _TbEntry(path=latest, size=size, accumulator=accumulator)
+    while len(_TB_CACHE) > _TB_CACHE_MAX:
+        _TB_CACHE.pop(next(iter(_TB_CACHE)))
+    return accumulator
+
+
 def _get_tensorboard_metrics(
     log_dir: str,
     start_step: Optional[int] = None,
@@ -106,27 +172,27 @@ def _get_tensorboard_metrics(
     if not os.path.exists(log_dir):
         return {}
 
-    event_files = list(Path(log_dir).rglob("events.out.tfevents.*"))
-    if not event_files:
-        return {}
+    # One lock for the whole read: the reader is a mutable object, and two polls of the same
+    # directory reloading it at once would interleave. Nothing else in the helper holds a lock, so
+    # this cannot hold up a call of another kind.
+    with _TB_CACHE_LOCK:
+        ea = _tensorboard_reader(log_dir)
+        if ea is None:
+            return {}
 
-    latest_log_dir = str(max(event_files, key=os.path.getmtime).parent)
-    ea = EventAccumulator(latest_log_dir, size_guidance={"scalars": 0})
-    ea.Reload()
+        metrics: dict = {}
+        if "scalars" in ea.Tags():
+            for tag in ea.Tags()["scalars"]:
+                events = ea.Scalars(tag)
+                filtered = [
+                    {"step": e.step, "value": float(e.value), "wall_time": float(e.wall_time)}
+                    for e in events
+                    if (start_step is None or e.step >= start_step)
+                    and (end_step is None or e.step <= end_step)
+                ]
+                metrics[tag] = filtered
 
-    metrics: dict = {}
-    if "scalars" in ea.Tags():
-        for tag in ea.Tags()["scalars"]:
-            events = ea.Scalars(tag)
-            filtered = [
-                {"step": e.step, "value": float(e.value), "wall_time": float(e.wall_time)}
-                for e in events
-                if (start_step is None or e.step >= start_step)
-                and (end_step is None or e.step <= end_step)
-            ]
-            metrics[tag] = filtered
-
-    return metrics
+        return metrics
 
 
 def _resolve_run(params: dict[str, Any], cfg: dict[str, Any]) -> tuple[Optional[str], str]:
@@ -324,8 +390,42 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _train_status_payload() -> dict[str, Any]:
+    """`status_payload()` plus the settings the run has been asked for but has not adopted yet.
+
+    The trainer reads `settings.json` once per optimizer step, so a switch flipped while a sample
+    pass is running stays a request for a while. Reporting the request next to the effective
+    values is what lets the dashboard answer a click immediately ("off from the next sample pass")
+    instead of showing the old value until the trainer publishes the change.
+    """
+    payload = status_payload()
+    payload["requested"] = _requested_settings(payload)
+    return payload
+
+
+def _requested_settings(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The outstanding `settings.json` request, or None when there is nothing to report.
+
+    Nothing to report means: the run is not live (a request nobody will adopt), no request was
+    ever made, or the request already equals the values the trainer published - which is how the
+    marker clears itself once the change lands.
+    """
+    if not is_pid_alive(payload.get("pid")):
+        return None
+    requested = read_settings()
+    if requested is None:
+        return None
+    effective = payload.get("settings") or {}
+    if all(
+        requested.get(key) == effective.get(key)
+        for key in ("save_every_n_steps", "sampling_enabled")
+    ):
+        return None
+    return requested
+
+
 def handle_train_status(_params: dict[str, Any]) -> dict[str, Any]:
-    return status_payload()
+    return _train_status_payload()
 
 
 def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
@@ -380,7 +480,7 @@ def handle_train_start(_params: dict[str, Any]) -> dict[str, Any]:
     # `mark_starting` cleared the state, so publish the values this run will use right away: the
     # card would otherwise read the empty placeholder until the trainer's first optimizer step.
     publish_settings(start_settings)
-    return status_payload()
+    return _train_status_payload()
 
 
 def _require_alive() -> dict[str, Any]:
@@ -393,7 +493,7 @@ def _require_alive() -> dict[str, Any]:
 def handle_train_pause(_params: dict[str, Any]) -> dict[str, Any]:
     _require_alive()
     request_train_command("pause")
-    return status_payload()
+    return _train_status_payload()
 
 
 def handle_train_resume(_params: dict[str, Any]) -> dict[str, Any]:
@@ -407,23 +507,29 @@ def handle_train_resume(_params: dict[str, Any]) -> dict[str, Any]:
             "wait for it to finish, then resume"
         )
     request_train_command("resume")
-    return status_payload()
+    return _train_status_payload()
 
 
 def handle_train_stop(_params: dict[str, Any]) -> dict[str, Any]:
     _require_alive()
     request_train_command("stop")
-    return status_payload()
+    return _train_status_payload()
 
 
 def handle_train_settings(params: dict[str, Any]) -> dict[str, Any]:
     """Change the checkpoint cadence / sampling switch of the run in progress.
 
     The request lands in the runtime `settings.json`; the trainer adopts it at its next
-    optimizer step and publishes the effective values back through `state.json`, which is what
-    the dashboard shows. Nothing is written to `config.toml`: the next run starts from the file.
+    optimizer step and publishes the effective values back through `state.json`. This reply
+    carries both: `settings` is still what the run is doing now, `requested` is the change that
+    has been accepted and is waiting for the trainer (`_requested_settings`). Nothing is written
+    to `config.toml`: the next run starts from the file.
+
+    A field the request leaves out keeps the run's value: from `settings.json` when it is there
+    (`train_start` keeps it complete), else from the settings the run published (`baseline`), so a
+    lone switch flip on a hand-started run cannot arrive as "and stop writing checkpoints".
     """
-    _require_alive()
+    current = _require_alive()
     steps = params.get("save_every_n_steps")
     if steps is not None:
         try:
@@ -437,8 +543,12 @@ def handle_train_settings(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("sampling_enabled must be a boolean")
     if steps is None and enabled is None:
         raise ValueError("nothing to change: pass save_every_n_steps and/or sampling_enabled")
-    request_settings(save_every_n_steps=steps, sampling_enabled=enabled)
-    return status_payload()
+    request_settings(
+        save_every_n_steps=steps,
+        sampling_enabled=enabled,
+        baseline=current.get("settings"),
+    )
+    return _train_status_payload()
 
 
 _RESET_BLOCKED = frozenset(
@@ -495,7 +605,7 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
             "errors": [],
         }
     reset_to_idle()
-    payload = status_payload()
+    payload = _train_status_payload()
     payload["run_id"] = run_id
     payload["cleanup"] = cleanup
     return payload
@@ -560,33 +670,56 @@ def handle_checkpoint_pin_set(params: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, "file": str(write_pins(log_dir, run_id, pins)), "pins": pins}
 
 
-def run_tagger_process(
-    directory: str,
-    threshold: float,
-    batch_size: int = 1,
-) -> dict[str, Any]:
-    """Spawn tagger/main.py with the same interpreter as api.py (the axl env)."""
-    script = _repo_root() / "tagger" / "main.py"
+def _tagger_script() -> Path:
+    script = _repo_root() / "tagger2" / "main.py"
     if not script.is_file():
         raise FileNotFoundError(f"missing tagger: {script}")
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-u",
-            str(script),
-            str(directory),
-            "--threshold",
-            str(threshold),
-            "--batch-size",
-            str(int(batch_size)),
-            "--json",
-        ],
+    return script
+
+
+def _spawn_tagger(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a tagger process with the same interpreter as api.py (the axl env)."""
+    return subprocess.run(
+        [sys.executable, "-u", str(_tagger_script()), *argv],
         cwd=str(_repo_root()),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
+
+
+def run_tagger_info() -> dict[str, Any]:
+    """`tagger2/main.py --info`: the categories and calibrated thresholds, read from the model."""
+    proc = _spawn_tagger(["--info"])
+    raw_out = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not raw_out:
+        detail = (proc.stderr or raw_out or f"tagger exited {proc.returncode}").strip()
+        raise RuntimeError(detail[-2000:])
+    try:
+        payload = json.loads(raw_out.splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"tagger returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"tagger returned {type(payload).__name__}, expected an object")
+    return payload
+
+
+def run_tagger_process(
+    directory: str,
+    threshold: float,
+    batch_size: int | None = None,
+    categories: str | None = None,
+) -> dict[str, Any]:
+    """Caption a folder with the Pixai tagger; `categories` is a comma-joined list of names."""
+    argv = [str(directory), "--threshold", str(threshold), "--json"]
+    if categories:
+        argv += ["--categories", str(categories)]
+    # No `--batch-size` when the caller did not ask for one: the script's own default applies.
+    if batch_size is not None:
+        argv += ["--batch-size", str(int(batch_size))]
+
+    proc = _spawn_tagger(argv)
     raw_out = (proc.stdout or "").strip()
     raw_err = (proc.stderr or "").strip()
     if proc.returncode != 0:
@@ -979,15 +1112,60 @@ def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
     if not (0.0 <= threshold <= 1.0):
         raise ValueError("threshold must be between 0.0 and 1.0")
 
-    batch_size = params.get("batch_size", 1)
-    try:
-        batch_size = int(batch_size)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("batch_size must be an integer") from exc
-    if batch_size < 1:
-        raise ValueError("batch_size must be >= 1")
+    # The script refuses a name the model does not have; this only cleans the request up.
+    categories = _clean_tagger_categories(params.get("categories"))
 
-    return run_tagger_process(str(directory_path), threshold, batch_size=batch_size)
+    batch_raw = params.get("batch_size")
+    batch_size: int | None = None
+    if batch_raw is not None:
+        try:
+            batch_size = int(batch_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("batch_size must be an integer") from exc
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+    return run_tagger_process(
+        str(directory_path),
+        threshold,
+        batch_size=batch_size,
+        categories=",".join(categories) if categories else None,
+    )
+
+
+def _clean_tagger_categories(raw: Any) -> list[str]:
+    """Requested tagger categories as a clean, de-duplicated list; empty means the caller's default."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw]
+    else:
+        raise ValueError("categories must be a list of names or a comma-separated string")
+    ordered: list[str] = []
+    for item in items:
+        name = str(item).strip()
+        if name and name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
+def handle_tagger_info(_params: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: what the tagger can write. Never raises, so the card can show why it is empty."""
+    try:
+        return _json_safe(run_tagger_info())
+    except Exception as exc:  # noqa: BLE001 - the reply carries the reason instead of an error frame
+        return {
+            "available": False,
+            "engine": "",
+            "model": "",
+            "model_path": "",
+            "cache_dir": "",
+            "categories": [],
+            "default_categories": [],
+            "reason": str(exc)[-500:],
+        }
 
 
 def handle_config_get(_params: dict[str, Any]) -> dict[str, Any]:
@@ -1700,6 +1878,7 @@ _HANDLERS = {
     "train_settings": handle_train_settings,
     "train_reset": handle_train_reset,
     "dataset_tag": handle_dataset_tag,
+    "tagger_info": handle_tagger_info,
     "hardware_status": handle_hardware_status,
     "generate_sample": handle_generate_sample,
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
@@ -1753,61 +1932,127 @@ _HANDLERS = {
     "fs_roots": handle_fs_roots,
 }
 
-_CONTROL_METHODS = frozenset(
-    {
-        "train_start",
-        "train_pause",
-        "train_resume",
-        "train_stop",
-        "train_settings",
-        "train_reset",
-        "dataset_tag",
-        "generate_sample",
-        "generate_checkpoint_samples",
-        "generate_checkpoint_samples_batch",
-        "cancel_generation",
-        "config_save",
-        "checkpoint_pin_set",
-        "profile_save",
-        "profile_delete",
-        "prompt_profile_save",
-        "prompt_profile_delete",
-        "automation_config_save",
-        "automation_workflow_save",
-        "automation_workflow_delete",
-        "automation_prompt_save",
-        "automation_prompt_delete",
-        "automation_job_start",
-        "automation_job_cancel",
-        "automation_job_retry_failed",
-        "automation_job_delete",
-        "automation_image_delete",
-        "automation_image_regenerate",
-        "automation_prompt_extend",
-        "automation_job_prompt_edit",
-        "caption_write",
-        "dataset_drop",
-        "dataset_shuffle",
-        "mask_write",
-        "mask_delete",
-        "checkpoint_export",
-    }
-)
-_CONTROL_LOCK = threading.Lock()
+_OWNER_GRACE_SECONDS = 5.0
+_MAX_SESSION_CONNECTIONS = 32
+
+# --- one client at a time ---------------------------------------------------
+#
+# api.py does no locking of its own: it serves a single client session and leaves ordering to
+# that client (`IpcResources` in Ranko). What it does enforce is that there *is* only one: the
+# first client to say hello owns the helper, and any other instance is refused at once rather
+# than served interleaved. An instance that never disconnects cleanly is replaced after
+# `_OWNER_GRACE_SECONDS` without a live connection.
+
+
+class ClientSession:
+    """Who owns this helper, and how many connections they hold it with."""
+
+    def __init__(
+        self,
+        grace: float = _OWNER_GRACE_SECONDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.grace = grace
+        self.clock = clock
+        self._lock = threading.Lock()
+        self.instance = ""
+        self.client = ""
+        self.since = 0.0
+        self.connections = 0
+        self.last_activity = 0.0
+
+    def _live(self, now: float) -> bool:
+        return self.connections > 0 or (now - self.last_activity) <= self.grace
+
+    def hello(self, client: str, instance: str) -> tuple[bool, dict[str, Any]]:
+        """Admit this connection, or say who has the helper.
+
+        The same instance may open as many connections as it likes (one per lane); an unknown
+        instance is refused while the owner is live, and takes over silently once it is not. A
+        connection that identifies itself as nothing is the anonymous client, and shares that
+        session with other unnamed ones - scripts and probes keep working exactly as before.
+        """
+        client = str(client or "").strip()[:80]
+        instance = str(instance or "").strip()[:80]
+        with self._lock:
+            now = self.clock()
+            if instance != self.instance:
+                if self._live(now):
+                    return False, self._refusal(now)
+                self.instance = instance
+                self.client = client
+                self.since = now
+                self.connections = 0
+            if self.connections >= _MAX_SESSION_CONNECTIONS:
+                return False, {
+                    "code": "CLIENT_BUSY",
+                    "error": f"{self.client or 'this client'} already holds {self.connections} connections",
+                }
+            self.connections += 1
+            self.last_activity = now
+            return True, {
+                "owner": True,
+                "client": self.client,
+                "instance": self.instance,
+                "since": self.since,
+                "connections": self.connections,
+            }
+
+    def released(self) -> None:
+        """One of the owner's connections went away."""
+        with self._lock:
+            self.connections = max(0, self.connections - 1)
+            self.last_activity = self.clock()
+
+    def info(self) -> dict[str, Any]:
+        """What `hello` answers, for tests and for a client that asks again on a live connection."""
+        with self._lock:
+            now = self.clock()
+            return {
+                "owner": True,
+                "client": self.client,
+                "instance": self.instance,
+                "since": self.since,
+                "connections": self.connections,
+                "live": self._live(now),
+            }
+
+    def _refusal(self, now: float) -> dict[str, Any]:
+        held = _format_clock(self.since) if self.since else "?"
+        who = self.client or self.instance or "an unnamed client"
+        return {
+            "code": "CLIENT_BUSY",
+            "error": f"{who} owns the training helper (since {held}); close it and retry",
+            "holder": {
+                "client": self.client,
+                "instance": self.instance,
+                "since": self.since,
+                "connections": self.connections,
+            },
+        }
+
+
+def _format_clock(epoch: float) -> str:
+    return time.strftime("%H:%M:%S", time.localtime(epoch))
+
+
+_SESSION = ClientSession()
 _WS_MAX_SIZE = 32 * 1024 * 1024
 _WS_DEFAULT_PORT = 18765
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 
 
 def dispatch(method: str, params: Optional[dict[str, Any]] = None) -> Any:
+    """Serve one request.
+
+    No locking, on purpose: the helper serves a single client session and that client (`IpcResources`
+    in Ranko) is what keeps two calls that fight over the same thing off the wire at once. Two
+    clients are prevented a level up, in the connection handler (`ClientSession`).
+    """
     handler = _HANDLERS.get(method)
     if handler is None:
         raise ValueError(f"unknown method: {method}")
-    payload = params or {}
-    if method in _CONTROL_METHODS:
-        with _CONTROL_LOCK:
-            return handler(payload)
-    return handler(payload)
+    return handler(params or {})
 
 
 def _reply_for(req: dict[str, Any]) -> dict[str, Any]:
@@ -1887,48 +2132,114 @@ def _quiet_websockets_log() -> None:
             log.addFilter(filt)
 
 
+def _ws_handler(
+    connection: Any,
+    *,
+    networks: list[ipaddress._BaseNetwork],
+    session: Optional[ClientSession] = None,
+) -> None:
+    """Serve one connection.
+
+    A connection is admitted by its first request: `hello {client, instance, lane}` says who it is,
+    and a request that arrives without one claims a *free* session (the path a script or an older
+    client takes). Both open the door; a second client finds it locked (`CLIENT_BUSY`, with who owns
+    the helper and since when) and is closed out, because the helper does no locking of its own and
+    one session is what makes that safe.
+    """
+    from websockets.exceptions import ConnectionClosed
+
+    active = session if session is not None else _SESSION
+    admitted = False
+    try:
+        peer = _peer_host(connection)
+        if not client_ip_allowed(peer, networks):
+            print(f"api.py rejected {peer}", file=sys.stderr)
+            connection.close()
+            return
+        for raw in connection:
+            if not raw or (isinstance(raw, str) and not raw.strip()):
+                continue
+            req_id: Any = None
+            try:
+                req = json.loads(raw)
+                if not isinstance(req, dict):
+                    raise ValueError("request must be an object")
+                req_id = req.get("id")
+                method = req.get("method")
+                if method == "hello":
+                    if admitted:
+                        payload = active.info()
+                        ok = True
+                    else:
+                        params = req.get("params") or {}
+                        if not isinstance(params, dict):
+                            raise ValueError("params must be an object")
+                        ok, payload = active.hello(
+                            str(params.get("client") or ""),
+                            str(params.get("instance") or ""),
+                        )
+                    if not ok:
+                        print(f"api.py refused a second client: {payload['error']}", file=sys.stderr)
+                        connection.send(
+                            json.dumps(
+                                {"id": req_id, "ok": False, **payload},
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            )
+                        )
+                        return
+                    admitted = True
+                    connection.send(
+                        json.dumps(
+                            {"id": req_id, "ok": True, "result": _json_safe(payload)},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        )
+                    )
+                    continue
+                if not admitted:
+                    ok, payload = active.hello("", "")
+                    if not ok:
+                        print(f"api.py refused a second client: {payload['error']}", file=sys.stderr)
+                        connection.send(
+                            json.dumps(
+                                {"id": req_id, "ok": False, **payload},
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            )
+                        )
+                        return
+                    admitted = True
+                connection.send(json.dumps(_reply_for(req), ensure_ascii=False, allow_nan=False))
+            except ConnectionClosed:
+                return
+            except Exception as exc:
+                traceback.print_exc()
+                try:
+                    connection.send(
+                        json.dumps(
+                            {"id": req_id, "ok": False, "error": str(exc)},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        )
+                    )
+                except Exception:
+                    return
+    except ConnectionClosed:
+        return
+    finally:
+        if admitted:
+            active.released()
+
+
 def run_ws_loop(host: str, port: int, allow_networks: Optional[list[ipaddress._BaseNetwork]] = None) -> None:
     # Keep stdout unused for JSON: Ranko talks over the socket. Logs go to stderr.
     sys.stdout = sys.stderr
     _quiet_websockets_log()
     networks = list(allow_networks or [])
-    from websockets.exceptions import ConnectionClosed
     from websockets.sync.server import serve
 
-    def handler(connection) -> None:
-        try:
-            peer = _peer_host(connection)
-            if not client_ip_allowed(peer, networks):
-                print(f"api.py rejected {peer}", file=sys.stderr)
-                connection.close()
-                return
-            for raw in connection:
-                if not raw or (isinstance(raw, str) and not raw.strip()):
-                    continue
-                req_id: Any = None
-                try:
-                    req = json.loads(raw)
-                    if not isinstance(req, dict):
-                        raise ValueError("request must be an object")
-                    req_id = req.get("id")
-                    connection.send(json.dumps(_reply_for(req), ensure_ascii=False, allow_nan=False))
-                except ConnectionClosed:
-                    return
-                except Exception as exc:
-                    traceback.print_exc()
-                    try:
-                        connection.send(
-                            json.dumps(
-                                {"id": req_id, "ok": False, "error": str(exc)},
-                                ensure_ascii=False,
-                                allow_nan=False,
-                            )
-                        )
-                    except Exception:
-                        return
-        except ConnectionClosed:
-            return
-
+    handler = functools.partial(_ws_handler, networks=networks)
     with serve(handler, host, port, max_size=_WS_MAX_SIZE, origins=None) as server:
         print(f"api.py websocket on ws://{host}:{port}", file=sys.stderr)
         server.serve_forever()

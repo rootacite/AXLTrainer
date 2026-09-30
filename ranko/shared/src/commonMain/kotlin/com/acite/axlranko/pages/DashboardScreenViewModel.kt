@@ -83,6 +83,22 @@ class DashboardScreenViewModel(
     }
 
     /**
+     * The page is off screen: stop polling. `entered` goes back to false so coming back restarts
+     * the loops, which is what they are for.
+     *
+     * The pollers used to keep running for the rest of the session — a poll chain of seven calls
+     * plus an `nvtop` snapshot every second, behind whatever page the user had moved on to. That
+     * is what made the Automation page lag while its own job was running.
+     */
+    fun onLeave() {
+        pollingJob?.cancel()
+        pollingJob = null
+        hardwareJob?.cancel()
+        hardwareJob = null
+        entered = false
+    }
+
+    /**
      * Pins the dashboard to one run of the history list; `null` follows the current run.
      *
      * A pinned run brings its own samples, charts and checkpoints, so the previous run's
@@ -536,8 +552,9 @@ class DashboardScreenViewModel(
 
     /**
      * Retunes the run in progress: the checkpoint cadence, the sampling switch, or both. The
-     * trainer adopts the request at its next optimizer step, so the status still reports the old
-     * values until then and the card says so.
+     * trainer adopts the request at its next optimizer step — a sample pass already running
+     * finishes first — and the reply carries it back as `requested`, which the card shows as the
+     * value in place plus a line saying when it lands.
      */
     fun applyTrainSettings(saveEveryNSteps: Int? = null, samplingEnabled: Boolean? = null) {
         if (_uiState.value.settingsInFlight) return

@@ -45,6 +45,14 @@ data class PromptSpec(
     var stageWeights: Map<SexStage, Double> = defaultStageWeights(),
     var chest: String = "auto",
     var belly: String = "auto",
+    /**
+     * The matrix-driven single picks: the tags of the chosen row, or empty for "off". A figure is
+     * part of the body in every mode, while the two pussy groups reach only a SEX prompt that
+     * already says `pussy` — see [PromptGenerator.assemble].
+     */
+    var figure: List<String> = emptyList(),
+    var pussyShape: List<String> = emptyList(),
+    var pussyHair: List<String> = emptyList(),
     var face: Map<String, FacePick> = defaultFace(),
     var count: Int = PromptLimits.COUNT_DEFAULT,
 ) {
@@ -56,6 +64,9 @@ data class PromptSpec(
         poseKeys = poseKeys.toSet(),
         families = families.toSet(),
         stageWeights = stageWeights.toMap(),
+        figure = figure.toList(),
+        pussyShape = pussyShape.toList(),
+        pussyHair = pussyHair.toList(),
         face = LinkedHashMap(face),
     )
 

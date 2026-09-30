@@ -364,6 +364,32 @@ class UtilsScreenViewModel(
         _uiState.update { it.copy(tagThreshold = value, errorMessage = null) }
     }
 
+    /** Category switches: the last selected one cannot be switched off (a caption with none is a no-op). */
+    fun toggleTagCategory(key: String) {
+        _uiState.update { state ->
+            val next = if (key in state.tagCategories) state.tagCategories - key else state.tagCategories + key
+            state.copy(tagCategories = next.ifEmpty { setOf(key) }, errorMessage = null)
+        }
+    }
+
+    /**
+     * Ask the helper what the tagger can write. Once per session: the answer is the model's own
+     * config, and the card falls back to the plain default when the model is not downloaded yet.
+     */
+    fun loadTaggerInfo() {
+        val state = _uiState.value
+        if (state.taggerInfoLoaded || state.isLoading) return
+        _uiState.update { it.copy(taggerInfoLoaded = true) }
+        viewModelScope.launch {
+            val info = try {
+                withContext(IoDispatcher) { ipc.taggerInfo() }
+            } catch (_: Exception) {
+                null
+            }
+            if (info != null) _uiState.update { it.copy(taggerInfo = info) }
+        }
+    }
+
     fun runAutoTag() {
         val state = _uiState.value
         if (state.isTagging || state.isSaving) return
@@ -380,6 +406,7 @@ class UtilsScreenViewModel(
             _uiState.update { it.copy(errorMessage = "Tag confidence must be a number between 0.0 and 1.0") }
             return
         }
+        val categories = state.tagCategories.toList()
 
         viewModelScope.launch {
             _uiState.update {
@@ -387,9 +414,10 @@ class UtilsScreenViewModel(
             }
             try {
                 val result = withContext(IoDispatcher) {
-                    ipc.datasetTag(directory, threshold)
+                    ipc.datasetTag(directory, threshold, categories = categories)
                 }
-                val provider = result.provider.ifBlank { "ONNX" }
+                val engine = listOf(result.engine, result.device).filter { it.isNotBlank() }.joinToString(", ")
+                val provider = engine.ifBlank { result.provider.ifBlank { "tagger" } }
                 val summary =
                     "Tagged ${result.processed}/${result.total} images in ${result.seconds}s ($provider)"
                 val suffix = if (result.failed > 0) " · ${result.failed} failed" else ""

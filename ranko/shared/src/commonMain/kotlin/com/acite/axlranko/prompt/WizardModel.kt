@@ -21,11 +21,14 @@ object WizardModel {
         WizardPage("clothing") { !it.nudeOnly },
         WizardPage("chest") { true },
         WizardPage("belly") { true },
+        WizardPage("figure") { true },
         WizardPage("face") { true },
         WizardPage("scene") { true },
         WizardPage("family") { it.mode == PromptMode.Sex },
         WizardPage("ratio") { it.mode == PromptMode.Sex },
         WizardPage("stages") { it.mode == PromptMode.Sex },
+        WizardPage("pussy_shape") { it.mode == PromptMode.Sex },
+        WizardPage("pussy_hair") { it.mode == PromptMode.Sex },
         WizardPage("pose") { true },
         WizardPage("count") { true },
     )
@@ -49,7 +52,8 @@ object WizardModel {
 
     /**
      * Switching mode resets the fields whose value is mode-specific, like `_page_mode`: exposure,
-     * chest, belly and the whole face page.
+     * chest, belly, the whole face page, and the two SEX-only pussy picks. A figure is not
+     * mode-specific, so it stays.
      */
     fun applyModeChange(spec: PromptSpec, mode: PromptMode) {
         if (mode == spec.mode) return
@@ -58,6 +62,8 @@ object WizardModel {
         spec.chest = CHEST_DEFAULT.getValue(mode)
         spec.belly = BELLY_DEFAULT.getValue(mode)
         spec.face = defaultFace()
+        spec.pussyShape = emptyList()
+        spec.pussyHair = emptyList()
     }
 
     fun needsSfwExposureWarning(spec: PromptSpec): Boolean =

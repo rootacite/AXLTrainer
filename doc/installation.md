@@ -29,7 +29,8 @@ The manifest pins the ROCm stack used during development, including:
 | safetensors | 0.8.0 | checkpoint I/O |
 | tensorboard | 2.21.0 | metric logging (read by `api.py` / `ui.py`) |
 | streamlit + plotly | 1.63.0 / 7.0.0 | `ui.py` viewer |
-| onnxruntime-migraphx | 1.27.1 | `tagger/` ONNX captioning (`import onnxruntime`) |
+| onnxruntime-migraphx | 1.27.1 | `tagger/` legacy ONNX captioning (`import onnxruntime`) |
+| timm | 1.0.30 | `tagger2/` Pixai tagger (its published `tagger_pipeline.py` imports `timm.layers`) |
 
 ### NVIDIA / CUDA instead of ROCm
 
@@ -41,6 +42,16 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
 
 If you skip MIOpen, the ROCm-specific env vars in `start_train.sh` / `start_api.sh` are harmless no-ops.
+
+### Auto-captioning model
+
+`tagger2/` needs `pixai-labs/pixai-tagger-v1.0` in the local Hugging Face cache (~1.9 GB). Fetch it once:
+
+```bash
+python tagger2/main.py --info --download          # or: huggingface-cli download pixai-labs/pixai-tagger-v1.0
+```
+
+After that the script never reaches the network (`--info` and every run are cache-only).
 
 ## 2. Configure the project
 

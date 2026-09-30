@@ -214,6 +214,8 @@ fun TrainControlCard(
 
             LiveSettingsRow(
                 settings = status.settings,
+                requested = status.requested,
+                runStatus = actual,
                 enabled = settingsEnabled,
                 inFlight = settingsInFlight,
                 error = settingsError,
@@ -358,7 +360,8 @@ fun TrainControlCard(
 
 /**
  * The live cadence and sampling switch of the run in progress. Both are requests: the trainer
- * adopts them at its next optimizer step, so the summary says what is in force and what is next.
+ * adopts them at its next optimizer step, so the row shows the value that was asked for, the
+ * values in force, and when the request lands (a pass already running finishes first).
  *
  * With no live run there is nothing to retune, so the row shows what the next Start would use
  * (`config.toml`) instead of the `settings` block — that block describes the run that published
@@ -368,6 +371,8 @@ fun TrainControlCard(
 @Composable
 private fun LiveSettingsRow(
     settings: TrainSettings,
+    requested: TrainSettings?,
+    runStatus: String,
     enabled: Boolean,
     inFlight: Boolean,
     error: String?,
@@ -376,8 +381,11 @@ private fun LiveSettingsRow(
     onApply: (saveEveryNSteps: Int?, samplingEnabled: Boolean?) -> Unit,
 ) {
     val colors = rankoColors
-    var draft by remember(settings.saveEveryNSteps) {
-        mutableStateOf(settings.saveEveryNSteps.toString())
+    // The requested value leads: it is still the value the user set, and showing the old one until
+    // the trainer adopts it is what made the row look dead for a whole sample pass.
+    val shown = requested ?: settings
+    var draft by remember(shown.saveEveryNSteps) {
+        mutableStateOf(shown.saveEveryNSteps.toString())
     }
     val parsed = draft.trim().toIntOrNull()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -417,14 +425,16 @@ private fun LiveSettingsRow(
                     color = colors.textDim,
                 )
                 Switch(
-                    checked = settings.samplingEnabled,
+                    checked = shown.samplingEnabled,
                     enabled = !inFlight,
                     onCheckedChange = { on -> onApply(null, on) },
                 )
             }
         }
         val summary = if (enabled) {
-            settingsSummary(settings) + " · changes apply at the next step"
+            // With a request outstanding the second line carries the timing, so the blanket
+            // "next step" claim (which is wrong for a sample pass in progress) is left off.
+            settingsSummary(settings) + if (requested == null) " · changes apply at the next step" else ""
         } else {
             nextRunSummary(configSaveEveryNSteps, configSamplingEnabled)
         }
@@ -434,6 +444,16 @@ private fun LiveSettingsRow(
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.textDim,
             )
+        }
+        requested?.takeIf { enabled }?.let { pending ->
+            val label = pendingSettingsLabel(runStatus, settings, pending)
+            if (label.isNotEmpty()) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.accentPink,
+                )
+            }
         }
         error?.let { message ->
             Text(
@@ -445,6 +465,38 @@ private fun LiveSettingsRow(
             )
         }
     }
+}
+
+/**
+ * `Pending (applies from the next sample pass) · sampling off`, for a request the trainer has
+ * accepted but not adopted yet. Only what differs from [effective] is named, and the bracket says
+ * when it lands: the trainer reads `settings.json` at its next optimizer step, so a change made
+ * during a sample pass waits for that pass to finish (`sampling`), and a paused run waits for the
+ * resume it will adopt it at. Empty when nothing differs.
+ */
+internal fun pendingSettingsLabel(
+    runStatus: String,
+    effective: TrainSettings,
+    requested: TrainSettings,
+): String {
+    val timing = when (runStatus) {
+        "sampling" -> "applies from the next sample pass"
+        "paused" -> "applies when the run resumes"
+        else -> "applies at the next step"
+    }
+    val changes = mutableListOf<String>()
+    if (requested.saveEveryNSteps != effective.saveEveryNSteps) {
+        changes += if (requested.saveEveryNSteps <= 0) {
+            "no checkpoints"
+        } else {
+            "save every ${requested.saveEveryNSteps} steps"
+        }
+    }
+    if (requested.samplingEnabled != effective.samplingEnabled) {
+        changes += "sampling ${if (requested.samplingEnabled) "on" else "off"}"
+    }
+    if (changes.isEmpty()) return ""
+    return "Pending ($timing) · " + changes.joinToString(" · ")
 }
 
 /**

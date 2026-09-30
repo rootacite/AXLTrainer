@@ -42,6 +42,12 @@ class PosePlaceSceneTest {
         QUESTIONABLE_POSES:
         bent over, railing, from behind, panties, ass
         bent over, desk, skirt lift, panties, from behind
+        FIGURE:
+        petite
+        PUSSY_SHAPE:
+        labia
+        PUSSY_HAIR:
+        shaved pussy
         """.trimIndent(),
     )
 
@@ -127,6 +133,12 @@ class PosePlaceSceneTest {
             sitting on sand, looking at viewer
             QUESTIONABLE_POSES:
             sitting, panties, looking at viewer
+            FIGURE:
+            petite
+            PUSSY_SHAPE:
+            labia
+            PUSSY_HAIR:
+            shaved pussy
             """.trimIndent(),
         )
         val spec = testSpec(poseAny = false, poseKeys = setOf(pose("sitting on sand").key), count = 4)

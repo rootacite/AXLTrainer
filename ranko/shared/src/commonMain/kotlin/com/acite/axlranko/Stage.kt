@@ -107,14 +107,17 @@ public fun Stage(
             bounds = bounds,
             onImages = {
                 viewModel.currentScreen = Screen.Images
+                dsViewModel.onLeave()
                 imViewModel.reloadFromDiskSafely()
             },
             onStatistics = {
                 viewModel.currentScreen = Screen.Statistics
+                dsViewModel.onLeave()
                 ssViewModel.scanDataset()
             },
             onUtils = {
                 viewModel.currentScreen = Screen.Utils
+                dsViewModel.onLeave()
                 usViewModel.reloadFromDiskSafely()
             },
             onDashboard = {
@@ -123,6 +126,7 @@ public fun Stage(
             },
             onAutomation = {
                 viewModel.currentScreen = Screen.Automation
+                dsViewModel.onLeave()
                 auViewModel.onEnter()
             },
         )

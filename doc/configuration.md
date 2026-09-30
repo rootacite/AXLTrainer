@@ -18,7 +18,7 @@ You can edit this file by hand or with the Ranko dashboard's **Utils** tab, whic
 
 | Key | Example | Meaning |
 | --- | --- | --- |
-| `pretrained_model_name_or_path` | `"/opt/models/diffusers/waillu_170"` | SDXL base model. A diffusers directory, or a single-file checkpoint path (`from_single_file`). |
+| `pretrained_model_name_or_path` | `"/opt/models/diffusers/waillu_170"` | SDXL base model. A diffusers directory, or a single-file checkpoint path (`from_single_file`). A single file carries no pipeline config of its own, so diffusers resolves the component configs from `stabilityai/stable-diffusion-xl-base-1.0`; that lookup is pinned cache-only (`load_sdxl_pipeline`), and diffusers downloads it once with a warning if the cache has never seen it. |
 | `output_dir` | `"/home/acite/LLM/axltrainer/outputs"` | Root for run directories: each run writes `{output_dir}/{output_name}_{YYYYMMDD_HHMMSS}/…`. Created if missing. |
 | `logging_dir` | `"/home/acite/LLM/axltrainer/logs"` | Root for TensorBoard logs: each run writes `{logging_dir}/{output_name}_{YYYYMMDD_HHMMSS}/`. Created if missing. |
 | `train_data_dir` | `"/home/acite/LLM/Character/rein/"` | Dataset folder: images + same-named `.txt` captions. Optional `{stem}.mask.png` (white=train, black=ignore) enables masked loss; if missing, a transparent training image uses its alpha as the mask. Since `[[environment.train_data]]` exists, this key **mirrors that list's first entry** and is the single folder the paths that expect one read (checkpoint metadata, the Utils → Environment tag button, and a config that has no list). The trainer drops it as soon as the list has an entry. |
@@ -77,14 +77,14 @@ Statistics and Tag dataset surfaces act on the folder selected there. `[[validat
 | `sdxl_base_v1-0` | yes | `stable-diffusion-xl-v1-base/lora` | `https://github.com/Stability-AI/generative-models` | `1.0.0` |
 | `sd3.5-large` | **no** (UI slot only) | `stable-diffusion-v3-5-large/lora` | `https://github.com/Stability-AI/sd3.5` | `1.0.0` |
 
-These also populate `modelspec.*` and `ss_base_model_version` on every `.safetensors`. `modelspec.prediction_type` and `ss_v_pred` record what the **base** declared (`v_prediction` for a v-pred base, otherwise `epsilon`), and sample rendering uses the same value. Selecting `sd3.5-large` is valid config; `train_start` / `build_train_objects` fail before loading weights.
+These also populate `modelspec.*` and `ss_base_model_version` on every `.safetensors`. `modelspec.prediction_type` and `ss_v_pred` record what the **base** declared (`v_prediction` for a v-pred base, otherwise `epsilon`), and sample rendering uses the same value. `ss_min_snr_gamma` records the gamma that actually ran (kohya's key, but the effective value: `0` for a v-pred base and for an epsilon one that asked for none), so a checkpoint says whether its loss was weighted. Selecting `sd3.5-large` is valid config; `train_start` / `build_train_objects` fail before loading weights.
 
 ### `[training]` — core training settings
 
 | Key | Default (file) | Notes |
 | --- | --- | --- |
 | — | — | There is **no** prediction-type switch: it is read from the base. A single-file checkpoint carries two marker tensors (`v_pred`, `ztsnr`) that say what it was trained to predict — the same keys ComfyUI reads in `supported_models.py:229`; a diffusers directory answers with its own `scheduler/scheduler_config.json`. `TrainConfig.prediction_type` / `zero_terminal_snr` are derived from that on every construction (like `run_dir`, not a config key), the noise scheduler and the loss target follow it, and so does sample rendering (`trainer/models.py` `sample_scheduler_kwargs`). A base stripped of its markers cannot be detected — use the original file. |
-| `min_snr_gamma` | `5.0` | **Defined but not used in the training math** (kept for metadata compatibility). |
+| `min_snr_gamma` | `5.0` | Min-SNR weighting for an **epsilon** base: each sample's loss is scaled by `min(SNR, γ) / SNR`, with SNR read from the training scheduler's own `alphas_cumprod` (kohya's `apply_snr_weight`), so the low-noise steps are down-weighted — at γ=5 with SDXL's betas only 147 of the 1000 steps are scaled at all (mean weight 0.92; t=0 by 1/235), which is why the logged loss drops with it on. `0` (or a negative value) is **off**, not "γ = 0". A **v-prediction** base ignores it silently whatever the file says: `TrainConfig` derives `0` for it in the same place it derives the prediction type itself. The logged `Train/Loss` / `Train/Avg_Loss` are the weighted values, so their scale is not comparable with a run that had the weighting off. The Python fallback default is `0.0`; the shipped file asks for `5.0`. |
 | `seed` | `1145141919` | Global training seed. |
 | `mixed_precision` | `"bf16"` | `"bf16"` / `"fp16"` / `"no"`. |
 | `train_batch_size` | `4` | Per-device batch size. |

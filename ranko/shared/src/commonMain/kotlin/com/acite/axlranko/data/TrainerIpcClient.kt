@@ -9,6 +9,7 @@ import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
+import com.acite.axlranko.model.TaggerInfoResult
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
@@ -25,6 +26,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.random.Random
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -37,6 +40,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 
 @Serializable
@@ -52,9 +56,28 @@ internal data class IpcResponse(
     val ok: Boolean,
     val result: JsonElement? = null,
     val error: String? = null,
+    /** `CLIENT_BUSY` when another client owns the helper (`API.md`), else null. */
+    val code: String? = null,
 )
 
+/** Another client owns the helper: the connection was refused and the session is not ours. */
+internal class HelperBusyException(message: String) : IllegalStateException(message)
+
 private val BLOB_METHODS = setOf("blob_stat", "blob_batch")
+
+/**
+ * The connections the client keeps, by what they carry. `Long` exists because one handler can run
+ * for minutes (a tagger over a folder) and the connection it is on serves its queue in order.
+ */
+private enum class LaneKind(val label: String) {
+    Control("control"),
+    Poll("poll"),
+    Blob("blob"),
+    Long("long"),
+}
+
+private const val DEFAULT_CONNECT_ATTEMPTS = 40
+private const val HELLO_TIMEOUT_MILLIS = 10_000L
 
 @Inject
 @SingleIn(AppScope::class)
@@ -69,18 +92,30 @@ class TrainerIpcClient {
         coerceInputValues = true
     }
     private val transport = WsTransport()
-    private val controlMutex = Mutex()
+
+    /**
+     * Who this app is, as the helper sees it: the name shown in a refusal, and an id that makes
+     * this run's connections *its* connections — the helper serves one client and turns any other
+     * instance away (`API.md`), and this is what tells the two apart.
+     */
+    internal val instanceId: String = "axlranko-" + Random.nextInt(0, Int.MAX_VALUE).toString(16)
+
+    /**
+     * This app's own resource locks (`IpcResources`). api.py takes none: it serves a single client
+     * session and leaves ordering to it, so what must not overlap is refused here, before the
+     * request reaches the socket.
+     */
+    internal val resourceTable = ResourceTable()
+
+    /**
+     * One connection per kind of traffic — see [laneFor]. They are opened lazily and closed
+     * together when the endpoint changes.
+     */
+    private val lanes: Map<LaneKind, Lane> = LaneKind.entries.associateWith { Lane(it) }
     private val connectMutex = Mutex()
-    private val writeMutex = Mutex()
-    private val waitersMutex = Mutex()
-    private val idMutex = Mutex()
-    private var nextIdValue = 1L
-    private val waiters = mutableMapOf<Long, CompletableDeferred<IpcResponse>>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var readerJob: Job? = null
     private var wsHost = defaultWsHost()
     private var wsPort = defaultWsPort()
-    private var connection: WsConnection? = null
 
     fun endpointHost(): String = wsHost
     fun endpointPort(): Int = wsPort
@@ -223,6 +258,7 @@ class TrainerIpcClient {
         directory: String,
         threshold: Float,
         batchSize: Int? = null,
+        categories: List<String>? = null,
     ): DatasetTagResult {
         val result = call(
             "dataset_tag",
@@ -230,8 +266,16 @@ class TrainerIpcClient {
                 put("directory", directory)
                 put("threshold", threshold.toDouble())
                 batchSize?.let { put("batch_size", it) }
+                categories?.takeIf { it.isNotEmpty() }?.let { selected ->
+                    putJsonArray("categories") { selected.forEach { add(JsonPrimitive(it)) } }
+                }
             },
         )
+        return json.decodeFromJsonElement(result)
+    }
+
+    suspend fun taggerInfo(): TaggerInfoResult {
+        val result = call("tagger_info", JsonObject(emptyMap()))
         return json.decodeFromJsonElement(result)
     }
 
@@ -724,7 +768,7 @@ class TrainerIpcClient {
     suspend fun setEndpoint(host: String, port: Int) {
         val trimmed = host.trim().ifBlank { "127.0.0.1" }
         val bounded = port.coerceIn(1, 65535)
-        if (trimmed == wsHost && bounded == wsPort && connection != null) return
+        if (trimmed == wsHost && bounded == wsPort && lanes.values.any { it.isConnected() }) return
         wsHost = trimmed
         wsPort = bounded
         persistWsEndpoint(trimmed, bounded)
@@ -734,7 +778,9 @@ class TrainerIpcClient {
     suspend fun restart() {
         closeConnection()
         stopSpawnedHelper()
-        ensureConnected(attempts = 4)
+        // Bring the polling lane up first: a failure to start the helper should surface here, on
+        // the call the Retry button made, rather than on whichever page polls next.
+        lanes.getValue(LaneKind.Poll).ensureConnected(attempts = 4)
         ping()
     }
 
@@ -752,99 +798,199 @@ class TrainerIpcClient {
         }
 
     private suspend fun call(method: String, params: JsonObject, blob: Boolean = false): JsonElement {
-        val invoke = suspend {
-            val id = idMutex.withLock { nextIdValue++ }
+        // The claim is taken before anything touches the socket, and held until the reply lands: a
+        // resource released early would only look like ordering. Refused outright when a long call
+        // holds it, which is what makes a click answer instead of waiting for that call.
+        return resourceTable.with(IpcResources.claimsFor(method, params), method) {
+            laneFor(method, params, blob).call(method, params, IpcResources.timeoutFor(method))
+        }
+    }
+
+    /**
+     * Which connection a call goes out on.
+     *
+     * Each connection is handled in order by one thread on the other side, so anything queued
+     * behind a slow call on that connection waits for it — the reason a ten-minute tag used to
+     * freeze every page: it shared one connection with the polls. Writes stay together so their
+     * order is the order they were made in (Start before Pause); reads, blobs and the calls that
+     * can hold a resource for minutes each have their own connection, so none of them can hold the
+     * others up. The split is read off the same claims the resource table uses, so a method cannot
+     * be long for one and short for the other.
+     */
+    private fun laneFor(method: String, params: JsonObject, blob: Boolean): Lane {
+        val kind = when {
+            blob || method in BLOB_METHODS -> LaneKind.Blob
+            IpcResources.isLongRunning(method, params) -> LaneKind.Long
+            IpcResources.writes(method, params) -> LaneKind.Control
+            else -> LaneKind.Poll
+        }
+        return lanes.getValue(kind)
+    }
+
+    /** Which lane a call would take; the test pins the split without a server. */
+    internal fun laneKindFor(method: String, params: JsonObject, blob: Boolean = false): String =
+        when {
+            blob || method in BLOB_METHODS -> LaneKind.Blob.label
+            IpcResources.isLongRunning(method, params) -> LaneKind.Long.label
+            IpcResources.writes(method, params) -> LaneKind.Control.label
+            else -> LaneKind.Poll.label
+        }
+
+    /**
+     * One WebSocket connection: its own reader, waiter table and id counter, so a reply can never
+     * be matched to a request sent on another connection.
+     */
+    private inner class Lane(val kind: LaneKind) {
+        private val writeMutex = Mutex()
+        private val waitersMutex = Mutex()
+        private val idMutex = Mutex()
+        private var nextId = 1L
+        private val waiters = mutableMapOf<Long, CompletableDeferred<IpcResponse>>()
+        private var connection: WsConnection? = null
+        private var readerJob: Job? = null
+
+        fun isConnected(): Boolean = connection != null
+
+        suspend fun call(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
+            val id = idMutex.withLock { nextId++ }
             val deferred = CompletableDeferred<IpcResponse>()
             waitersMutex.withLock { waiters[id] = deferred }
             val request = json.encodeToString(IpcRequest.serializer(), IpcRequest(id, method, params))
             try {
+                ensureConnected()
                 writeMutex.withLock {
-                    val conn = connection ?: error("IPC WebSocket is not available")
+                    val conn = connection ?: error("IPC WebSocket is not available (${kind.label})")
                     conn.send(request)
                 }
-                val response = deferred.await()
+                // A reply that never arrives — or one whose id was dropped — fails here instead of
+                // holding its waiter, and the resources it claimed, for the rest of the session.
+                val response = withTimeoutOrNull(timeoutMillis) { deferred.await() }
+                    ?: error("$method did not answer within ${timeoutMillis / 1000} s")
                 if (!response.ok) {
                     throw IllegalStateException(response.error ?: "IPC call failed")
                 }
-                response.result ?: JsonObject(emptyMap())
+                return response.result ?: JsonObject(emptyMap())
             } catch (e: Exception) {
                 waitersMutex.withLock { waiters.remove(id) }
                 throw e
             }
         }
-        ensureConnected()
-        return if (blob || method in BLOB_METHODS) {
-            invoke()
-        } else {
-            controlMutex.withLock { invoke() }
-        }
-    }
 
-    private suspend fun ensureConnected(attempts: Int = 40) {
-        if (connection != null) return
-        connectMutex.withLock {
+        suspend fun ensureConnected(attempts: Int = DEFAULT_CONNECT_ATTEMPTS) {
             if (connection != null) return
-            withContext(Dispatchers.Default) {
-                val host = wsHost
-                val port = wsPort
-                if (!helperListening(host, port)) {
-                    spawnHelperIfNeeded(host, port)
-                }
-                var last: Exception? = null
-                repeat(attempts.coerceAtLeast(1)) {
-                    if (wsHost != host || wsPort != port) {
-                        throw IllegalStateException("endpoint changed while connecting")
+            connectMutex.withLock {
+                if (connection != null) return
+                withContext(Dispatchers.Default) {
+                    val host = wsHost
+                    val port = wsPort
+                    // Any live lane means the helper already answered a handshake, so only the
+                    // first one probes for it (and spawns it): a second lane costs no extra probe.
+                    if (lanes.values.none { it.isConnected() } && !helperListening(host, port)) {
+                        spawnHelperIfNeeded(host, port)
                     }
-                    try {
-                        val conn = withTimeout(5.seconds) { transport.connect(host, port) }
-                        connection = conn
-                        startReader(conn)
-                        return@withContext
-                    } catch (e: Exception) {
-                        last = e
-                        delay(250)
+                    var last: Exception? = null
+                    repeat(attempts.coerceAtLeast(1)) {
+                        if (wsHost != host || wsPort != port) {
+                            throw IllegalStateException("endpoint changed while connecting")
+                        }
+                        try {
+                            val conn = withTimeout(5.seconds) { transport.connect(host, port) }
+                            connection = conn
+                            startReader(conn)
+                            handshake()
+                            return@withContext
+                        } catch (e: Exception) {
+                            last = e
+                            if (e is HelperBusyException) {
+                                // The helper is up and someone else owns it: retrying or spawning
+                                // another one would only fight the owner.
+                                throw e
+                            }
+                            delay(250)
+                        }
                     }
+                    throw IllegalStateException(
+                        "Could not connect to ws://$host:$port. ${last?.message ?: ""}".trim(),
+                        last,
+                    )
                 }
-                throw IllegalStateException(
-                    "Could not connect to ws://$host:$port. ${last?.message ?: ""}".trim(),
-                    last,
-                )
             }
         }
-    }
 
-    private fun startReader(conn: WsConnection) {
-        readerJob?.cancel()
-        readerJob = scope.launch {
+        private fun startReader(conn: WsConnection) {
+            readerJob?.cancel()
+            readerJob = scope.launch {
+                try {
+                    while (isActive) {
+                        val line = conn.receive()
+                        if (line.isBlank()) continue
+                        val response = try {
+                            json.decodeFromString(IpcResponse.serializer(), line)
+                        } catch (_: Exception) {
+                            continue
+                        }
+                        val id = response.id ?: continue
+                        val waiter = waitersMutex.withLock { waiters.remove(id) }
+                        waiter?.complete(response)
+                    }
+                } catch (_: Exception) {
+                    close()
+                }
+            }
+        }
+
+        /**
+         * Say who we are before the connection is used.
+         *
+         * The helper admits one client session, so every lane introduces itself; a refusal means
+         * another Ranko (or the web companion) is on this helper, and the message says which and
+         * since when. Nothing else is sent on a refused connection, and the socket is dropped.
+         */
+        private suspend fun handshake() {
+            val id = idMutex.withLock { nextId++ }
+            val deferred = CompletableDeferred<IpcResponse>()
+            waitersMutex.withLock { waiters[id] = deferred }
             try {
-                while (isActive) {
-                    val line = conn.receive()
-                    if (line.isBlank()) continue
-                    val response = try {
-                        json.decodeFromString(IpcResponse.serializer(), line)
-                    } catch (_: Exception) {
-                        continue
-                    }
-                    val id = response.id ?: continue
-                    val waiter = waitersMutex.withLock { waiters.remove(id) }
-                    waiter?.complete(response)
+                val conn = connection ?: error("IPC WebSocket is not available (${kind.label})")
+                val hello = buildJsonObject {
+                    put("client", clientName)
+                    put("instance", instanceId)
+                    put("lane", kind.label)
                 }
-            } catch (_: Exception) {
-                closeConnection()
+                conn.send(json.encodeToString(IpcRequest.serializer(), IpcRequest(id, "hello", hello)))
+                val response = withTimeoutOrNull(HELLO_TIMEOUT_MILLIS) { deferred.await() }
+                    ?: error("the helper did not answer the hello within ${HELLO_TIMEOUT_MILLIS / 1000} s")
+                if (!response.ok) {
+                    if (response.code == "CLIENT_BUSY") {
+                        throw HelperBusyException(response.error ?: "another client owns the helper")
+                    }
+                    // A helper from before this protocol has no sessions: it is nobody's, and there
+                    // is nothing to be admitted to. (It only survives until it is restarted.)
+                    if (response.error?.startsWith("unknown method") == true) return
+                    throw IllegalStateException(response.error ?: "the helper refused this connection")
+                }
+            } catch (e: Exception) {
+                close()
+                throw e
+            } finally {
+                waitersMutex.withLock { waiters.remove(id) }
+            }
+        }
+
+        suspend fun close() {
+            readerJob?.cancel()
+            readerJob = null
+            val conn = connection
+            connection = null
+            conn?.close()
+            val pending = waitersMutex.withLock { waiters.values.toList().also { waiters.clear() } }
+            pending.forEach { waiter ->
+                waiter.completeExceptionally(IllegalStateException("Dashboard helper closed unexpectedly"))
             }
         }
     }
 
-    private fun closeConnection() {
-        readerJob?.cancel()
-        readerJob = null
-        val conn = connection
-        connection = null
-        conn?.close()
-        val pending = waiters.values.toList()
-        waiters.clear()
-        pending.forEach { waiter ->
-            waiter.completeExceptionally(IllegalStateException("Dashboard helper closed unexpectedly"))
-        }
+    private suspend fun closeConnection() {
+        lanes.values.forEach { it.close() }
     }
 }

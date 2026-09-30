@@ -55,7 +55,8 @@ class PromptChoiceLayoutTest {
 
     private fun noopActions() = PromptEditorActions(
         setCharacter = {}, setMode = {}, setExposure = { _, _ -> }, setClothingAny = {},
-        toggleClothing = {}, setChest = {}, setBelly = {}, setFaceGroup = { _, _ -> },
+        toggleClothing = {}, setChest = {}, setBelly = {}, setFigure = {}, setPussyShape = {},
+        setPussyHair = {}, setFaceGroup = { _, _ -> },
         toggleFaceTag = { _, _ -> }, setSceneAny = {}, toggleScene = {}, setFamilyAny = {},
         toggleFamily = {}, setVaginalRatio = {}, setStageWeight = { _, _ -> }, setPoseAny = {},
         togglePose = {}, setCount = {}, setSeedText = {},
@@ -136,6 +137,15 @@ class PromptChoiceLayoutTest {
         assertWidthsSurviveShrinking("chest", PromptLang.Chinese)
         assertWidthsSurviveShrinking("belly", PromptLang.English)
         assertWidthsSurviveShrinking("face", PromptLang.Chinese)
+    }
+
+    /** The single-pick groups: the `off` chip plus one full-width row per matrix entry. */
+    @Test
+    fun theSinglePickGroupsKeepTheirRowsOnANarrowPane() {
+        assertWidthsSurviveShrinking("figure", PromptLang.Chinese)
+        assertWidthsSurviveShrinking("figure", PromptLang.English)
+        assertWidthsSurviveShrinking("pussy_shape", PromptLang.Chinese)
+        assertWidthsSurviveShrinking("pussy_hair", PromptLang.Chinese)
     }
 
     @Test

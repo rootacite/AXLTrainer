@@ -31,6 +31,10 @@ object ManifestModel {
         return parts.joinToString(", ").ifEmpty { t(lang, "manifest_stage_fallback") }
     }
 
+    /** A single-pick group's value: the chosen row's tags, or the "off" label. */
+    fun pickValue(tags: List<String>, lang: PromptLang): String =
+        tags.joinToString(", ").ifEmpty { t(lang, "pick_off") }
+
     fun items(spec: PromptSpec, lang: PromptLang): List<ManifestRow> {
         fun label(key: String) = t(lang, "item_$key")
         fun picked(anyFlag: Boolean, count: Int) =
@@ -46,12 +50,15 @@ object ManifestModel {
         }
         rows.add(ManifestRow("chest", label("chest"), spec.chest))
         rows.add(ManifestRow("belly", label("belly"), spec.belly))
+        rows.add(ManifestRow("figure", label("figure"), pickValue(spec.figure, lang)))
         rows.add(ManifestRow("face", label("face"), faceValue(spec, lang)))
         rows.add(ManifestRow("scene", label("scene"), picked(spec.sceneAny, spec.sceneKeys.size)))
         if (spec.mode == PromptMode.Sex) {
             rows.add(ManifestRow("family", label("family"), picked(spec.familyAny, spec.families.size)))
             rows.add(ManifestRow("ratio", label("ratio"), trimNumber(spec.vaginalRatio)))
             rows.add(ManifestRow("stages", label("stages"), stageValue(spec, lang)))
+            rows.add(ManifestRow("pussy_shape", label("pussy_shape"), pickValue(spec.pussyShape, lang)))
+            rows.add(ManifestRow("pussy_hair", label("pussy_hair"), pickValue(spec.pussyHair, lang)))
         }
         rows.add(ManifestRow("pose", label("pose"), picked(spec.poseAny, spec.poseKeys.size)))
         rows.add(ManifestRow("count", label("count"), spec.count.toString()))

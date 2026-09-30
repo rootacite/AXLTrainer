@@ -436,15 +436,29 @@ class AutomationIpcTest {
     }
 
     @Test
-    fun theWizardRailFollowsWhatApplies() {        val sfw = AutomationUiState(spec = defaultSpec())
+    fun theWizardRailFollowsWhatApplies() {
+        val sfw = AutomationUiState(spec = defaultSpec())
         assertTrue(!sfw.applicablePageKeys.contains("family"))
         assertTrue(sfw.applicablePageKeys.contains("clothing"))
         assertEquals(sfw.applicablePageKeys.first(), sfw.currentPageKey)
+        // The figure group applies everywhere; the two pussy groups are SEX only, like the rest of
+        // the sex pages.
+        assertTrue(sfw.applicablePageKeys.contains("figure"))
+        assertTrue(!sfw.applicablePageKeys.contains("pussy_shape"))
+        assertTrue(!sfw.applicablePageKeys.contains("pussy_hair"))
+
+        val nsfw = AutomationUiState(spec = defaultSpec().also { it.mode = PromptMode.Nsfw })
+        assertTrue(nsfw.applicablePageKeys.contains("figure"))
+        assertTrue(!nsfw.applicablePageKeys.contains("pussy_shape"))
+        assertTrue(!nsfw.applicablePageKeys.contains("pussy_hair"))
 
         val sex = AutomationUiState(
             spec = defaultSpec().also { it.mode = PromptMode.Sex },
         )
         assertTrue(sex.applicablePageKeys.contains("stages"))
+        assertTrue(sex.applicablePageKeys.contains("figure"))
+        assertTrue(sex.applicablePageKeys.contains("pussy_shape"))
+        assertTrue(sex.applicablePageKeys.contains("pussy_hair"))
 
         val nude = AutomationUiState(
             spec = defaultSpec().also { it.exposure = listOf("nude") },

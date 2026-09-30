@@ -136,6 +136,9 @@ def build_kohya_metadata(
     put("ss_final", int(bool(final)))
     put("ss_base_model_version", cfg.base_model_version)
     put("ss_v_pred", int(cfg.prediction_type == "v_prediction"))
+    # kohya records its `--min_snr_gamma` argument; this records the value that actually ran, and
+    # `TrainConfig` derives 0 for a v-prediction base, so a file asking for Min-SNR on one says so.
+    put("ss_min_snr_gamma", cfg.min_snr_gamma)
 
     put("ss_learning_rate", cfg.learning_rate)
     put("ss_unet_lr", cfg.unet_learning_rate)

@@ -30,8 +30,8 @@ TensorBoard metrics are written to `{logging_dir}/{run_id}/`:
 
 | Tag | Meaning |
 | --- | --- |
-| `Train/Loss` | Per-step MSE loss. |
-| `Train/Avg_Loss` | Kohya-style epoch-window moving average. |
+| `Train/Loss` | Per-step MSE loss; the Min-SNR-weighted value when `[training].min_snr_gamma` is active (epsilon bases only), so its scale is not comparable with a run that had the weighting off. |
+| `Train/Avg_Loss` | Kohya-style epoch-window moving average of the same value. |
 | `UNet/LR/Effective_Actual_LR` | Schedule-Free UNet effective LR. |
 | `TE/LR/Base_Scheduled` / `TE/LR/Effective_Actual_LR` | Text-encoder scheduled LR. |
 

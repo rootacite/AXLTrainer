@@ -181,6 +181,11 @@ data class UtilsUiState(
     val isSaving: Boolean = false,
     val isTagging: Boolean = false,
     val tagThreshold: String = "0.35",
+    /** The tagger categories the next run writes; empty means the tagger's own default. */
+    val tagCategories: Set<String> = setOf(DEFAULT_TAGGER_CATEGORY),
+    /** What the tagger declares about itself, read once per session (`tagger_info`). */
+    val taggerInfo: TaggerInfoResult? = null,
+    val taggerInfoLoaded: Boolean = false,
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val configPath: String = "",

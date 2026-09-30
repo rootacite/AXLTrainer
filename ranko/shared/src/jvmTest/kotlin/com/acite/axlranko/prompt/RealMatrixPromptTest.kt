@@ -35,9 +35,79 @@ class RealMatrixPromptTest {
         assertTrue(matrix.suffixes.isNotEmpty())
         assertTrue(matrix.sfwPoses.size >= 10)
         assertTrue(matrix.questionablePoses.size >= 100, "questionable: ${matrix.questionablePoses.size}")
+        assertTrue(matrix.figure.size >= 5, "figure: ${matrix.figure.size}")
+        assertTrue(matrix.pussyShape.size >= 5, "pussy shape: ${matrix.pussyShape.size}")
+        assertTrue(matrix.pussyHair.size >= 2, "pussy hair: ${matrix.pussyHair.size}")
         assertTrue(matrix.clothing.all { it.group != null })
         assertTrue(matrix.questionablePoses.all { it.selfStated })
         assertFalse(matrix.sfwPoses.any { it.selfStated })
+        // None of the new groups is a pose: no channel, no exposure statement.
+        (matrix.figure + matrix.pussyShape + matrix.pussyHair).forEach { row ->
+            assertTrue(row.channel == null, row.blob)
+            assertFalse(row.selfStated, row.blob)
+            assertTrue(row.comment.isNotEmpty(), row.blob)
+        }
+    }
+
+    @Test
+    fun theGroupsAreOffUntilTheyArePicked() {
+        // The state every profile written before these sections loads in.
+        val rows = matrix.figure + matrix.pussyShape + matrix.pussyHair
+        listOf(PromptMode.Sfw, PromptMode.Nsfw, PromptMode.Sex).forEach { mode ->
+            val lines = PromptGenerator.generate(
+                PromptSpec(mode = mode, exposure = listOf("casual", "covered"), count = 40),
+                matrix,
+                90,
+            )
+            lines.forEach { line ->
+                val tags = tagsOf(line)
+                rows.forEach { row -> row.tags.forEach { tag -> assertFalse(tag in tags, "$mode $tag: $line") } }
+            }
+        }
+    }
+
+    @Test
+    fun aFigureReachesEveryModeOnTheRealMatrix() {
+        val petite = find(matrix.figure, "petite")
+        listOf(PromptMode.Sfw, PromptMode.Nsfw, PromptMode.Sex).forEach { mode ->
+            val lines = PromptGenerator.generate(
+                PromptSpec(
+                    mode = mode,
+                    exposure = listOf("casual", "covered"),
+                    figure = petite.key,
+                    count = 20,
+                ),
+                matrix,
+                92,
+            )
+            lines.forEach { line -> assertTrue("petite" in tagsOf(line), "$mode: $line") }
+        }
+    }
+
+    @Test
+    fun theShapeAndHairWordsRideThePussyDrawsOnly() {
+        val shape = find(matrix.pussyShape, "cleft of venus")
+        val hair = find(matrix.pussyHair, "shaved pussy")
+        val lines = PromptGenerator.generate(
+            PromptSpec(
+                mode = PromptMode.Sex,
+                exposure = listOf("open"),
+                pussyShape = shape.key,
+                pussyHair = hair.key,
+                count = 120,
+            ),
+            matrix,
+            91,
+        )
+        val showing = lines.count { "pussy" in tagsOf(it) }
+        assertTrue(showing in 1 until lines.size, "$showing/${lines.size} draws say pussy")
+        lines.forEach { line ->
+            val tags = tagsOf(line)
+            // Both ways round: no word on a draw that says `anus` alone, and no draw that shows the
+            // organ left without one.
+            assertEquals("pussy" in tags, "cleft of venus" in tags, line)
+            assertEquals("pussy" in tags, "shaved pussy" in tags, line)
+        }
     }
 
     @Test

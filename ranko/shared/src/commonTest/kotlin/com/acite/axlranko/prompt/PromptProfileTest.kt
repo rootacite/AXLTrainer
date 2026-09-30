@@ -29,6 +29,9 @@ private fun fullSpec(): PromptSpec = testSpec(
     ),
     chest = "nipples",
     belly = "navel",
+    figure = listOf("petite"),
+    pussyShape = listOf("labia", "long labia"),
+    pussyHair = listOf("shaved pussy"),
     face = testFace(
         "expression" to FacePick.Tags(listOf("orgasm")),
         "gaze" to FacePick.None,
@@ -105,6 +108,47 @@ class ProfileCodecTest {
         assertFailsWith<ProfileException> { ProfileCodec.loadProfile(text, "bad") }
         assertFailsWith<ProfileException> { ProfileCodec.loadProfile("not json", "bad") }
         assertFailsWith<ProfileException> { ProfileCodec.loadProfile("""{"name": "x"}""", "x") }
+    }
+
+    @Test
+    fun aProfileWithoutTheNewGroupsReadsAsOff() {
+        // What every profile written before the three sections loads in: no pick, no word.
+        val text = ProfileCodec.profileText("old", fullSpec())
+            .replace(Regex("\"(?:figure|pussy_shape|pussy_hair)\": \\[[^\\]]*\\],\\s*"), "")
+        val spec = ProfileCodec.loadProfile(text, "old").spec
+        assertTrue(spec.figure.isEmpty(), spec.figure.toString())
+        assertTrue(spec.pussyShape.isEmpty(), spec.pussyShape.toString())
+        assertTrue(spec.pussyHair.isEmpty(), spec.pussyHair.toString())
+    }
+
+    @Test
+    fun anEmptyPickIsOff() {
+        // The save side writes `[]` for a group with nothing picked, and that has to read back as
+        // off rather than as an error.
+        listOf("figure", "pussy_shape", "pussy_hair").forEach { key ->
+            val text = ProfileCodec.profileText("empty", fullSpec())
+                .replace(Regex("\"$key\": \\[[^\\]]*\\]"), "\"$key\": []")
+            val spec = ProfileCodec.loadProfile(text, "empty").spec
+            val picked = when (key) {
+                "figure" -> spec.figure
+                "pussy_shape" -> spec.pussyShape
+                else -> spec.pussyHair
+            }
+            assertTrue(picked.isEmpty(), "$key: $picked")
+        }
+    }
+
+    @Test
+    fun aPickThatIsNotAListOfTagsIsRejected() {
+        listOf("figure", "pussy_shape", "pussy_hair").forEach { key ->
+            listOf("3", "[\"\"]", "{\"a\": 1}").forEach { bad ->
+                val text = ProfileCodec.profileText("bad", fullSpec())
+                    .replace(Regex("\"$key\": \\[[^\\]]*\\]"), "\"$key\": $bad")
+                assertFailsWith<ProfileException>("$key -> $bad") {
+                    ProfileCodec.loadProfile(text, "bad")
+                }
+            }
+        }
     }
 
     @Test
@@ -285,6 +329,10 @@ class ManifestModelTest {
         assertFalse(rows.contains("family"))
         assertFalse(rows.contains("ratio"))
         assertFalse(rows.contains("stages"))
+        assertFalse(rows.contains("pussy_shape"))
+        assertFalse(rows.contains("pussy_hair"))
+        // The figure row is not sex-only.
+        assertTrue(rows.contains("figure"))
         assertTrue(rows.contains("pose"))
         assertTrue(rows.contains("count"))
     }
@@ -295,6 +343,9 @@ class ManifestModelTest {
         assertTrue(rows.contains("family"))
         assertTrue(rows.contains("ratio"))
         assertTrue(rows.contains("stages"))
+        assertTrue(rows.contains("figure"))
+        assertTrue(rows.contains("pussy_shape"))
+        assertTrue(rows.contains("pussy_hair"))
     }
 
     @Test
@@ -323,6 +374,18 @@ class ManifestModelTest {
         assertEquals("Expression=orgasm", rows["face"])
         assertTrue(rows["stages"]!!.contains("during 0.4"), rows["stages"]!!)
         assertFalse(rows["stages"]!!.contains("object_insertion"), rows["stages"]!!)
+        // A single-pick group shows the row it picked, tags and all.
+        assertEquals("petite", rows["figure"])
+        assertEquals("labia, long labia", rows["pussy_shape"])
+        assertEquals("shaved pussy", rows["pussy_hair"])
+    }
+
+    @Test
+    fun anUnpickedGroupShowsAsOff() {
+        val english = ManifestModel.items(testSpec(), PromptLang.English).associate { it.pageKey to it.value }
+        assertEquals(t(PromptLang.English, "pick_off"), english["figure"])
+        val chinese = ManifestModel.items(testSpec(), PromptLang.Chinese).associate { it.pageKey to it.value }
+        assertEquals(t(PromptLang.Chinese, "pick_off"), chinese["figure"])
     }
 
     @Test
@@ -374,9 +437,12 @@ class WizardNavigationTest {
     }
 
     @Test
-    fun backFromPoseLandsOnStagesInSexMode() {
+    fun backFromPoseLandsOnTheSexBlockInSexMode() {
+        // The sex-only pages sit between the stage weights and the pose, so back walks through them.
         val spec = testSpec(mode = PromptMode.Sex)
-        assertEquals(indexOf("stages"), WizardModel.previousPage(indexOf("pose"), spec))
+        assertEquals(indexOf("pussy_hair"), WizardModel.previousPage(indexOf("pose"), spec))
+        assertEquals(indexOf("pussy_shape"), WizardModel.previousPage(indexOf("pussy_hair"), spec))
+        assertEquals(indexOf("stages"), WizardModel.previousPage(indexOf("pussy_shape"), spec))
     }
 
     @Test

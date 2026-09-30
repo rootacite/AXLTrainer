@@ -65,6 +65,21 @@ standing, topless, nipples, looking at viewer
 # topless
 sitting, panties, looking at viewer
 # panties sit
+FIGURE:
+petite
+# petite
+narrow waist, wide hips, thick thighs
+# hourglass
+PUSSY_SHAPE:
+cleft of venus
+# cleft
+labia, long labia
+# labia
+PUSSY_HAIR:
+pubic hair
+# hair
+shaved pussy
+# shaved
 """
 
 internal fun miniMatrix(): PromptMatrix = parseMatrix(MINI_MATRIX)
@@ -86,6 +101,9 @@ internal fun testSpec(
     stageWeights: Map<SexStage, Double> = defaultStageWeights(),
     chest: String = "auto",
     belly: String = "auto",
+    figure: List<String> = emptyList(),
+    pussyShape: List<String> = emptyList(),
+    pussyHair: List<String> = emptyList(),
     face: Map<String, FacePick> = defaultFace(),
     count: Int = 8,
 ): PromptSpec = PromptSpec(
@@ -104,6 +122,9 @@ internal fun testSpec(
     stageWeights = stageWeights,
     chest = chest,
     belly = belly,
+    figure = figure,
+    pussyShape = pussyShape,
+    pussyHair = pussyHair,
     face = face,
     count = count,
 )
@@ -473,6 +494,138 @@ class ChannelAndAnatomyTest {
         assertFalse(
             PromptGenerator.anatomyTags(pose, PromptChannel.Vaginal, includePenis = false).contains("penis"),
         )
+    }
+}
+
+/**
+ * The three single-pick matrix groups: one row each, or none. A figure is part of the body in any
+ * mode; the two pussy groups are SEX only and ride a prompt that already says `pussy`.
+ */
+class SinglePickGroupTest {
+    private val matrix = miniMatrix()
+
+    private val petite = find(matrix.figure, "petite")
+    private val hourglass = find(matrix.figure, "narrow waist")
+    private val labia = find(matrix.pussyShape, "labia")
+    private val shaved = find(matrix.pussyHair, "shaved")
+
+    @Test
+    fun theThreeSectionsParseIntoTheirOwnPools() {
+        assertEquals(listOf("petite", "narrow waist, wide hips, thick thighs"), matrix.figure.map { it.blob })
+        assertEquals(listOf("cleft of venus", "labia, long labia"), matrix.pussyShape.map { it.blob })
+        assertEquals(listOf("pubic hair", "shaved pussy"), matrix.pussyHair.map { it.blob })
+    }
+
+    @Test
+    fun aFigureRidesEveryMode() {
+        // The figure page is not mode-gated and neither is the word: SFW, NSFW and SEX all write it.
+        listOf(PromptMode.Sfw, PromptMode.Nsfw, PromptMode.Sex).forEach { mode ->
+            val spec = testSpec(
+                mode = mode,
+                exposure = defaultExposure(mode),
+                figure = petite.key,
+                count = 12,
+            )
+            val lines = generatePrompts(spec, matrix, 61)
+            assertEquals(12, lines.size)
+            lines.forEach { line -> assertTrue(tagsOf(line).contains("petite"), "$mode: $line") }
+        }
+    }
+
+    @Test
+    fun aRowBringsAllOfItsTags() {
+        val spec = testSpec(figure = hourglass.key, count = 6)
+        generatePrompts(spec, matrix, 63).forEach { line ->
+            val tags = tagsOf(line)
+            assertTrue(tags.containsAll(hourglass.tags), line)
+            assertFalse(tags.contains("petite"), line)
+        }
+    }
+
+    @Test
+    fun everyGroupOffWritesNoWordOfIt() {
+        // The state every profile written before these sections loads in: no row of any of the three
+        // may reach a prompt by itself.
+        val rows = matrix.figure + matrix.pussyShape + matrix.pussyHair
+        listOf(PromptMode.Sfw, PromptMode.Nsfw, PromptMode.Sex).forEach { mode ->
+            val blob = generatePrompts(
+                testSpec(mode = mode, exposure = defaultExposure(mode), count = 20),
+                matrix,
+                62,
+            ).joinToString("\n")
+            rows.forEach { row ->
+                row.tags.forEach { tag -> assertFalse(blob.contains(tag), "$mode $tag") }
+            }
+        }
+    }
+
+    @Test
+    fun aShapeWordRidesOnlyAPussyDraw() {
+        // The vaginal channel writes `pussy`; an anal draw writes `anus` instead (unless the pose
+        // spreads, which puts `pussy` back). The word follows that, nothing else.
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            pussyShape = labia.key,
+            count = 24,
+        )
+        val lines = generatePrompts(spec, matrix, 64)
+        assertTrue(lines.any { tagsOf(it).contains("pussy") }, lines.toString())
+        lines.forEach { line ->
+            val tags = tagsOf(line)
+            assertEquals(tags.contains("pussy"), tags.contains("labia"), line)
+        }
+    }
+
+    @Test
+    fun anAnalDrawNeverGetsThePussyWords() {
+        val nelson = find(matrix.poses, "full nelson")
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            poseAny = false,
+            poseKeys = setOf(nelson.key),
+            pussyShape = labia.key,
+            pussyHair = shaved.key,
+            count = 8,
+        )
+        generatePrompts(spec, matrix, 65).forEach { line ->
+            val tags = tagsOf(line)
+            assertTrue(tags.contains("anus"), line)
+            assertFalse(tags.contains("labia"), line)
+            assertFalse(tags.contains("shaved pussy"), line)
+        }
+    }
+
+    @Test
+    fun aNonSexDrawNeverGetsThem() {
+        // A profile can carry the picks and be switched to another mode; the generator is what keeps
+        // the SEX-only words out of those prompts.
+        listOf(PromptMode.Sfw, PromptMode.Nsfw).forEach { mode ->
+            val blob = generatePrompts(
+                testSpec(
+                    mode = mode,
+                    exposure = defaultExposure(mode),
+                    pussyShape = labia.key,
+                    pussyHair = find(matrix.pussyHair, "pubic hair").key,
+                    count = 16,
+                ),
+                matrix,
+                66,
+            ).joinToString("\n")
+            assertFalse(blob.contains("labia"), "$mode: $blob")
+            assertFalse(blob.contains("pubic hair"), "$mode: $blob")
+        }
+    }
+
+    @Test
+    fun switchingModeClearsTheSexOnlyPicks() {
+        val spec = testSpec(mode = PromptMode.Sex, pussyShape = labia.key, pussyHair = shaved.key, figure = petite.key)
+        WizardModel.applyModeChange(spec, PromptMode.Nsfw)
+        assertTrue(spec.pussyShape.isEmpty())
+        assertTrue(spec.pussyHair.isEmpty())
+        // The figure is not mode-specific, so the reset leaves it alone.
+        assertEquals(petite.key, spec.figure)
     }
 }
 
@@ -922,6 +1075,28 @@ class NoneChannelAndObjectStageTest {
             assertFalse(tags.contains("pussy"), line)
             assertFalse(tags.contains("anus"), line)
             assertFalse(tags.contains("imminent vaginal"), line)
+        }
+    }
+
+    @Test
+    fun aNoneChannelDrawGetsNoPussyWords() {
+        // The rule reads the line, not the mode: no `pussy` among the anatomy tags means neither the
+        // shape nor the hair word rides this draw.
+        val oral = find(matrix.poses, "oral, fellatio")
+        val spec = testSpec(
+            mode = PromptMode.Sex,
+            exposure = listOf("open"),
+            poseAny = false,
+            poseKeys = setOf(oral.key),
+            pussyShape = find(matrix.pussyShape, "labia").key,
+            pussyHair = find(matrix.pussyHair, "shaved pussy").key,
+            count = 6,
+        )
+        generatePrompts(spec, matrix, 67).forEach { line ->
+            val tags = tagsOf(line)
+            assertFalse(tags.contains("pussy"), line)
+            assertFalse(tags.contains("labia"), line)
+            assertFalse(tags.contains("shaved pussy"), line)
         }
     }
 

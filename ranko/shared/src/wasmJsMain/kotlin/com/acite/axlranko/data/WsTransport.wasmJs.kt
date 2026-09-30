@@ -97,6 +97,8 @@ internal actual fun spawnHelperIfNeeded(host: String, port: Int) {
 internal actual fun stopSpawnedHelper() {
 }
 
+internal actual val clientName: String = "axlranko-web"
+
 actual val showsHelperEndpointSettings: Boolean = true
 actual val wallpaperImagesSupported: Boolean = true
 actual val imageBackgroundUsesHaze: Boolean = false

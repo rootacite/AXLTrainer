@@ -5,6 +5,7 @@ import com.acite.axlranko.model.RunSummary
 import com.acite.axlranko.model.TrainSettings
 import com.acite.axlranko.model.TrainStatus
 import com.acite.axlranko.pages.components.nextRunSummary
+import com.acite.axlranko.pages.components.pendingSettingsLabel
 import com.acite.axlranko.pages.components.settingsSummary
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -56,6 +57,53 @@ class TrainSettingsRulesTest {
         assertEquals(
             "Checkpoints off · sampling on",
             settingsSummary(TrainSettings(saveEveryNSteps = 0, nextSaveStep = 0, samplingEnabled = true)),
+        )
+    }
+
+    @Test
+    fun aPendingRequestNamesOnlyWhatChangedAndWhenItLands() {
+        val effective = TrainSettings(saveEveryNSteps = 50, nextSaveStep = 3350, samplingEnabled = true)
+        // The switch alone, flipped while a sample pass is running: the pass finishes first.
+        assertEquals(
+            "Pending (applies from the next sample pass) · sampling off",
+            pendingSettingsLabel("sampling", effective, effective.copy(samplingEnabled = false)),
+        )
+        // During training the next optimizer step adopts it.
+        assertEquals(
+            "Pending (applies at the next step) · sampling off",
+            pendingSettingsLabel("training", effective, effective.copy(samplingEnabled = false)),
+        )
+        // A paused run adopts it when it resumes.
+        assertEquals(
+            "Pending (applies when the run resumes) · save every 100 steps",
+            pendingSettingsLabel("paused", effective, effective.copy(saveEveryNSteps = 100)),
+        )
+        // Both at once, one of them turning checkpoints off.
+        assertEquals(
+            "Pending (applies at the next step) · no checkpoints · sampling off",
+            pendingSettingsLabel(
+                "training",
+                effective,
+                effective.copy(saveEveryNSteps = 0, samplingEnabled = false),
+            ),
+        )
+        // A request that matches what is running draws nothing.
+        assertEquals("", pendingSettingsLabel("training", effective, effective))
+    }
+
+    @Test
+    fun aStatusNeverReportsARequestItHasAdopted() {
+        // What the wire does: `requested` is null unless the file asks for something else.
+        assertNull(TrainStatus(status = "training", alive = true, pid = 4242).requested)
+        assertEquals(
+            TrainSettings(saveEveryNSteps = 50, samplingEnabled = false),
+            TrainStatus(
+                status = "sampling",
+                alive = true,
+                pid = 4242,
+                settings = TrainSettings(saveEveryNSteps = 50, nextSaveStep = 3350, samplingEnabled = true),
+                requested = TrainSettings(saveEveryNSteps = 50, samplingEnabled = false),
+            ).requested,
         )
     }
 

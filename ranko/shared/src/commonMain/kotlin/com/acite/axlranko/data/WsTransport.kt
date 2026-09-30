@@ -17,6 +17,9 @@ internal expect fun spawnHelperIfNeeded(host: String, port: Int)
 internal expect fun helperListening(host: String, port: Int): Boolean
 internal expect fun stopSpawnedHelper()
 
+/** What this client calls itself when it takes the helper (`hello`); shown in a refusal. */
+internal expect val clientName: String
+
 expect val showsHelperEndpointSettings: Boolean
 expect val wallpaperImagesSupported: Boolean
 expect val imageBackgroundUsesHaze: Boolean

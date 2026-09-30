@@ -1,5 +1,6 @@
 package com.acite.axlranko.pages
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -42,6 +43,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
@@ -55,13 +57,16 @@ import coil3.compose.AsyncImage
 import com.acite.axlranko.data.ConfigProfile
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
+import com.acite.axlranko.model.DEFAULT_TAGGER_CATEGORY
 import com.acite.axlranko.model.ModelSpecCatalog
 import com.acite.axlranko.model.OUTPUT_NAME_HINT
 import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
 import com.acite.axlranko.model.SampleSetForm
+import com.acite.axlranko.model.TaggerMark
 import com.acite.axlranko.model.TRAIN_DATA_ERROR_PREFIX
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.model.taggerThresholdMarks
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.pages.components.DatasetDirBar
@@ -777,6 +782,9 @@ private fun AutoTagCard(
     val dirs = uiState.form.trainDataDirs
     val selectedDir = uiState.datasetDirIndex.coerceIn(0, dirs.lastIndex.coerceAtLeast(0))
     val targetPath = dirs.getOrNull(selectedDir)?.path?.trim().orEmpty()
+    // Once per session: the categories and their calibrated thresholds come from the model, and
+    // the question is answered locally (no GPU, no network).
+    LaunchedEffect(Unit) { viewModel.loadTaggerInfo() }
     PorcelainCard {
         Column(
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -787,8 +795,8 @@ private fun AutoTagCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Runs the WD ONNX tagger on GPU (MIGraphX) and overwrites every sidecar .txt " +
-                    "in the selected dataset folder. Images and Statistics reload when it finishes.",
+                text = "Runs the Pixai tagger v1 (PyTorch, ROCm GPU) over the selected dataset folder " +
+                    "and overwrites every sidecar .txt. Images and Statistics reload when it finishes.",
                 style = MaterialTheme.typography.bodySmall,
                 color = rankoColors.textDim
             )
@@ -797,6 +805,38 @@ private fun AutoTagCard(
                 selected = selectedDir,
                 onSelect = viewModel::selectDatasetDir,
             )
+            Text(
+                text = "Categories",
+                style = MaterialTheme.typography.labelLarge
+            )
+            val taggerInfo = uiState.taggerInfo
+            val taggerCategories = taggerInfo?.categories.orEmpty().filter { it.key.isNotBlank() }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                maxItemsInEachRow = 3,
+            ) {
+                if (taggerCategories.isEmpty()) {
+                    // Without the model's own list the card still has to be runnable: the tagger
+                    // writes `general` by itself, and the reason line below says why that is all.
+                    CapsuleChoice(text = DEFAULT_TAGGER_CATEGORY, selected = true, onClick = {})
+                } else {
+                    taggerCategories.forEach { category ->
+                        CapsuleChoice(
+                            text = category.key,
+                            selected = category.key in uiState.tagCategories,
+                            onClick = { viewModel.toggleTagCategory(category.key) },
+                        )
+                    }
+                }
+            }
+            if (taggerInfo != null && !taggerInfo.available) {
+                StatusBanner(
+                    message = taggerInfo.reason.ifBlank { "The tagger model is not in the local cache." },
+                    isError = true,
+                )
+            }
             Text(
                 text = "Confidence  ${formatFixed(thresholdValue, 2)}",
                 style = MaterialTheme.typography.labelLarge
@@ -807,6 +847,10 @@ private fun AutoTagCard(
                 valueRange = 0f..1f,
                 steps = 19,
                 enabled = !uiState.isTagging
+            )
+            TaggerCalibrationRow(
+                marks = taggerThresholdMarks(uiState.tagCategories, taggerCategories, thresholdValue),
+                slider = thresholdValue,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -845,6 +889,45 @@ private fun AutoTagCard(
             }
         }
     }
+}
+
+/**
+ * The model's own calibrated thresholds, under the slider that sits on top of them. A tick the
+ * slider has passed is the one the slider has taken over, so it is drawn in the accent colour and
+ * spelled out as `general 0.17 → 0.35`.
+ */
+@Composable
+private fun TaggerCalibrationRow(marks: List<TaggerMark>, slider: Float) {
+    if (marks.isEmpty()) return
+    val colors = rankoColors
+    Box(modifier = Modifier.fillMaxWidth().height(12.dp)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val baseline = colors.textDim.copy(alpha = 0.30f)
+            drawLine(
+                color = baseline,
+                start = Offset(0f, size.height),
+                end = Offset(size.width, size.height),
+                strokeWidth = 1f,
+            )
+            marks.forEach { mark ->
+                val x = mark.calibrated.coerceIn(0f, 1f) * size.width
+                drawLine(
+                    color = if (mark.overridden) colors.accentPink else colors.textDim.copy(alpha = 0.65f),
+                    start = Offset(x, 0f),
+                    end = Offset(x, size.height),
+                    strokeWidth = if (mark.overridden) 1.5f else 2f,
+                )
+            }
+        }
+    }
+    Text(
+        text = "Calibrated: " + marks.joinToString("  ·  ") { mark ->
+            val value = formatFixed(mark.calibrated, 2)
+            if (mark.overridden) "${mark.key} $value → ${formatFixed(slider, 2)}" else "${mark.key} $value"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = rankoColors.textDim,
+    )
 }
 
 @Composable
@@ -961,7 +1044,7 @@ private fun TrainingFields(
             label = "Min SNR gamma",
             value = form.minSnrGamma,
             error = errors["min_snr_gamma"],
-            supporting = "5.0 is a common SDXL starting point",
+            supporting = "epsilon bases only · 0 = off · 5.0 is a common SDXL starting point",
             onValueChange = { viewModel.updateForm { copy(minSnrGamma = it) } },
             modifier = Modifier.weight(1f)
         )

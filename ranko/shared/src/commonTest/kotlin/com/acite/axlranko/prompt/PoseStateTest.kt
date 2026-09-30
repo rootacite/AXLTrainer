@@ -38,6 +38,12 @@ class PoseStateTest {
         standing, from behind, panties, ass
         standing, from behind, no panties, ass, skirt
         from side, sitting, bra, looking at viewer
+        FIGURE:
+        petite
+        PUSSY_SHAPE:
+        labia
+        PUSSY_HAIR:
+        shaved pussy
         """.trimIndent(),
     )
 

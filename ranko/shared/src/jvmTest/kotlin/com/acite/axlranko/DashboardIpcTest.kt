@@ -9,6 +9,7 @@ import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
+import com.acite.axlranko.model.TaggerInfoResult
 import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,9 +17,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 class DashboardIpcTest {
     private val json = Json {
@@ -141,6 +145,24 @@ class DashboardIpcTest {
         assertEquals(0, bare.settings.saveEveryNSteps)
         assertTrue(bare.settings.samplingEnabled)
         assertEquals(0, bare.settings.nextSaveStep)
+        assertNull(bare.requested)
+    }
+
+    @Test
+    fun trainStatusParsesTheOutstandingRequest() {
+        // What `train_settings` answers with while a sample pass is still running: the effective
+        // values as published, plus the change that has been accepted and not adopted yet.
+        val raw = """
+            {
+              "status": "sampling",
+              "settings": { "save_every_n_steps": 50, "sampling_enabled": true, "next_save_step": 3350 },
+              "requested": { "save_every_n_steps": 50, "sampling_enabled": false }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(TrainStatus.serializer(), raw)
+        assertTrue(parsed.settings.samplingEnabled)
+        assertEquals(50, parsed.requested?.saveEveryNSteps)
+        assertFalse(parsed.requested?.samplingEnabled ?: true)
     }
 
     @Test
@@ -510,8 +532,12 @@ class DashboardIpcTest {
         val raw = """
             {
               "directory": "/tmp/alice",
+              "engine": "pixai-tagger-v1.0",
+              "categories": ["general", "rating"],
               "threshold": 0.35,
-              "provider": "MIGraphXExecutionProvider",
+              "thresholds": {"general": 0.35},
+              "provider": "pixai-tagger-v1.0 on cuda:0",
+              "device": "cuda:0",
               "total": 4,
               "processed": 4,
               "failed": 0,
@@ -522,10 +548,60 @@ class DashboardIpcTest {
         val parsed = json.decodeFromString(DatasetTagResult.serializer(), raw)
         assertEquals("/tmp/alice", parsed.directory)
         assertEquals(0.35f, parsed.threshold)
-        assertEquals("MIGraphXExecutionProvider", parsed.provider)
+        assertEquals("pixai-tagger-v1.0 on cuda:0", parsed.provider)
+        assertEquals("pixai-tagger-v1.0", parsed.engine)
+        assertEquals("cuda:0", parsed.device)
+        assertEquals(listOf("general", "rating"), parsed.categories)
         assertEquals(4, parsed.processed)
         assertEquals(0, parsed.failed)
         assertEquals(1.25f, parsed.seconds)
+    }
+
+    @Test
+    fun anOlderDatasetTagReplyStillParses() {
+        // The reply before the tagger grew categories and an engine name carried neither field.
+        val raw = """{"directory": "/tmp/alice", "processed": 2, "total": 2}"""
+        val parsed = json.decodeFromString(DatasetTagResult.serializer(), raw)
+        assertEquals("", parsed.engine)
+        assertEquals("", parsed.device)
+        assertEquals(emptyList(), parsed.categories)
+        assertEquals(2, parsed.processed)
+    }
+
+    @Test
+    fun taggerInfoParses() {
+        val raw = """
+            {
+              "available": true,
+              "engine": "pixai-tagger-v1.0",
+              "model": "pixai-labs/pixai-tagger-v1.0",
+              "model_path": "/cache/snapshots/9fe10ad",
+              "cache_dir": "/repo/tagger2/miopen_cache",
+              "categories": [
+                {"key": "general", "count": 15043, "calibrated": 0.17},
+                {"key": "rating", "count": 4, "calibrated": 0.41}
+              ],
+              "default_categories": ["general"],
+              "reason": ""
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(TaggerInfoResult.serializer(), raw)
+        assertTrue(parsed.available)
+        assertEquals("pixai-tagger-v1.0", parsed.engine)
+        assertEquals("/repo/tagger2/miopen_cache", parsed.cacheDir)
+        assertEquals(listOf("general"), parsed.defaultCategories)
+        assertEquals(2, parsed.categories.size)
+        assertEquals(0.17f, parsed.categories[0].calibrated)
+        assertEquals(15043, parsed.categories[0].count)
+    }
+
+    @Test
+    fun anUnavailableTaggerInfoParses() {
+        val raw = """{"available": false, "reason": "no model", "categories": []}"""
+        val parsed = json.decodeFromString(TaggerInfoResult.serializer(), raw)
+        assertFalse(parsed.available)
+        assertEquals("no model", parsed.reason)
+        assertEquals(emptyList(), parsed.categories)
     }
 
     @Test
@@ -544,6 +620,25 @@ class DashboardIpcTest {
         val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
         assertEquals("dataset_tag", decoded.method)
         assertEquals("/tmp/alice", decoded.params["directory"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun datasetTagRequestCarriesTheCategories() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 12,
+                method = "dataset_tag",
+                params = buildJsonObject {
+                    put("directory", "/tmp/alice")
+                    put("threshold", 0.4)
+                    putJsonArray("categories") { listOf("general", "rating").forEach { add(JsonPrimitive(it)) } }
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        val categories = decoded.params["categories"] as JsonArray
+        assertEquals(listOf("general", "rating"), categories.map { it.jsonPrimitive.content })
     }
 
     @Test

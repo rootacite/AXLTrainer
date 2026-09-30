@@ -168,13 +168,36 @@ data class DatasetTagError(
 @Serializable
 data class DatasetTagResult(
     val directory: String = "",
+    val engine: String = "",
+    val categories: List<String> = emptyList(),
     val threshold: Float = 0.35f,
     val provider: String = "",
+    val device: String = "",
     val total: Int = 0,
     val processed: Int = 0,
     val failed: Int = 0,
     val seconds: Float = 0f,
     val errors: List<DatasetTagError> = emptyList(),
+)
+
+/** One of the tagger's categories, as the model declares it (`tagger_info`). */
+@Serializable
+data class TaggerCategoryInfo(
+    val key: String = "",
+    val count: Int = 0,
+    val calibrated: Float = 0f,
+)
+
+@Serializable
+data class TaggerInfoResult(
+    val available: Boolean = false,
+    val engine: String = "",
+    val model: String = "",
+    @SerialName("model_path") val modelPath: String = "",
+    @SerialName("cache_dir") val cacheDir: String = "",
+    val categories: List<TaggerCategoryInfo> = emptyList(),
+    @SerialName("default_categories") val defaultCategories: List<String> = emptyList(),
+    val reason: String = "",
 )
 
 @Serializable
@@ -226,7 +249,6 @@ data class TrainSettings(
     @SerialName("sampling_enabled") val samplingEnabled: Boolean = true,
     @SerialName("next_save_step") val nextSaveStep: Int = 0,
 )
-
 @Serializable
 data class TrainResume(
     val path: String = "",
@@ -313,6 +335,13 @@ data class TrainStatus(
     val training: TrainTrainingProgress = TrainTrainingProgress(),
     val sampling: TrainSampling = TrainSampling(),
     val settings: TrainSettings = TrainSettings(),
+    /**
+     * A cadence / sampling-switch change the run has been asked for but has not adopted yet
+     * (`train_settings`' request in `settings.json`). The trainer reads it once per optimizer
+     * step, so a switch flipped during a sample pass stays pending until that pass ends; the
+     * card shows the requested value and says when it lands. Null = nothing outstanding.
+     */
+    val requested: TrainSettings? = null,
     val swap: TrainSwap? = null,
     val error: String? = null,
     val detail: String? = null,

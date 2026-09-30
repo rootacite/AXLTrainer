@@ -353,7 +353,7 @@ class TrainConfig:
     # file; a checkpoint stripped of its markers cannot be detected.
     prediction_type: str = ""
     zero_terminal_snr: bool = False
-    min_snr_gamma: float = get_val("min_snr_gamma", 5.0)
+    min_snr_gamma: float = get_val("min_snr_gamma", 0.0)
 
     # Core Hyperparameters
     seed: int = get_val("seed", 1145141919)
@@ -458,6 +458,11 @@ class TrainConfig:
         )
         self.prediction_type = "v_prediction" if v_prediction else "epsilon"
         self.zero_terminal_snr = zero_terminal_snr
+        # Min-SNR weighting is written against a noise target (kohya's `apply_snr_weight` divides
+        # by `snr` for epsilon and by `snr + 1` for a velocity target), so a v-prediction base
+        # silently reads 0 here whatever the file says - the third value derived in this place.
+        if self.prediction_type != "epsilon":
+            self.min_snr_gamma = 0.0
         # Every artifact path is built from the name, so a hand-edited config with a space
         # or a slash in it fails here — at startup, before the GPU is touched.
         output_name_error = validate_output_name(self.output_name)

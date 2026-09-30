@@ -360,6 +360,16 @@ class AutomationScreenViewModel(
 
     fun setBelly(level: String) = edit { it.belly = level }
 
+    /**
+     * The three single-pick groups store the chosen row's tags, and an empty list is "off"; the
+     * page's clear-click hands that in as an empty list, so this is an assignment, not a toggle.
+     */
+    fun setFigure(key: List<String>) = edit { it.figure = key.toList() }
+
+    fun setPussyShape(key: List<String>) = edit { it.pussyShape = key.toList() }
+
+    fun setPussyHair(key: List<String>) = edit { it.pussyHair = key.toList() }
+
     fun setFaceGroup(groupId: String, pick: FacePick) = edit { spec -> spec.face = spec.face + (groupId to pick) }
 
     fun toggleFaceTag(groupId: String, tag: String) = edit { spec ->

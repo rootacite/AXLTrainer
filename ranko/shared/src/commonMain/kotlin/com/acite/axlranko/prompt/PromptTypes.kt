@@ -266,8 +266,17 @@ val POSE_BOTTOM_WORDS: List<String> = listOf(
 /** A chest that hangs rather than faces the camera, so [PromptGenerator.stateFill] names its shape. */
 val CHEST_HANGING_MARKERS: List<String> = listOf("all fours", "bent over", "on stomach")
 
-val SECTION_NAMES: Set<String> =
-    setOf("POSES", "CLOTHING", "SCENE", "SUFFIX", "SFW_POSES", "QUESTIONABLE_POSES")
+val SECTION_NAMES: Set<String> = setOf(
+    "POSES",
+    "CLOTHING",
+    "SCENE",
+    "SUFFIX",
+    "SFW_POSES",
+    "QUESTIONABLE_POSES",
+    "FIGURE",
+    "PUSSY_SHAPE",
+    "PUSSY_HAIR",
+)
 val CLOTHING_GROUP_RE = Regex("^\\[(covered|casual|revealing)]\$")
 val CHANNEL_RE = Regex("^(.+?)\\s*:\\s*(both|anal only|vaginal only|none)\\s*\$")
 

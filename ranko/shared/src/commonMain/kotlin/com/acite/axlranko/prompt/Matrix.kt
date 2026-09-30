@@ -24,12 +24,16 @@ class PromptMatrix(
     val suffixes: List<MatrixEntry>,
     val sfwPoses: List<MatrixEntry>,
     val questionablePoses: List<MatrixEntry>,
+    /** The single-pick groups: one row of each is chosen, or none. See [PromptSpec.figure]. */
+    val figure: List<MatrixEntry>,
+    val pussyShape: List<MatrixEntry>,
+    val pussyHair: List<MatrixEntry>,
 )
 
 fun splitTags(text: String): List<String> =
     text.split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
-/** Parse repo-root `input_matrix.txt` into its five sections. Ported from `parse_matrix`. */
+/** Parse repo-root `input_matrix.txt` into its sections. Ported from `parse_matrix`. */
 fun parseMatrix(text: String): PromptMatrix {
     val buckets = linkedMapOf(
         "POSES" to mutableListOf<MatrixEntry>(),
@@ -38,6 +42,9 @@ fun parseMatrix(text: String): PromptMatrix {
         "SUFFIX" to mutableListOf<MatrixEntry>(),
         "SFW_POSES" to mutableListOf<MatrixEntry>(),
         "QUESTIONABLE_POSES" to mutableListOf<MatrixEntry>(),
+        "FIGURE" to mutableListOf<MatrixEntry>(),
+        "PUSSY_SHAPE" to mutableListOf<MatrixEntry>(),
+        "PUSSY_HAIR" to mutableListOf<MatrixEntry>(),
     )
     var section: String? = null
     var group: String? = null
@@ -127,6 +134,9 @@ fun parseMatrix(text: String): PromptMatrix {
         suffixes = buckets.getValue("SUFFIX").toList(),
         sfwPoses = buckets.getValue("SFW_POSES").toList(),
         questionablePoses = buckets.getValue("QUESTIONABLE_POSES").toList(),
+        figure = buckets.getValue("FIGURE").toList(),
+        pussyShape = buckets.getValue("PUSSY_SHAPE").toList(),
+        pussyHair = buckets.getValue("PUSSY_HAIR").toList(),
     )
 }
 

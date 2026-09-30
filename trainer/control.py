@@ -543,12 +543,28 @@ def request_settings(
     *,
     save_every_n_steps: Optional[int] = None,
     sampling_enabled: Optional[bool] = None,
+    baseline: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Record what the trainer should run with (api.py side). Unset fields keep their value."""
+    """Record what the trainer should run with (api.py side). Unset fields keep their value.
+
+    "Their value" is the file's, which api.py keeps complete: a field the request does not name is
+    read back from `settings.json`. A field *the file* does not carry — no file at all, because the
+    run was started by hand with `bash start_train.sh` or the runtime dir was wiped — falls back to
+    `baseline`, the settings the run is actually using. Without it a lone switch flip on such a run
+    would also write the default cadence `0`, i.e. silently turn checkpoints off.
+    """
     payload: dict[str, Any] = {}
     current = _read_settings_file()
     if isinstance(current, dict):
         payload.update(current)
+    fallback = baseline if isinstance(baseline, dict) else {}
+    if "save_every_n_steps" not in payload and fallback.get("save_every_n_steps") is not None:
+        try:
+            payload["save_every_n_steps"] = max(0, int(fallback["save_every_n_steps"]))
+        except (TypeError, ValueError):
+            pass
+    if "sampling_enabled" not in payload and fallback.get("sampling_enabled") is not None:
+        payload["sampling_enabled"] = bool(fallback["sampling_enabled"])
     if save_every_n_steps is not None:
         payload["save_every_n_steps"] = max(0, int(save_every_n_steps))
     if sampling_enabled is not None:

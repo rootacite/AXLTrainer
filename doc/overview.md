@@ -10,7 +10,7 @@ AXLTrainer is a complete, local-first pipeline for training **SDXL LoRA** models
 - a **desktop dashboard** (`ranko/`, Kotlin/Compose Multiplatform) that manages the dataset, edits `config.toml`, and controls training from a GUI,
 - a **JSON-RPC helper** (`api.py`) that bridges the two over a loopback WebSocket,
 - a **read-only web viewer** (`ui.py`, Streamlit),
-- and a set of **dataset utility scripts** (`tools/`, `tagger/`).
+- and a set of **dataset utility scripts** (`tools/`, `tagger/`, `tagger2/`).
 
 There is no HTTP server and no inference/generation service — `api.py` is a local helper, and training runs on your machine.
 
@@ -78,7 +78,8 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 │   ├── shared/                # UI, viewmodels, IPC client, config editing
 │   └── tools/agent.py         # machine-friendly dataset CLI (for scripts/agents)
 ├── tools/                     # dataset utility scripts (see doc/dataset-tools.md)
-├── tagger/                    # ONNX caption generator (WD-tagger style)
+├── tagger/                    # ONNX caption generator (WD14, legacy; its selected_tags.csv feeds the Chinese tag names)
+├── tagger2/                   # Pixai tagger v1 caption generator (the one Ranko runs)
 └── archive/                   # sealed research bundles (encrypted); 涉及负责任披露流程，暂不公开
 ```
 

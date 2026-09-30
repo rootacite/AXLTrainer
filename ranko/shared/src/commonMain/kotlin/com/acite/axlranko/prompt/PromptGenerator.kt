@@ -583,6 +583,9 @@ object PromptGenerator {
             extra.add("nude")
         }
         extra.addAll(torso)
+        // The figure pick is a body axis like the chest and belly tags above, and it is not
+        // mode-specific: SFW, NSFW and SEX all write it.
+        extra.addAll(spec.figure)
         extra.addAll(face)
         extra.addAll(pose.tags)
         if (resolvedStage != null) {
@@ -592,6 +595,13 @@ object PromptGenerator {
                 extra.add(channelTag(hole))
             }
             extra.addAll(anatomyTags(pose, hole, includePenis = resolvedStage in STAGES_WITH_PARTNER))
+            // The pussy shape and hair words describe an organ the line has to be showing, so they
+            // ride a draw that already says `pussy` — the vaginal channel, or a spread pose. An anal
+            // draw names `anus` instead and gets none of them. SEX only, like their wizard pages.
+            if (spec.mode == PromptMode.Sex && extra.contains("pussy")) {
+                extra.addAll(spec.pussyShape)
+                extra.addAll(spec.pussyHair)
+            }
             extra.addAll(stageTags(resolvedStage, hole))
         }
         extra.addAll(scene.tags)

@@ -390,6 +390,222 @@ class RunScopedIpcTest(unittest.TestCase):
         self.assertTrue((self.logs / "rein").exists())
 
 
+class RequestedSettingsIpcTest(unittest.TestCase):
+    """`requested`: the change a live run has been asked for but has not adopted yet.
+
+    The trainer reads `settings.json` once per optimizer step, so a switch flipped during a sample
+    pass stays a request for a while; the reply has to say so instead of repeating the effective
+    values and leaving the dashboard to wait for the trainer.
+    """
+
+    EFFECTIVE = {"save_every_n_steps": 50, "sampling_enabled": True, "next_save_step": 3350}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+        self.control = control
+
+        self.cfg = {
+            "output_dir": str(Path(self.tmp.name) / "out"),
+            "logging_dir": str(Path(self.tmp.name) / "logs"),
+            "output_name": "rein",
+        }
+        self._orig_config = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+
+    def tearDown(self):
+        api._train_config_dict = self._orig_config
+        self.control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _live_run(self, status: str = "training", pid: int | None = None) -> None:
+        self.control.write_state(
+            {
+                "pid": os.getpid() if pid is None else pid,
+                "status": status,
+                "output_name": "rein",
+                "run_id": "rein_20260911_120000",
+                "settings": dict(self.EFFECTIVE),
+            },
+            force=True,
+        )
+        # `train_start` seeds the request file from `config.toml`, so a live run always holds both
+        # keys: a later request merges onto that file rather than writing a fresh one.
+        self.control.request_settings(
+            save_every_n_steps=self.EFFECTIVE["save_every_n_steps"],
+            sampling_enabled=self.EFFECTIVE["sampling_enabled"],
+        )
+
+    def test_a_request_that_differs_is_reported_by_both_replies(self):
+        self._live_run()
+        result = api.handle_train_settings({"sampling_enabled": False})
+        self.assertEqual(result["requested"], {"save_every_n_steps": 50, "sampling_enabled": False})
+        # The effective values are untouched: the run is still sampling until the trainer adopts.
+        self.assertEqual(result["settings"], self.EFFECTIVE)
+        self.assertEqual(api.handle_train_status({})["requested"], result["requested"])
+
+    def test_a_request_equal_to_the_effective_values_is_not_reported(self):
+        self._live_run()
+        api.handle_train_settings({"save_every_n_steps": 50, "sampling_enabled": True})
+        self.assertIsNone(api.handle_train_status({})["requested"])
+
+    def test_a_paused_run_reports_what_it_will_adopt_on_resume(self):
+        self._live_run(status="paused")
+        api.handle_train_settings({"save_every_n_steps": 100})
+        self.assertEqual(
+            api.handle_train_status({})["requested"],
+            {"save_every_n_steps": 100, "sampling_enabled": True},
+        )
+
+    def test_a_request_with_no_file_keeps_the_running_cadence(self):
+        """A hand-started run has no `settings.json`: flipping the switch must not zero the cadence.
+
+        `bash start_train.sh` (or a wiped runtime dir) leaves no request file, and the merge used to
+        fill it from the defaults — `save_every_n_steps = 0` means "write no checkpoints", so asking
+        for the switch off would also have stopped the checkpoints it never mentioned.
+        """
+        self._live_run()
+        self.control.settings_path().unlink()
+        result = api.handle_train_settings({"sampling_enabled": False})
+        self.assertEqual(
+            result["requested"],
+            {"save_every_n_steps": self.EFFECTIVE["save_every_n_steps"], "sampling_enabled": False},
+        )
+        self.assertEqual(self.control.read_settings(), result["requested"])
+
+    def test_no_live_process_means_nothing_to_report(self):
+        self._live_run()
+        api.handle_train_settings({"sampling_enabled": False})
+        self.assertIsNotNone(api.handle_train_status({})["requested"])
+
+        # The request file survives the run; the report must not: nobody is left to adopt it.
+        self.control.write_state({"pid": None, "status": "idle"}, force=True)
+        self.assertIsNone(api.handle_train_status({})["requested"])
+
+    def test_reset_clears_the_request(self):
+        self._live_run(status="finished")
+        api.handle_train_settings({"sampling_enabled": False})
+        result = api.handle_train_reset({})
+        self.assertIsNone(result["requested"])
+        self.assertIsNone(self.control.read_settings())
+
+    def test_no_request_file_reports_nothing(self):
+        """The request channel *is* `settings.json`: no file, nothing asked for."""
+        self._live_run()
+        self.control.settings_path().unlink()
+        self.assertIsNone(api.handle_train_status({})["requested"])
+
+
+class TensorboardCacheTest(unittest.TestCase):
+    """`dashboard` asks for the whole history every poll; the reader must not re-read all of it.
+
+    A fresh `EventAccumulator(...).Reload()` per call costs 343 ms at 24 k points and grows with the
+    run, so the reader is kept per run directory and reloaded in place.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log_dir = Path(self.tmp.name) / "logs" / "rein_20260911_120000"
+        self.log_dir.mkdir(parents=True)
+        api.reset_tensorboard_cache()
+
+        from torch.utils.tensorboard import SummaryWriter
+
+        self.writer = SummaryWriter(log_dir=str(self.log_dir))
+
+    def tearDown(self):
+        self.writer.close()
+        api.reset_tensorboard_cache()
+        self.tmp.cleanup()
+
+    def _steps(self, count: int, start: int = 0) -> None:
+        for step in range(start, start + count):
+            self.writer.add_scalar("Train/Loss", 1.0 / (step + 1), step)
+        self.writer.flush()
+
+    def test_a_second_read_reuses_the_reader_and_sees_new_steps(self):
+        self._steps(3)
+        first = api._get_tensorboard_metrics(str(self.log_dir))
+        self.assertEqual([0, 1, 2], [point["step"] for point in first["Train/Loss"]])
+        self.assertEqual({"entries": 1, "builds": 1}, api.tensorboard_cache_stats())
+
+        self._steps(2, start=3)
+        second = api._get_tensorboard_metrics(str(self.log_dir))
+        self.assertEqual([0, 1, 2, 3, 4], [point["step"] for point in second["Train/Loss"]])
+        self.assertEqual(1, api.tensorboard_cache_stats()["builds"], "the reader was rebuilt")
+
+    def test_a_second_read_of_the_same_history_is_still_the_same_history(self):
+        self._steps(4)
+        first = api._get_tensorboard_metrics(str(self.log_dir))
+        second = api._get_tensorboard_metrics(str(self.log_dir))
+        self.assertEqual(first, second)
+        self.assertEqual(1, api.tensorboard_cache_stats()["builds"])
+
+    def test_the_step_range_is_applied_to_the_cached_reader(self):
+        self._steps(6)
+        sliced = api._get_tensorboard_metrics(str(self.log_dir), start_step=2, end_step=4)
+        self.assertEqual([2, 3, 4], [point["step"] for point in sliced["Train/Loss"]])
+        again = api._get_tensorboard_metrics(str(self.log_dir), start_step=5)
+        self.assertEqual([5], [point["step"] for point in again["Train/Loss"]])
+        self.assertEqual(1, api.tensorboard_cache_stats()["builds"])
+
+    def test_a_new_event_file_in_the_same_directory_rebuilds_the_reader(self):
+        self._steps(3)
+        api._get_tensorboard_metrics(str(self.log_dir))
+        self.assertEqual(1, api.tensorboard_cache_stats()["builds"])
+
+        # A second writer in the same directory is a new file with a newer mtime: the reader has to
+        # follow it rather than keep serving what the first one wrote.
+        from torch.utils.tensorboard import SummaryWriter
+
+        self.writer.close()
+        other = SummaryWriter(log_dir=str(self.log_dir))
+        try:
+            other.add_scalar("Train/Loss", 9.0, 0)
+            other.flush()
+            metrics = api._get_tensorboard_metrics(str(self.log_dir))
+        finally:
+            other.close()
+        # A directory-level reader: the second writer's events join the series, as TensorBoard
+        # shows them, but the reader itself had to follow the newer file.
+        self.assertEqual(
+            [1.0, 0.5, 0.3333333432674408, 9.0],
+            [point["value"] for point in metrics["Train/Loss"]],
+        )
+        self.assertEqual(2, api.tensorboard_cache_stats()["builds"])
+
+    def test_the_cache_is_per_run_directory(self):
+        self._steps(2)
+        other_dir = Path(self.tmp.name) / "logs" / "konomi_20260911_130000"
+        other_dir.mkdir(parents=True)
+        from torch.utils.tensorboard import SummaryWriter
+
+        other = SummaryWriter(log_dir=str(other_dir))
+        try:
+            other.add_scalar("Train/Loss", 5.0, 0)
+            other.flush()
+            mine = api._get_tensorboard_metrics(str(self.log_dir))
+            theirs = api._get_tensorboard_metrics(str(other_dir))
+        finally:
+            other.close()
+        self.assertEqual(2, len(mine["Train/Loss"]))
+        self.assertEqual(1, len(theirs["Train/Loss"]))
+        self.assertEqual({"entries": 2, "builds": 2}, api.tensorboard_cache_stats())
+
+    def test_a_missing_directory_is_empty_and_caches_nothing(self):
+        self.assertEqual({}, api._get_tensorboard_metrics(str(Path(self.tmp.name) / "nope")))
+        self.assertEqual({"entries": 0, "builds": 0}, api.tensorboard_cache_stats())
+
+
 class ListRunsIpcTest(unittest.TestCase):
     """list_runs: the dashboard's run history (every output name, live vs stopped)."""
 
@@ -1259,6 +1475,63 @@ class DatasetTagIpcTest(unittest.TestCase):
         tagged.assert_called_once()
         args, kwargs = tagged.call_args
         self.assertEqual(args[1], 0.4)
+        # No batch size asked for: the script's own default applies, so no `--batch-size` is passed.
+        self.assertIsNone(kwargs["batch_size"])
+
+    def test_categories_are_cleaned_and_joined(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag(
+                    {"directory": raw, "threshold": 0.35, "categories": [" rating ", "general", "rating"]}
+                )
+            self.assertEqual(tagged.call_args.kwargs["categories"], "rating,general")
+
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "categories": "meta, style"})
+            self.assertEqual(tagged.call_args.kwargs["categories"], "meta,style")
+
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35})
+            self.assertIsNone(tagged.call_args.kwargs["categories"])
+
+    def test_bad_categories_payload(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "categories": {"general": True}})
+
+    def test_batch_size_is_validated_and_passed_through(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "batch_size": 4})
+            self.assertEqual(tagged.call_args.kwargs["batch_size"], 4)
+
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "batch_size": 0})
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "batch_size": "many"})
+
+
+class TaggerInfoIpcTest(unittest.TestCase):
+    def test_registered(self):
+        self.assertIn("tagger_info", api._HANDLERS)
+
+    def test_payload_is_passed_through(self):
+        payload = {"available": True, "engine": "pixai-tagger-v1.0", "categories": [{"key": "general"}]}
+        with mock.patch.object(api, "run_tagger_info", return_value=payload):
+            self.assertEqual(api.handle_tagger_info({}), payload)
+
+    def test_a_failure_answers_with_a_reason_instead_of_raising(self):
+        with mock.patch.object(api, "run_tagger_info", side_effect=RuntimeError("no model")):
+            result = api.handle_tagger_info({})
+        self.assertFalse(result["available"])
+        self.assertIn("no model", result["reason"])
+        self.assertEqual(result["categories"], [])
+
+    def test_a_missing_script_answers_with_a_reason(self):
+        with mock.patch.object(api, "_repo_root", return_value=Path("/tmp/axl-no-repo")):
+            result = api.dispatch("tagger_info", {})
+        self.assertFalse(result["available"])
+        self.assertTrue(result["reason"])
 
 
 class HardwareStatusTest(unittest.TestCase):
