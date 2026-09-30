@@ -60,6 +60,10 @@ private val UI_TEXT: Map<String, Pair<String, String>> = mapOf(
     "exposure_empty" to (
         "没勾选时按模式的默认暴露抽" to "With nothing ticked the mode's default exposure is drawn"
         ),
+    "exposure_questionable" to (
+        "带裸露描述的 QUESTIONABLE 姿势自带穿着与裸露状态，不受本页影响" to
+            "A QUESTIONABLE pose states its own clothing and exposure; this page does not apply to it"
+        ),
     "pool_any" to ("从整池均匀抽" to "Drawn from the whole pool"),
     "no_entries" to ("矩阵里没有可用条目" to "No matrix entry applies"),
     "matrix_missing" to ("矩阵未载入" to "The matrix is not loaded"),

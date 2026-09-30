@@ -12,8 +12,16 @@ import kotlin.random.Random
  */
 object PromptGenerator {
 
-    fun posePool(matrix: PromptMatrix, mode: PromptMode): List<MatrixEntry> =
-        if (mode == PromptMode.Sex) matrix.poses else matrix.sfwPoses
+    /**
+     * The pools each mode draws from. NSFW adds the `QUESTIONABLE_POSES` rows to the everyday ones;
+     * the `POSES` list stays with SEX mode, whose stage page already covers a sex act's run-up, so
+     * an NSFW draw never carries `sex`/`penis`/`pussy`.
+     */
+    fun posePool(matrix: PromptMatrix, mode: PromptMode): List<MatrixEntry> = when (mode) {
+        PromptMode.Sex -> matrix.poses
+        PromptMode.Sfw -> matrix.sfwPoses
+        PromptMode.Nsfw -> matrix.sfwPoses + matrix.questionablePoses
+    }
 
     fun poseFamilies(entry: MatrixEntry): Set<PoseFamily> {
         val blob = entry.blob
@@ -196,7 +204,68 @@ object PromptGenerator {
         return "other"
     }
 
+    /**
+     * The places the pose names in its own tags (see [POSE_PLACES]). A row that names one pairs only
+     * with a scene carrying it, and its own words decide the scene instead of [poseLocus]: that
+     * classifier reads `sitting, resting head on desk, sleeping` as lying and cannot tell a bed from
+     * a beach. A row naming two places takes either.
+     */
+    fun posePlaces(pose: MatrixEntry): List<PosePlace> =
+        POSE_PLACES.filter { pose.blob.contains(it.marker) }
+
+    /**
+     * The aggressive other half for a `QUESTIONABLE_POSES` row. Such a row states its own clothing
+     * and exposure, and the sampler leaves both alone ([torsoTags] is not called for it, no outfit
+     * is picked, `nude` and `open clothes` are never written). What the row leaves open it fills
+     * here: an unstated chest goes bare — `topless, nipples`, or `sideboob, nipples` from the side,
+     * and `breasts hanging` when the chest hangs rather than faces the camera — while a chest that
+     * is not in frame (`from behind`, prone) gets nothing at all. An unstated bottom goes
+     * `bottomless`.
+     */
+    fun stateFill(pose: MatrixEntry): List<String> {
+        val out = mutableListOf<String>()
+        if (POSE_CHEST_WORDS.none { pose.blob.contains(it) }) {
+            when (chestView(pose)) {
+                "front" -> {
+                    out.add("topless")
+                    out.add("nipples")
+                    if (containsMarker(pose.blob, CHEST_HANGING_MARKERS)) out.add("breasts hanging")
+                }
+                "side" -> out.addAll(listOf("sideboob", "nipples"))
+            }
+        }
+        if (POSE_BOTTOM_WORDS.none { pose.blob.contains(it) }) out.add("bottomless")
+        return out
+    }
+
+    /**
+     * What a `selfStated` row wears: nothing from `CLOTHING`. Its own tags name the garments, so an
+     * outfit noun (`serafuku` against a row that says `towel`), `(open clothes)` and `nude` are all
+     * left out.
+     */
+    fun poseClothing(
+        matrix: PromptMatrix,
+        spec: PromptSpec,
+        pose: MatrixEntry,
+        rng: Random,
+    ): Pair<MatrixEntry?, Boolean> =
+        if (pose.selfStated) null to false else pickClothing(matrix, spec, rng)
+
+    /** The chest/belly tags of a draw: the row's own state for a `selfStated` row, else [torsoTags]. */
+    fun poseTorso(
+        spec: PromptSpec,
+        pose: MatrixEntry,
+        clothing: MatrixEntry?,
+        addOpen: Boolean,
+        rng: Random,
+    ): List<String> =
+        if (pose.selfStated) stateFill(pose) else torsoTags(spec, pose, clothing, addOpen, rng)
+
     fun sceneCompatible(pose: MatrixEntry, scene: MatrixEntry): Boolean {
+        val places = posePlaces(pose)
+        if (places.isNotEmpty()) {
+            return places.any { place -> place.scenes.any { scene.blob.contains(it) } }
+        }
         val locus = poseLocus(pose)
         val tags = scene.tags.toSet()
         val flags = sceneFlags(scene.tags)
@@ -505,11 +574,13 @@ object PromptGenerator {
         } else {
             extra.add("solo")
         }
-        if (clothing == null) {
-            extra.add("nude")
-        } else {
+        if (clothing != null) {
             extra.addAll(clothing.tags)
             if (addOpen) extra.add("open clothes")
+        } else if (!pose.selfStated) {
+            // Not for a row that brings its own clothes: its tags plus what `stateFill` added are the
+            // body state, and `nude` would contradict the garment it names.
+            extra.add("nude")
         }
         extra.addAll(torso)
         extra.addAll(face)
@@ -581,11 +652,11 @@ object PromptGenerator {
             stage = bound.first
             val stagePoses = bound.second
             val pose = weightedChoice(rng, stagePoses, stagePoses.map { poseWeight(it, spec) })
-            val (clothing, addOpen) = pickClothing(matrix, spec, rng)
+            val (clothing, addOpen) = poseClothing(matrix, spec, pose, rng)
             val scene = pickScene(matrix, spec, pose, rng, warnings)
             val suffix = weightedChoice(rng, matrix.suffixes, List(matrix.suffixes.size) { 1 })
             val channel = if (spec.mode == PromptMode.Sex) pickChannel(pose, spec, rng) else null
-            val torso = torsoTags(spec, pose, clothing, addOpen, rng)
+            val torso = poseTorso(spec, pose, clothing, addOpen, rng)
             val face = faceTags(spec, pose, rng)
             val combo = Combo(
                 pose = pose.key,
@@ -607,11 +678,11 @@ object PromptGenerator {
             stage = bound.first
             val stagePoses = bound.second
             val pose = weightedChoice(rng, stagePoses, stagePoses.map { poseWeight(it, spec) })
-            val (clothing, addOpen) = pickClothing(matrix, spec, rng)
+            val (clothing, addOpen) = poseClothing(matrix, spec, pose, rng)
             val scene = pickScene(matrix, spec, pose, rng, warnings)
             val suffix = matrix.suffixes[rng.nextInt(matrix.suffixes.size)]
             val channel = if (spec.mode == PromptMode.Sex) pickChannel(pose, spec, rng) else null
-            val torso = torsoTags(spec, pose, clothing, addOpen, rng)
+            val torso = poseTorso(spec, pose, clothing, addOpen, rng)
             val face = faceTags(spec, pose, rng)
             results.add(assemble(spec, pose, clothing, addOpen, scene, suffix, channel, torso, face, stage))
         }

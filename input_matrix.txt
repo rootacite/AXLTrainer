@@ -312,3 +312,445 @@ window, sitting, looking outside
 # 坐在窗边向外看
 backlighting, from behind, looking back
 # 逆光回看，SFW 全身/半身都可用
+sitting, crossed legs, looking at viewer, smile
+# 坐着跷腿看镜头。教室课桌、咖啡窗边、电车座位、沙发都能配
+sitting, holding cup, looking at viewer
+# 坐着端杯。咖啡店、教室窗边、客厅沙发
+sitting, reading book, looking down
+# 坐着低头看书。教室课桌、图书馆感教室窗边、公园长椅、咖啡店
+sitting, writing, looking at desk
+# 坐着写字。必须配 classroom + desk
+sitting, resting head on desk, sleeping
+# 趴在课桌上睡。只配 classroom + desk
+sitting, holding smartphone, looking at viewer
+# 坐着拿手机看镜头。电车、咖啡、客厅、公园长椅
+sitting, leaning on desk, looking at viewer
+# 坐着把胳膊搁桌上。教室课桌、咖啡靠窗桌
+sitting, hands on lap, looking at viewer, closed mouth
+# 坐着双手搁膝，偏端正。教室、神社、电车、客厅
+sitting, one knee up, looking at viewer
+# 坐着单膝立起。床边、草地、沙滩、沙发、长椅
+sitting, from side, looking outside
+# 坐着侧脸向外看。教室窗、咖啡窗、电车窗
+sitting, holding bag, looking at viewer
+# 坐着抱包。电车、公园长椅、走廊、街道边沿用长椅
+sitting on bench, looking at viewer, smile
+# 坐长椅看镜头。只配 park + bench，或庭院里当长椅用
+sitting on bench, looking to the side
+# 坐长椅侧看。公园长椅
+sitting on sofa, looking at viewer
+# 坐沙发看镜头。只配 living room + sofa
+sitting on sofa, hugging pillow, looking at viewer
+# 坐沙发抱枕。客厅沙发
+sitting on sofa, legs tucked, looking at viewer
+# 坐沙发蜷腿。客厅沙发
+sitting on bed, looking at viewer, smile
+# 坐在床沿看镜头。bedroom + bed / on bed
+sitting on bed, stretching, arms up
+# 坐床上伸懒腰。卧室床
+sitting on grass, looking at viewer
+# 坐草地。公园 grass、庭院、森林树荫
+sitting on grass, hugging own knees
+# 坐草地抱膝。公园草地、森林
+sitting on sand, looking at viewer
+# 坐沙滩。只配 beach + sand
+sitting at window, holding cup, looking outside
+# 窗边坐着端杯向外看。教室窗、咖啡窗、电车窗
+standing, waving, looking at viewer, smile
+# 站着挥手。走廊、天台、庭院、街道、神社、泳池边
+standing, hands in pockets, looking at viewer
+# 站着手插口袋。街道、走廊、天台、庭院
+standing, arms crossed, looking at viewer
+# 站着抱胸。走廊、天台、教室门口感走廊、街道
+standing, adjusting clothes, looking at viewer
+# 站着整理衣服。走廊、更衣室感走廊、神社、天台
+standing, holding bag, walking
+# 站走抱包。街道、走廊、庭院、神社参道
+standing, looking at sky, from below
+# 站着仰头看天。天台、庭院、公园、海滩、街道
+standing, leaning on railing, looking at viewer
+# 靠栏杆。天台最稳，走廊窗边也行
+standing, leaning on railing, looking outside
+# 靠栏杆向外看。天台、电车/教室窗边栏杆感
+standing, holding umbrella, looking at viewer
+# 撑伞。街道、庭院、神社、公园；阴天 suffix 更搭
+standing, stretching, arms up, looking at viewer
+# 站着向上伸展。天台、庭院、公园、卧室起床后站在床边
+standing, from behind, looking back, smile
+# 站立背面回看。走廊、街道、神社、天台、森林
+standing, holding books, looking at viewer
+# 抱书站立。教室、走廊、庭院
+standing, praying, hands together
+# 双手合十。只配 shrine + torii
+standing, bowing, shrine
+# 鞠躬。神社
+standing, wading, looking at viewer
+# 站在浅水里。泳池边、海滩浅滩
+standing, wet, looking at viewer
+# 站着身上带水。泳池边、温泉、海滩
+walking, looking at viewer, smile
+# 走路看镜头。街道、走廊、庭院、神社、公园
+walking, from side, looking ahead
+# 侧走目视前方。街道、走廊、海滩岸边
+walking, holding bag, from behind
+# 背影走路抱包。街道、走廊、神社
+walking on sand, looking back
+# 沙滩走路回看。海滩
+walking, falling leaves, looking at viewer
+# 走路伴落叶。庭院、公园、神社、森林
+running, looking at viewer, smile
+# 小跑看镜头。庭院、公园、走廊、天台
+lying, on back, on bed, looking at viewer
+# 仰卧在床看镜头。bedroom + on bed
+lying, on back, on bed, stretching
+# 仰卧在床伸懒腰。卧室床
+lying, on back, on grass, looking at sky
+# 仰卧草地看天。公园 grass、庭院、森林
+lying, on back, on sand, looking at viewer
+# 仰卧沙滩。海滩 sand
+lying, on back, on sofa, looking at viewer
+# 仰卧沙发。客厅沙发
+lying, on side, on bed, looking at viewer
+# 侧躺床上看镜头。卧室床
+lying, on side, on sofa, hugging pillow
+# 侧躺沙发抱枕。客厅沙发
+lying, on side, on grass, looking at viewer
+# 侧躺草地。公园草地
+lying, on side, on sand, looking at viewer
+# 侧躺沙滩。海滩
+lying, on stomach, on bed, reading book
+# 趴床上看书。卧室床
+lying, on stomach, on grass, looking at viewer
+# 趴草地抬头。公园草地
+lying, on stomach, on sand, looking at viewer
+# 趴沙滩。海滩
+lying, sleeping, on bed, closed eyes
+# 睡着。卧室床
+lying, sleeping, on sofa, closed eyes
+# 沙发上睡着。客厅沙发
+sunbathing, lying, on back, on sand
+# 沙滩日光浴仰卧。海滩
+sunbathing, lying, on stomach, on sand
+# 沙滩日光浴趴着。海滩
+kneeling, on bed, looking at viewer
+# 跪在床上看镜头。卧室床，无性含义
+kneeling, praying, looking down
+# 跪下低头。神社
+kneeling, sitting on heels, holding cup
+# 跪坐端杯。客厅、卧室、温泉休息感
+squatting, picking flowers, looking at viewer
+# 蹲着摘花。公园草地、庭院、森林
+squatting, at water, looking at viewer
+# 蹲在水边。泳池边、海滩、温泉
+leaning forward, on desk, looking at viewer
+# 上身伏向课桌看镜头。教室 desk
+leaning forward, on railing, looking outside
+# 伏在栏杆上向外看。天台
+against wall, sitting on floor, looking at viewer
+# 靠墙坐地。走廊、教室墙边、卧室墙边
+against tree, standing, looking at viewer
+# 靠树站。公园、森林
+against tree, sitting, looking at viewer
+# 靠树坐。公园草地、森林
+head tilt, looking at viewer, smile
+# 歪头看镜头。任意能拍半身的室内外
+v sign, looking at viewer, smile
+# 比 V。和 peace sign 同类，半身特写通用
+waving, upper body, looking at viewer
+# 半身挥手。窗边、天台、街道
+holding flowers, looking at viewer, smile
+# 捧花（非婚礼捧花也可）。神社、公园、庭院、婚纱场景
+holding stuffed toy, sitting, looking at viewer
+# 坐着抱玩偶。卧室床、沙发
+holding towel, looking at viewer
+# 拿毛巾。温泉、泳池边、海滩
+wiping face with towel, looking at viewer
+# 用毛巾擦脸。温泉、泳池边
+wet hair, looking at viewer
+# 湿发看镜头。温泉、泳池、海滩
+soaking, looking at viewer
+# 泡在水里。温泉；泳池边慎用，需靠 steam/pool
+elbow rest, chin rest, looking at viewer
+# 肘撑托腮。课桌、咖啡桌、窗台、沙发扶手
+hands together, looking at viewer, blush
+# 双手交握看镜头。教室、神社、走廊
+reaching out, sitting, looking at viewer
+# 坐着伸手。床、沙发、长椅、草地
+reaching out, standing, from below
+# 站着伸手仰视。天台、街道、庭院
+looking back, over shoulder, standing
+# 站立过肩回看。走廊、街道、神社、天台
+looking back, over shoulder, sitting
+# 坐着过肩回看。长椅、课桌、窗边、电车
+from above, sitting, looking at viewer
+# 俯视坐姿。课桌、床、草地、沙发
+from above, lying, on back, looking at viewer
+# 俯视仰卧。床、草地、沙滩、沙发
+from below, standing, looking at viewer
+# 仰视站立。天台、神社、街道
+profile, sitting, looking outside
+# 坐姿侧脸向外。窗边三类：教室/咖啡/电车
+profile, lying, on side, on bed
+# 侧躺侧脸。卧室床
+hands behind head, sitting, looking at viewer
+# 坐着双手抱头后面。床、沙发、草地、长椅
+hands behind head, lying, on back
+# 仰卧双手枕头。床、草地、沙滩、沙发
+knees to chest, sitting, looking at viewer
+# 坐着抱膝（非性交折叠）。床、沙发、草地、窗台
+feet in water, sitting, looking at viewer
+# 坐着脚泡水。泳池边、海滩、温泉
+holding microphone, singing, looking at viewer
+# 拿麦唱歌。配 idol clothes；教室或天台当舞台也行
+adjusting veil, looking at viewer
+# 整理头纱。婚纱；神社或室内窗边
+holding bouquet, sitting, looking at viewer
+# 坐着捧花。婚纱；窗边、花园向庭院、神社
+twirl, looking back, smile
+# 转圈回看。庭院、街道、神社、天台，配裙子/婚纱
+jumping, arms up, looking at viewer
+# 跳起举双手。庭院、天台、公园、海滩
+
+QUESTIONABLE_POSES:
+sitting, open shirt, breasts out, looking at viewer
+# 坐着衬衫敞开露胸。课桌、窗边、沙发、床沿
+sitting, open shirt, nipples, looking at viewer
+# 坐着敞衬衫到乳头。同上
+sitting, no bra, shirt, looking at viewer
+# 坐着有衬衫无胸罩，胸形顶出来。教室、咖啡、电车需靠窗虚化
+sitting, bra, looking at viewer, smile
+# 坐着只剩文胸上半。卧室、更衣室感走廊慎用、沙发
+sitting, panties, looking at viewer
+# 坐着可见内裤，腿并拢不露性器。床、沙发、长椅
+sitting, skirt lift, panties, looking at viewer
+# 坐着掀裙见内裤。教室椅、长椅、床沿
+sitting, clothes lift, breasts, looking at viewer
+# 坐着把上衣掀到胸下。窗边、床、沙发
+sitting, covering breasts, looking at viewer, blush
+# 坐着用手挡胸。卧室、温泉、更衣室感
+sitting, towel, covering breasts, looking at viewer
+# 坐着裹毛巾挡胸。温泉、卧室
+sitting on bed, open clothes, nipples, looking at viewer
+# 坐床沿敞衣露乳头
+sitting on sofa, bra, panties, looking at viewer
+# 坐沙发内衣套装
+sitting on bench, skirt lift, panties, from front
+# 坐长椅掀裙见内裤正面，腿并拢
+sitting on grass, no pants, panties, looking at viewer
+# 坐草地只剩内裤
+sitting on sand, bikini pulled, breasts, looking at viewer
+# 坐沙滩比基尼被拉偏露胸，仍非全裸下体
+standing, open shirt, breasts out, looking at viewer
+# 站着敞衬衫露胸。走廊、天台、卧室
+standing, topless, covering breasts, looking at viewer
+# 站着上空用手挡。卧室、温泉、天台夜晚
+standing, topless, nipples, looking at viewer
+# 站着上空露乳头。卧室、天台、森林树荫
+standing, bra, looking at viewer
+# 站着文胸。卧室、走廊、天台
+standing, panties, looking at viewer
+# 站着内裤全身，不写 crotch focus
+standing, no panties, skirt, looking at viewer
+# 站着裙底无内裤但不给镜头看性器，靠裙摆挡。室内慎用
+standing, skirt lift, panties, looking at viewer
+# 站着自己掀裙见内裤
+standing, shirt lift, breasts, looking at viewer
+# 站着掀衣见胸
+standing, undressing, looking at viewer
+# 站着脱衣过程。卧室、更衣室感、温泉
+standing, changing clothes, looking at viewer
+# 站着换衣服。卧室、更衣室感走廊
+standing, from behind, panties, ass
+# 站立背面内裤臀。走廊、卧室、天台
+standing, from behind, skirt lift, panties, ass
+# 背面掀裙内裤臀
+standing, from behind, no panties, ass, skirt
+# 背面无内裤但只露臀沟不上性器。风险高，镜头必须 from behind + ass
+standing, against wall, open shirt, breasts
+# 靠墙敞衣露胸。走廊、卧室墙
+standing, wet shirt, nipples, looking at viewer
+# 湿衣透乳头。泳池、海滩、温泉出来
+standing, see-through, nipples, looking at viewer
+# 薄衣透乳头。窗光卧室、晨光
+walking, from behind, upskirt, panties
+# 走路背面走光见内裤。走廊、街道、楼梯感走廊
+walking, open shirt, breasts, looking back
+# 走路敞衣回看。走廊、天台、街道夜
+lying, on back, on bed, breasts out, looking at viewer
+# 仰卧床上露胸
+lying, on back, on bed, nipples, looking at viewer
+# 仰卧床上露乳头
+lying, on back, on bed, bra, looking at viewer
+# 仰卧床上文胸
+lying, on back, on bed, panties, looking at viewer
+# 仰卧床上内裤，腿并拢或微曲挡住性器
+lying, on back, on bed, topless, covering crotch
+# 仰卧上空，手挡下体，不露性器
+lying, on side, on bed, breasts out, looking at viewer
+# 侧躺床上露胸
+lying, on side, on bed, nipples, looking at viewer
+# 侧躺露乳头
+lying, on side, on sofa, open shirt, breasts
+# 侧躺沙发敞衣
+lying, on stomach, on bed, from behind, panties, ass
+# 趴床背面内裤臀
+lying, on stomach, on bed, topless, looking at viewer
+# 趴床上空抬头，胸被床挡住或侧露
+lying, on back, on grass, breasts out, looking at viewer
+# 仰卧草地露胸
+lying, on back, on grass, nipples, looking at viewer
+# 仰卧草地露乳头
+lying, on stomach, on grass, from behind, panties, ass
+# 趴草地背面内裤臀
+lying, on back, on sand, topless, looking at viewer
+# 仰卧沙滩上空
+lying, on stomach, on sand, from behind, bikini, ass
+# 趴沙滩背面泳装臀
+lying, on back, on sofa, bra, panties, looking at viewer
+# 仰卧沙发内衣
+lying, sleeping, on bed, breasts out
+# 睡着衣服滑开露胸。卧室床
+lying, sleeping, on sofa, shirt lift, breasts
+# 沙发上睡着衣摆掀起
+kneeling, sitting on heels, breasts out, looking at viewer
+# 跪坐露胸。床、榻榻米感卧室、温泉
+kneeling, sitting on heels, nipples, looking at viewer
+# 跪坐露乳头
+kneeling, sitting on heels, bra, panties, looking at viewer
+# 跪坐内衣套装
+kneeling, from behind, panties, ass
+# 跪姿背面内裤臀。床、草地
+kneeling, from behind, skirt lift, panties, ass
+# 跪姿背面掀裙
+kneeling on bed, open shirt, nipples, looking at viewer
+# 跪床上敞衣
+squatting, skirt lift, panties, looking at viewer
+# 蹲着掀裙见内裤，腿缝不写 spread
+squatting, panties, looking at viewer, blush
+# 蹲着内裤特写到大腿，不写 crotch
+squatting, from behind, panties, ass
+# 蹲姿背面内裤臀
+all fours, looking at viewer, panties
+# 四肢着地回看，穿着内裤，无性交
+all fours, from behind, panties, ass
+# 四肢着地背面内裤臀，无插入
+all fours, on bed, breasts hanging, looking at viewer
+# 床上四肢着地垂胸回看，仍着装下体
+bent over, from behind, panties, ass
+# 弯腰背面内裤臀。桌边、栏杆、床沿
+bent over, desk, skirt lift, panties, from behind
+# 伏在课桌上掀裙背面。classroom + desk
+bent over, railing, from behind, panties, ass
+# 伏天台栏杆背面
+against wall, from behind, panties, ass
+# 贴墙背面内裤臀。走廊、卧室
+against wall, open shirt, nipples, looking at viewer
+# 靠墙敞衣露乳头正面
+window, standing, topless, from behind
+# 窗边上空背影。教室窗、卧室窗，室外不一定看见脸
+window, sitting, open shirt, breasts, looking outside
+# 窗边坐着敞衣向外看
+window, sitting, shirt lift, nipples, looking at viewer
+# 窗边掀衣露乳头看镜头
+from behind, looking back, breasts out
+# 背面回看同时胸侧露或回身露胸
+from behind, looking back, panties, ass
+# 背面回看内裤臀
+from behind, looking back, topless, ass
+# 背面回看上空+臀，下体仍被臀或衣挡住
+from side, standing, sideboob, looking at viewer
+# 侧站侧乳。走廊、天台、卧室
+from side, sitting, sideboob, looking at viewer
+# 侧坐侧乳。窗边、沙发、床
+from side, lying, on bed, sideboob, nipples
+# 侧躺床上侧乳到乳头
+underboob, shirt lift, looking at viewer
+# 掀衣露下乳。站或坐均可
+cleavage, leaning forward, looking at viewer
+# 前倾乳沟。课桌、栏杆、窗台
+downblouse, leaning forward, from above
+# 俯视领口向下看胸。课桌、窗边
+adjusting bra, looking at viewer
+# 整理文胸。卧室、更衣室感
+adjusting panties, looking at viewer
+# 整理内裤。卧室、更衣室感，正面不要写成 crotch focus
+pulling down clothes, breasts, looking at viewer
+# 把衣服往下拉露出胸
+clothes pull, nipples, looking at viewer
+# 把衣物拉 aside 到乳头
+one breast out, looking at viewer
+# 只露出一侧胸。衬衫、泳装、睡衣都适用
+bikini pull, breasts, looking at viewer
+# 把比基尼上拉/拨开露胸。泳池、海滩
+swimsuit pull, breasts, looking at viewer
+# 连体泳装拉下到胸。泳池
+towel slip, breasts, looking at viewer
+# 毛巾滑落露胸。温泉、卧室
+towel, from behind, ass
+# 毛巾只裹上半或滑到露出臀。温泉
+holding towel, covering crotch, breasts out
+# 毛巾只挡下体、胸露着。温泉、卧室
+covering crotch, topless, looking at viewer
+# 上空用手挡裆，不露性器
+covering breasts, panties, looking at viewer
+# 手挡胸、下身内裤
+arms up, shirt lift, breasts, looking at viewer
+# 双手举起衣摆跟着上去露胸
+arms behind back, breasts out, looking at viewer
+# 背手挺胸敞衣
+hands on own chest, breasts, looking at viewer
+# 双手搁在自己胸上，非性行为
+breast hold, looking at viewer
+# 托胸看镜头，非乳交
+from above, sitting, cleavage, looking at viewer
+# 俯视坐姿乳沟
+from above, lying, on bed, breasts out
+# 俯视仰卧露胸
+from below, standing, underboob
+# 仰视站立下乳
+cowboy shot, open shirt, breasts, looking at viewer
+# 七分身敞衣露胸
+cowboy shot, skirt lift, panties, looking at viewer
+# 七分身掀裙内裤
+upper body, topless, nipples, looking at viewer
+# 半身上空乳头特写
+upper body, bra, looking at viewer
+# 半身文胸
+wet, dripping, nipples, looking at viewer
+# 水珠打在身上透出或露出乳头。泳池、温泉、海滩
+steam, towel, sideboob, looking at viewer
+# 蒸汽里毛巾侧乳。温泉
+after bath, yukata loose, breasts, looking at viewer
+# 浴后浴衣松垮露胸。温泉、卧室
+pajamas pull, breasts, looking at viewer
+# 把睡衣领口拉开露胸。卧室
+nightgown slip, nipples, looking at viewer
+# 睡裙吊带滑落露乳头。卧室
+off shoulder, one breast out, looking at viewer
+# 单肩滑落露出一侧胸
+backless, from behind, looking back
+# 露背装背面回看，可带到腰和臀线上沿
+presenting, from behind, panties, ass
+# 背面把臀朝向镜头，穿着内裤，无插入
+presenting, from behind, skirt lift, ass
+# 背面掀裙送臀，有内裤或裙遮住性器
+all fours, looking back, breasts hanging, panties
+# 四肢着地回看垂胸+内裤，无性交
+bent over, looking back, breasts hanging, panties
+# 弯腰回看垂胸+内裤
+sitting, legs together, panties, from front
+# 坐着并腿正面见内裤，避免分腿
+sitting, heels together, knees apart, skirt, panties
+# 坐着膝分开但脚跟靠拢，裙或内裤挡住性器
+standing, hands on own ass, looking back
+# 站着双手搁在自己臀上背面回看
+sitting on bed, putting on stockings, breasts out
+# 坐床穿袜同时上衣敞开
+sitting on bed, taking off shirt, looking at viewer
+# 坐床脱衬衫过程
+standing, unbuttoning, cleavage, looking at viewer
+# 站着解扣到乳沟
+mirror, standing, bra, panties, looking at viewer
+# 对着观众如照镜，内衣全身。卧室
+holding clothes, covering breasts, standing
+# 站着把脱下的衣服挡在胸前

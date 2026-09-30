@@ -7,6 +7,11 @@ data class MatrixEntry(
     val channel: PromptChannel? = null,
     val openClothes: Boolean = false,
     val group: String? = null,
+    /**
+     * A `QUESTIONABLE_POSES` row. Those rows state their own clothing and body exposure, so the
+     * clothing and torso layers leave them alone — see `PromptGenerator.stateFill`.
+     */
+    val selfStated: Boolean = false,
 ) {
     val blob: String get() = tags.joinToString(", ")
     val key: List<String> get() = tags
@@ -18,6 +23,7 @@ class PromptMatrix(
     val scenes: List<MatrixEntry>,
     val suffixes: List<MatrixEntry>,
     val sfwPoses: List<MatrixEntry>,
+    val questionablePoses: List<MatrixEntry>,
 )
 
 fun splitTags(text: String): List<String> =
@@ -31,6 +37,7 @@ fun parseMatrix(text: String): PromptMatrix {
         "SCENE" to mutableListOf<MatrixEntry>(),
         "SUFFIX" to mutableListOf<MatrixEntry>(),
         "SFW_POSES" to mutableListOf<MatrixEntry>(),
+        "QUESTIONABLE_POSES" to mutableListOf<MatrixEntry>(),
     )
     var section: String? = null
     var group: String? = null
@@ -52,6 +59,12 @@ fun parseMatrix(text: String): PromptMatrix {
             section = line.dropLast(1)
             group = null
             return@forEachIndexed
+        }
+        // A header this parser does not know would otherwise land in the section above it as a tag
+        // row, taking every row under it along — that is how `QUESTIONABLE_POSES` first leaked into
+        // the SFW pool. Spell it out instead.
+        if (SECTION_HEADER_RE.matches(line)) {
+            throw MatrixException("line $lineno: unknown section ${line.dropLast(1)}")
         }
         val groupMatch = CLOTHING_GROUP_RE.matchEntire(line)
         if (section == "CLOTHING" && groupMatch != null) {
@@ -92,7 +105,11 @@ fun parseMatrix(text: String): PromptMatrix {
             )
             return@forEachIndexed
         }
-        pending = MatrixEntry(tags = splitTags(body), openClothes = openClothes)
+        pending = MatrixEntry(
+            tags = splitTags(body),
+            openClothes = openClothes,
+            selfStated = section == "QUESTIONABLE_POSES",
+        )
     }
     commit()
 
@@ -109,8 +126,12 @@ fun parseMatrix(text: String): PromptMatrix {
         scenes = buckets.getValue("SCENE").toList(),
         suffixes = buckets.getValue("SUFFIX").toList(),
         sfwPoses = buckets.getValue("SFW_POSES").toList(),
+        questionablePoses = buckets.getValue("QUESTIONABLE_POSES").toList(),
     )
 }
+
+/** A section header shape (`POSES:`, `QUESTIONABLE_POSES:`), as opposed to a tag row or `[covered]`. */
+private val SECTION_HEADER_RE = Regex("^[A-Z][A-Z_]*:$")
 
 /** `re.match` semantics: the pattern only has to match from the first character. */
 private fun Regex.matchesFromStart(text: String): Boolean = find(text)?.range?.first == 0

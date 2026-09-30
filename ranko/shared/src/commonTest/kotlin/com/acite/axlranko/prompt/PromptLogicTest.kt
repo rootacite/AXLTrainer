@@ -60,6 +60,11 @@ window, sitting, looking outside
 # window sit
 standing, looking at viewer, arms behind back
 # stand
+QUESTIONABLE_POSES:
+standing, topless, nipples, looking at viewer
+# topless
+sitting, panties, looking at viewer
+# panties sit
 """
 
 internal fun miniMatrix(): PromptMatrix = parseMatrix(MINI_MATRIX)
@@ -121,6 +126,13 @@ internal fun assertNoAnalChannel(tags: Set<String>, message: String) {
     assertFalse(tags.contains(PromptLimits.ANAL_CHANNEL_TAG), message)
 }
 
+/** Words only a `QUESTIONABLE_POSES` row, or the fill it gets, can put into a prompt. */
+internal fun assertNoQuestionableWords(blob: String) {
+    listOf("panties", "topless", "bottomless", "sideboob", "skirt lift", "undressing").forEach { word ->
+        assertFalse(blob.contains(word), "$word in $blob")
+    }
+}
+
 internal fun find(entries: List<MatrixEntry>, needle: String): MatrixEntry =
     entries.firstOrNull { it.blob.contains(needle) }
         ?: throw AssertionError("no entry containing '$needle'")
@@ -149,6 +161,7 @@ class ParseMatrixTest {
         assertEquals(6, matrix.scenes.size)
         assertEquals(1, matrix.suffixes.size)
         assertEquals(6, matrix.sfwPoses.size)
+        assertEquals(2, matrix.questionablePoses.size)
         assertEquals("mating press comment", matrix.poses[0].comment)
         assertEquals(PromptChannel.Both, matrix.poses[0].channel)
         assertEquals(PromptChannel.Anal, find(matrix.poses, "full nelson").channel)
@@ -156,6 +169,24 @@ class ParseMatrixTest {
         assertTrue(find(matrix.clothing, "serafuku").openClothes)
         assertFalse(find(matrix.clothing, "wedding dress").openClothes)
         assertEquals(listOf("wedding dress", "veil", "white gloves"), find(matrix.clothing, "wedding dress").tags)
+    }
+
+    @Test
+    fun onlyTheQuestionableRowsStateTheirOwnBody() {
+        assertEquals("topless", matrix.questionablePoses[0].comment)
+        assertTrue(matrix.questionablePoses.all { it.selfStated })
+        assertFalse(matrix.sfwPoses.any { it.selfStated })
+        assertFalse(matrix.poses.any { it.selfStated })
+        assertFalse(matrix.clothing.any { it.selfStated })
+    }
+
+    @Test
+    fun anUnknownSectionIsRejected() {
+        // An unrecognized header used to become a tag row of the section above it, taking every
+        // row under it along into that pool.
+        val broken = MINI_MATRIX + "PROPS:\nwall clock\n"
+        val error = assertFailsWith<MatrixException> { parseMatrix(broken) }
+        assertTrue(error.message!!.contains("unknown section PROPS"), error.message!!)
     }
 
     @Test
@@ -191,6 +222,7 @@ class ModePoolTest {
             assertTrue(tags.contains("sex"), line)
             assertTrue(tags.contains("penis"), line)
         }
+        assertNoQuestionableWords(prompts.joinToString("\n"))
     }
 
     @Test
@@ -199,15 +231,20 @@ class ModePoolTest {
         listOf("doggystyle", "mating press", "penis", "pussy", "anus", "sex").forEach { needle ->
             assertFalse(blob.contains(needle), "$needle in $blob")
         }
+        assertNoQuestionableWords(blob)
     }
 
     @Test
-    fun nsfwSharesTheSfwPosePool() {
-        val blob = generatePrompts(testSpec(mode = PromptMode.Nsfw, exposure = listOf("nude"), count = 12), matrix, 3)
+    fun nsfwDrawsTheSfwPosesAndTheQuestionableOnesOnly() {
+        val pool = PromptGenerator.posePool(matrix, PromptMode.Nsfw)
+        assertEquals(8, pool.size)
+        assertEquals(matrix.sfwPoses + matrix.questionablePoses, pool)
+        val blob = generatePrompts(testSpec(mode = PromptMode.Nsfw, exposure = listOf("nude"), count = 40), matrix, 3)
             .joinToString("\n")
-        assertTrue(blob.contains("nude"))
-        assertFalse(blob.contains("doggystyle"))
-        assertFalse(blob.contains("penis"))
+        assertTrue(blob.contains("panties") || blob.contains("topless"), blob)
+        listOf("doggystyle", "mating press", "penis", "pussy", "anus", "sex").forEach { needle ->
+            assertFalse(blob.contains(needle), "$needle in $blob")
+        }
     }
 }
 
