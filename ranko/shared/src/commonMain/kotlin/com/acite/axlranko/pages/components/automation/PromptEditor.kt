@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -176,16 +178,9 @@ private fun SingleChoice(
     selected: String,
     onSelect: (String) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        options.chunked(3).forEach { row ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                row.forEach { (value, label) ->
-                    CapsuleChoice(text = label, selected = value == selected, onClick = { onSelect(value) })
-                }
-            }
+    ChoiceFlow {
+        options.forEach { (value, label) ->
+            CapsuleChoice(text = label, selected = value == selected, onClick = { onSelect(value) })
         }
     }
 }
@@ -196,22 +191,32 @@ private fun MultiChoice(
     selected: Set<String>,
     onToggle: (String, Boolean) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        options.chunked(3).forEach { row ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                row.forEach { (value, label) ->
-                    CapsuleChoice(
-                        text = label,
-                        selected = selected.contains(value),
-                        onClick = { onToggle(value, !selected.contains(value)) },
-                    )
-                }
-            }
+    ChoiceFlow {
+        options.forEach { (value, label) ->
+            CapsuleChoice(
+                text = label,
+                selected = selected.contains(value),
+                onClick = { onToggle(value, !selected.contains(value)) },
+            )
         }
     }
+}
+
+/**
+ * A row of choice pills that wraps. Fixed rows of three used to measure the last pill away when the
+ * labels were long — the `SEX` mode button and the `nude` exposure pill simply vanished on a narrow
+ * pane — while a wrapping row keeps every pill at its own width. Three per row, as before, wherever
+ * three fit.
+ */
+@Composable
+private fun ChoiceFlow(content: @Composable FlowRowScope.() -> Unit) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        maxItemsInEachRow = 3,
+        content = content,
+    )
 }
 
 @Composable
@@ -328,6 +333,9 @@ fun PromptPageEditor(
                 if (spec.exposure.isEmpty()) {
                     dimHint(uiText(lang, "exposure_empty"))
                 }
+                if (spec.mode == PromptMode.Nsfw) {
+                    dimHint(uiText(lang, "exposure_questionable"))
+                }
             }
 
             "clothing", "scene", "pose" -> {
@@ -438,19 +446,14 @@ fun PromptPageEditor(
                             }
                         }
                         val ticked = faceTagsOf(value).toSet()
-                        groupTags(group).chunked(3).forEach { row ->
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                row.forEach { tag ->
-                                    val option = group.options.first { it.tag == tag }
-                                    CapsuleChoice(
-                                        text = if (lang == PromptLang.Chinese) option.zh else option.en,
-                                        selected = ticked.contains(tag),
-                                        onClick = { actions.toggleFaceTag(group.id, tag) },
-                                    )
-                                }
+                        ChoiceFlow {
+                            groupTags(group).forEach { tag ->
+                                val option = group.options.first { it.tag == tag }
+                                CapsuleChoice(
+                                    text = if (lang == PromptLang.Chinese) option.zh else option.en,
+                                    selected = ticked.contains(tag),
+                                    onClick = { actions.toggleFaceTag(group.id, tag) },
+                                )
                             }
                         }
                     }
