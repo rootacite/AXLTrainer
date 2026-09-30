@@ -87,8 +87,34 @@ class ValidationSetsTest {
         assertEquals("1280", set.width)
         assertEquals("35", set.steps)
         assertEquals("6", set.guidanceScale)
+        assertEquals("0.6", set.guidanceRescale)
         assertEquals("0", set.seed)
         assertEquals("3", set.repeat)
+    }
+
+    @Test
+    fun theRescaleFallsBackToTheFlatScalar() {
+        // Config.toml ships 0.6 (ComfyUI's RescaleCFG); a set may ask for its own.
+        val withoutSet = formOf().sampleSets.single()
+        assertEquals("0.6", withoutSet.guidanceRescale)
+
+        val set = formOf(
+            """
+            [[validation.samples]]
+            prompt = "p"
+            guidance_rescale = 0.3
+            """.trimIndent(),
+        ).sampleSets.single()
+        assertEquals("0.3", set.guidanceRescale)
+    }
+
+    @Test
+    fun aRescaleOutsideZeroToOneIsRejected() {
+        val form = formOf().copy(
+            sampleSets = listOf(formOf().sampleSets[0].copy(guidanceRescale = "1.5")),
+        )
+        val errors = form.validate()
+        assertEquals("Max 1.0", errors["samples.0.guidance_rescale"])
     }
 
     @Test
@@ -187,7 +213,11 @@ class ValidationSetsTest {
             "validation.samples",
             listOf(linkedMapOf("prompt" to "\"new\"")),
         )
-        assertTrue(patched.contains("guidance_scale = 6.0\n\n[[validation.samples]]\nprompt = \"new\"\n\n[bookkeeping]"))
+        assertTrue(
+            patched.contains(
+                "guidance_scale = 6.0\nguidance_rescale = 0.6\n\n[[validation.samples]]\nprompt = \"new\"\n\n[bookkeeping]",
+            ),
+        )
         assertTrue(!patched.contains("old"))
     }
 
@@ -244,7 +274,6 @@ class ValidationSetsTest {
             modelspec_sai_model_spec = "1.0.0"
 
             [training]
-            is_vpred = false
             min_snr_gamma = 5.0
             seed = 1145141919
             mixed_precision = "bf16"
@@ -310,6 +339,7 @@ class ValidationSetsTest {
             sample_seed = 0
             sample_repeat = 3
             guidance_scale = 6.0
+            guidance_rescale = 0.6
             SAMPLES_PLACEHOLDER
 
             [bookkeeping]

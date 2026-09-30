@@ -1,12 +1,70 @@
 import json
 import tomllib
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
+
+from safetensors import safe_open
 
 try:
     from runs import validate_output_name
 except ImportError:
     from trainer.runs import validate_output_name
+
+# (path, mtime_ns, size) -> (v_prediction, zero_terminal_snr). Bounded: a base checkpoint is
+# asked about once per config resolution, and `replace()` re-resolves.
+_BASE_PREDICTION_CACHE: dict[tuple[str, int, int], tuple[bool, bool]] = {}
+_BASE_PREDICTION_CACHE_LIMIT = 32
+
+
+def base_model_prediction_flags(path: Union[str, Path, None]) -> tuple[bool, bool]:
+    """`(v_prediction, zero_terminal_snr)` a base checkpoint declares about itself.
+
+    An SDXL checkpoint converted for ComfyUI carries two marker tensors (`v_pred`, `ztsnr`) that
+    say what the network was trained to predict; ComfyUI reads them in `supported_models.py:229`
+    and picks V_PREDICTION / zsnr from them (which is why its `ModelSamplingDiscrete` node is
+    usually redundant). diffusers' single-file loader does not look, so without this a v-pred base
+    would be trained and sampled with epsilons — noise, in both directions.
+
+    Only the key names are read, never tensor data. A diffusers directory answers with its own
+    `scheduler/scheduler_config.json`, and a path that cannot be read declares nothing.
+    """
+    if not path:
+        return False, False
+    target = Path(path)
+    try:
+        stat = target.stat()
+        if target.is_dir():
+            return _directory_prediction_flags(target)
+        key: tuple[str, int, int] = (str(target), int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        return False, False
+    cached = _BASE_PREDICTION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with safe_open(str(target), framework="pt") as handle:
+            keys = set(handle.keys())
+    except Exception:  # noqa: BLE001 - a file we cannot read tells us nothing
+        return False, False
+    flags = ("v_pred" in keys, "v_pred" in keys and "ztsnr" in keys)
+    if len(_BASE_PREDICTION_CACHE) >= _BASE_PREDICTION_CACHE_LIMIT:
+        _BASE_PREDICTION_CACHE.clear()
+    _BASE_PREDICTION_CACHE[key] = flags
+    return flags
+
+
+def _directory_prediction_flags(directory: Path) -> tuple[bool, bool]:
+    """A diffusers pipeline directory's own scheduler config says it (no marker tensors there)."""
+    config_path = directory / "scheduler" / "scheduler_config.json"
+    try:
+        with open(config_path, "rb") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return False, False
+    if str(config.get("prediction_type") or "") != "v_prediction":
+        return False, False
+    return True, bool(config.get("rescale_betas_zero_snr", False))
 
 def _load_toml_config(file_path: str = "config.toml") -> dict:
     try:
@@ -34,6 +92,9 @@ def get_val(key: str, default):
 SAMPLE_SIZE_RANGE = (64, 4096)
 SAMPLE_STEPS_RANGE = (1, 150)
 SAMPLE_CFG_RANGE = (0.0, 30.0)
+# ComfyUI's RescaleCFG multiplier (diffusers' `guidance_rescale`): 0.0 leaves the CFG output
+# alone, 1.0 replaces it with the standard-deviation-matched one.
+SAMPLE_RESCALE_RANGE = (0.0, 1.0)
 SAMPLE_SEED_RANGE = (0, 2**32 - 1)
 SAMPLE_REPEAT_RANGE = (1, 32)
 
@@ -53,6 +114,7 @@ class SampleSet:
     height: int
     steps: int
     guidance_scale: float
+    guidance_rescale: float
     seed: int
     repeat: int
 
@@ -141,6 +203,7 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
             height = _set_int(entry.get("height"), _scalar(cfg, "sample_height", 720))
             steps = _set_int(entry.get("steps"), _scalar(cfg, "sample_steps", 55))
             guidance = _set_float(entry.get("guidance_scale"), _scalar(cfg, "guidance_scale", 6.0))
+            rescale = _set_float(entry.get("guidance_rescale"), _scalar(cfg, "guidance_rescale", 0.0))
             seed = _set_int(entry.get("seed"), _scalar(cfg, "sample_seed", 0))
             repeat = _set_int(entry.get("repeat"), _scalar(cfg, "sample_repeat", 3))
             if not prompt.strip():
@@ -149,6 +212,7 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
             _check_range("height", height, SAMPLE_SIZE_RANGE)
             _check_range("steps", steps, SAMPLE_STEPS_RANGE)
             _check_range("guidance_scale", guidance, SAMPLE_CFG_RANGE)
+            _check_range("guidance_rescale", rescale, SAMPLE_RESCALE_RANGE)
             _check_range("seed", seed, SAMPLE_SEED_RANGE)
             _check_range("repeat", repeat, SAMPLE_REPEAT_RANGE)
         except ValueError as exc:
@@ -164,6 +228,7 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
                 height=height,
                 steps=steps,
                 guidance_scale=guidance,
+                guidance_rescale=rescale,
                 seed=seed,
                 repeat=repeat,
             )
@@ -184,6 +249,7 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
             height=int(_scalar(cfg, "sample_height", 720)),
             steps=int(_scalar(cfg, "sample_steps", 55)),
             guidance_scale=float(_scalar(cfg, "guidance_scale", 6.0)),
+            guidance_rescale=float(_scalar(cfg, "guidance_rescale", 0.0)),
             seed=int(_scalar(cfg, "sample_seed", 0)),
             repeat=int(_scalar(cfg, "sample_repeat", 3)),
         )
@@ -279,7 +345,14 @@ class TrainConfig:
     modelspec_sai_model_spec: str = get_val("modelspec_sai_model_spec", "1.0.0")
 
     # Training mode
-    is_vpred: bool = get_val("is_vpred", False)
+    # Not config keys and not settable: what the base declares about itself, resolved in
+    # `__post_init__` from `pretrained_model_name_or_path` (`base_model_prediction_flags` — the
+    # `v_pred` / `ztsnr` marker tensors ComfyUI reads, or a diffusers directory's scheduler config).
+    # The training target and the sample pass both read these, because epsilons against a velocity
+    # model (or the reverse) never converges. There is deliberately no switch to disagree with the
+    # file; a checkpoint stripped of its markers cannot be detected.
+    prediction_type: str = ""
+    zero_terminal_snr: bool = False
     min_snr_gamma: float = get_val("min_snr_gamma", 5.0)
 
     # Core Hyperparameters
@@ -362,6 +435,7 @@ class TrainConfig:
     sample_seed: int = get_val("sample_seed", 0)
     sample_repeat: int = get_val("sample_repeat", 3)
     guidance_scale: float = get_val("guidance_scale", 6.0)
+    guidance_rescale: float = get_val("guidance_rescale", 0.0)
     # `[[validation.samples]]`: raw tables, resolved by `resolve_sample_sets`.
     # Empty means "one set built from the flat sample_* keys above".
     samples: list = field(default_factory=lambda: list(get_val("samples", []) or []))
@@ -377,6 +451,13 @@ class TrainConfig:
     _current_epoch: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
+        # Derived on every construction (as `run_dir` is written by `main.py`), so `replace()` on
+        # a config whose base changed cannot keep the old answer.
+        v_prediction, zero_terminal_snr = base_model_prediction_flags(
+            self.pretrained_model_name_or_path
+        )
+        self.prediction_type = "v_prediction" if v_prediction else "epsilon"
+        self.zero_terminal_snr = zero_terminal_snr
         # Every artifact path is built from the name, so a hand-edited config with a space
         # or a slash in it fails here — at startup, before the GPU is touched.
         output_name_error = validate_output_name(self.output_name)

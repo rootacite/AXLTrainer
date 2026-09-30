@@ -75,7 +75,6 @@ class ModelSpecCatalogTest {
                 modelspecSaiModelSpec = sdxl.saiModelSpec
             ),
             training = TrainingConfig(
-                isVpred = false,
                 minSnrGamma = 5.0,
                 seed = 1,
                 mixedPrecision = "bf16",

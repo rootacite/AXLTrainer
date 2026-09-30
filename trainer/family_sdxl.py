@@ -533,13 +533,15 @@ class SdxlFamily:
         }
 
     def build_noise_scheduler(self, pipe: Any, cfg: Any) -> Any:
-        scheduler_kwargs: dict[str, Any] = {}
-        if cfg.is_vpred:
-            scheduler_kwargs["prediction_type"] = "v_prediction"
-            scheduler_kwargs["rescale_betas_zero_snr"] = True
-        else:
-            scheduler_kwargs["prediction_type"] = "epsilon"
-        return DDIMScheduler.from_config(pipe.scheduler.config, **scheduler_kwargs)
+        # The base checkpoint decides what the training target is (`TrainConfig.prediction_type`
+        # / `zero_terminal_snr`, resolved from its own marker tensors); training epsilons against
+        # a velocity model (or the reverse) never converges.
+        return DDIMScheduler.from_config(
+            pipe.scheduler.config,
+            prediction_type=cfg.prediction_type,
+            rescale_betas_zero_snr=bool(cfg.zero_terminal_snr)
+            and cfg.prediction_type == "v_prediction",
+        )
 
     def extra_cond(
         self,
@@ -585,7 +587,7 @@ class SdxlFamily:
         return prompt_embeds, pooled_prompt_embeds
 
     def prediction_type(self, cfg: Any) -> str:
-        return "v_prediction" if cfg.is_vpred else "epsilon"
+        return cfg.prediction_type
 
     def denoise_loss(
         self,
@@ -630,7 +632,7 @@ class SdxlFamily:
             },
             return_dict=False,
         )[0]
-        if cfg.is_vpred:
+        if cfg.prediction_type == "v_prediction":
             target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             target = noise

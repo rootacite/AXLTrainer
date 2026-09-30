@@ -55,6 +55,7 @@ data class SampleSetForm(
     val height: String = "",
     val steps: String = "",
     val guidanceScale: String = "",
+    val guidanceRescale: String = "",
     val seed: String = "",
     val repeat: String = ""
 )
@@ -76,7 +77,6 @@ data class TrainingConfigForm(
     val modelspecImplementation: String = "",
     val modelspecSaiModelSpec: String = "",
 
-    val isVpred: Boolean = false,
     val minSnrGamma: String = "",
     val seed: String = "",
     val mixedPrecision: String = "bf16",
@@ -325,6 +325,7 @@ data class TrainingConfigForm(
             requireInt(key("steps"), set.steps, min = 1, max = 150)
             requireInt(key("repeat"), set.repeat, min = 1, max = 32)
             requireDouble(key("guidance_scale"), set.guidanceScale, min = 0.0, max = 30.0)
+            requireDouble(key("guidance_rescale"), set.guidanceRescale, min = 0.0, max = 1.0)
             val seedValue = set.seed.trim().toLongOrNull()
             when {
                 seedValue == null -> errors[key("seed")] = "Enter an integer"
@@ -369,7 +370,6 @@ data class TrainingConfigForm(
                 "modelspec_sai_model_spec" to q(modelspecSaiModelSpec.trim())
             ),
             "training" to mapOf(
-                "is_vpred" to b(isVpred),
                 "min_snr_gamma" to f(minSnrGamma),
                 "seed" to n(seed),
                 "mixed_precision" to q(mixedPrecision.trim()),
@@ -443,7 +443,8 @@ data class TrainingConfigForm(
                 "sample_steps" to n(primary.steps),
                 "sample_seed" to n(primary.seed),
                 "sample_repeat" to n(primary.repeat),
-                "guidance_scale" to f(primary.guidanceScale)
+                "guidance_scale" to f(primary.guidanceScale),
+                "guidance_rescale" to f(primary.guidanceRescale)
             )
         )
     }
@@ -461,6 +462,7 @@ data class TrainingConfigForm(
                 put("height", set.height.trim())
                 put("steps", set.steps.trim())
                 put("guidance_scale", TomlDocumentPatcher.float(set.guidanceScale))
+                put("guidance_rescale", TomlDocumentPatcher.float(set.guidanceRescale))
                 put("seed", set.seed.trim())
                 put("repeat", set.repeat.trim())
             }
@@ -531,7 +533,6 @@ data class TrainingConfigForm(
                 modelspecArchitecture = spec.modelspecArchitecture,
                 modelspecImplementation = spec.modelspecImplementation,
                 modelspecSaiModelSpec = spec.modelspecSaiModelSpec,
-                isVpred = train.isVpred,
                 minSnrGamma = formatNumber(train.minSnrGamma),
                 seed = train.seed.toString(),
                 mixedPrecision = train.mixedPrecision,
@@ -611,6 +612,7 @@ data class TrainingConfigForm(
                         height = validation.sampleHeight.toString(),
                         steps = validation.sampleSteps.toString(),
                         guidanceScale = formatNumber(validation.guidanceScale),
+                        guidanceRescale = formatNumber(validation.guidanceRescale),
                         seed = validation.sampleSeed.toString(),
                         repeat = validation.sampleRepeat.toString()
                     )
@@ -625,6 +627,7 @@ data class TrainingConfigForm(
                     height = (set.height ?: validation.sampleHeight).toString(),
                     steps = (set.steps ?: validation.sampleSteps).toString(),
                     guidanceScale = formatNumber(set.guidanceScale ?: validation.guidanceScale),
+                    guidanceRescale = formatNumber(set.guidanceRescale ?: validation.guidanceRescale),
                     seed = (set.seed ?: validation.sampleSeed).toString(),
                     repeat = (set.repeat ?: validation.sampleRepeat).toString()
                 )

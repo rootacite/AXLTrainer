@@ -7,15 +7,16 @@ from typing import Any, Optional
 
 import torch
 from diffusers.models.attention_processor import AttnProcessor2_0
+from safetensors import safe_open
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from config import TrainConfig
 except ImportError:
     from trainer.config import TrainConfig
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def build_scheduler(
@@ -39,6 +40,28 @@ def build_scheduler(
         return 1.0
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def sample_scheduler_kwargs(cfg: TrainConfig, base_scheduler_config: Any) -> dict[str, Any]:
+    """The `prediction_type` / `rescale_betas_zero_snr` pair a sample pass has to render with.
+
+    A model trained to predict velocities renders to noise when the sampler resolves epsilons
+    (and the reverse), so the *sampling* scheduler has to agree with the base model — the same
+    agreement `build_noise_scheduler` (family_sdxl) keeps on the training side, from the same two
+    derived `TrainConfig` fields. The base pipeline's own scheduler config is the second source
+    (a diffusers v-pred repo), and a single-file base's `v_pred` / `ztsnr` marker tensors are
+    folded into `cfg` already. ComfyUI's equivalent pair is `ModelSamplingDiscrete = v_prediction`
+    with `zsnr = true`.
+    """
+    v_prediction = str(getattr(cfg, "prediction_type", "epsilon")) == "v_prediction"
+    zero_snr = bool(getattr(cfg, "zero_terminal_snr", False))
+    base_prediction = str(getattr(base_scheduler_config, "prediction_type", "epsilon") or "")
+    v_prediction = v_prediction or base_prediction == "v_prediction"
+    zero_snr = zero_snr or bool(getattr(base_scheduler_config, "rescale_betas_zero_snr", False))
+    return {
+        "prediction_type": "v_prediction" if v_prediction else "epsilon",
+        "rescale_betas_zero_snr": zero_snr,
+    }
 
 
 def enable_flash_attention(unet: Any) -> None:
@@ -112,7 +135,7 @@ def build_kohya_metadata(
     put("ss_epoch", 0 if epoch is None else epoch)
     put("ss_final", int(bool(final)))
     put("ss_base_model_version", cfg.base_model_version)
-    put("ss_v_pred", int(bool(cfg.is_vpred)))
+    put("ss_v_pred", int(cfg.prediction_type == "v_prediction"))
 
     put("ss_learning_rate", cfg.learning_rate)
     put("ss_unet_lr", cfg.unet_learning_rate)

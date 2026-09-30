@@ -39,7 +39,7 @@ try:
     from config import TrainConfig, resolve_sample_sets
     from env import flush_memory, setup_migraphx_cache
     from family import require_trainable, resolve_family
-    from models import enable_flash_attention
+    from models import enable_flash_attention, sample_scheduler_kwargs
 except ImportError:
     from trainer import genjob
     from trainer.checkpoints import (
@@ -51,7 +51,7 @@ except ImportError:
     from trainer.config import TrainConfig, resolve_sample_sets
     from trainer.env import flush_memory, setup_migraphx_cache
     from trainer.family import require_trainable, resolve_family
-    from trainer.models import enable_flash_attention
+    from trainer.models import enable_flash_attention, sample_scheduler_kwargs
 
 from diffusers import EulerAncestralDiscreteScheduler
 from PIL import Image
@@ -156,11 +156,13 @@ def _build_config(metadata: dict[str, str], checkpoint: Path) -> TrainConfig:
     return cfg
 
 
-def _prepare_scheduler(pipe, steps: int, device: torch.device) -> None:
-    """Same scheduler and sigma spacing as trainer/sampling.py, so images stay comparable."""
+def _prepare_scheduler(pipe, steps: int, device: torch.device, scheduler_kwargs: dict) -> None:
+    """Same sampler (Euler a, linspace = ComfyUI's normal) and prediction type as
+    trainer/sampling.py, so images stay comparable."""
     pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
         pipe.scheduler.config,
         timestep_spacing="linspace",
+        **scheduler_kwargs,
     )
     sigmas = np.linspace(pipe.scheduler.config.num_train_timesteps - 1, 0, steps)
     sigmas = np.append(sigmas, 0.0).astype(np.float32)
@@ -195,6 +197,9 @@ def run_generation(spec: dict, generated: Path) -> None:
     checkpoint = resolve_resume_path(spec["checkpoint"])
     metadata = read_lora_metadata(checkpoint)
     cfg = _build_config(metadata, checkpoint)
+    # Single mode takes the rescale from config.toml: the job spec carries the prompt-shaped
+    # settings, while the sets and batch modes get their per-set value from `resolve_sample_sets`.
+    guidance_rescale = float(cfg.guidance_rescale)
     family = resolve_family(cfg)
     require_trainable(family)
 
@@ -220,7 +225,7 @@ def run_generation(spec: dict, generated: Path) -> None:
     pipe.text_encoder = te1
     pipe.text_encoder_2 = te2
 
-    _prepare_scheduler(pipe, steps, device)
+    _prepare_scheduler(pipe, steps, device, sample_scheduler_kwargs(cfg, pipe.scheduler.config))
 
     unet_was_gpu = False
     try:
@@ -278,6 +283,7 @@ def run_generation(spec: dict, generated: Path) -> None:
             height=height,
             num_inference_steps=steps,
             guidance_scale=guidance_scale,
+            guidance_rescale=guidance_rescale,
             generator=generator,
             output_type="latent",
             callback_on_step_end=_on_step_end,
@@ -377,11 +383,12 @@ def _render_sets(
     te1, te2 = modules.text_encoders[0], modules.text_encoders[1]
     total_images = sum(sample_set.repeat for sample_set in sets)
     files: list[str] = []
+    scheduler_kwargs = sample_scheduler_kwargs(cfg, pipe.scheduler.config)
 
     for set_index, sample_set in enumerate(sets):
         if _cancel_asked():
             raise _Cancelled()
-        _prepare_scheduler(pipe, sample_set.steps, device)
+        _prepare_scheduler(pipe, sample_set.steps, device, scheduler_kwargs)
         # Each set encodes on its own, so one set's prompt length never pads another's.
         for module in (te1, te2):
             module.to(device=device)
@@ -450,6 +457,7 @@ def _render_sets(
                 height=sample_set.height,
                 num_inference_steps=sample_set.steps,
                 guidance_scale=sample_set.guidance_scale,
+                guidance_rescale=sample_set.guidance_rescale,
                 generator=generator,
                 output_type="latent",
                 callback_on_step_end=_on_step_end,

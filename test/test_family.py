@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import torch
+from diffusers.configuration_utils import FrozenDict
 from safetensors.torch import save_file
 from transformers import CLIPTextConfig, CLIPTextModel
 
@@ -74,7 +75,8 @@ from trainer.family_sdxl import (
     te_lora_targets,
     unet_lora_targets,
 )
-from trainer.models import build_kohya_metadata
+from trainer.config import base_model_prediction_flags
+from trainer.models import build_kohya_metadata, sample_scheduler_kwargs
 from trainer.setup import build_train_objects
 
 
@@ -256,8 +258,10 @@ class TeCheckpointHelperTest(unittest.TestCase):
 
 
 class MetadataPredictionTypeTest(unittest.TestCase):
-    def test_epsilon_when_not_vpred(self):
-        cfg = TrainConfig(is_vpred=False)
+    """The written metadata follows the base the config points at (there is no switch)."""
+
+    def test_epsilon_base(self):
+        cfg = TrainConfig()
         family = resolve_family(cfg)
         meta = build_kohya_metadata(
             cfg, 1, None, False, prediction_type=family.prediction_type(cfg)
@@ -268,8 +272,11 @@ class MetadataPredictionTypeTest(unittest.TestCase):
         self.assertEqual(meta["ss_network_type"], "standard")
         self.assertNotIn("ss_network_args", meta)
 
-    def test_v_prediction_when_vpred(self):
-        cfg = TrainConfig(is_vpred=True)
+    def test_vpred_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "vpred.safetensors"
+            save_file({"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}, str(base))
+            cfg = TrainConfig(pretrained_model_name_or_path=str(base))
         family = resolve_family(cfg)
         self.assertEqual(family.prediction_type(cfg), "v_prediction")
         meta = build_kohya_metadata(
@@ -277,6 +284,125 @@ class MetadataPredictionTypeTest(unittest.TestCase):
         )
         self.assertEqual(meta["modelspec.prediction_type"], "v_prediction")
         self.assertEqual(meta["ss_v_pred"], "1")
+
+    def test_the_training_scheduler_follows_the_base(self):
+        """The noise scheduler (and so the loss target) is eps for an eps base, v-pred + zsnr
+        for a v-pred one — the two have to agree with the file the LoRA is trained on."""
+        family = resolve_family(TrainConfig())
+        eps_pipe = mock.Mock()
+        eps_pipe.scheduler.config = {"num_train_timesteps": 1000, "beta_start": 0.00085,
+                                    "beta_end": 0.012, "beta_schedule": "scaled_linear"}
+        eps = family.build_noise_scheduler(eps_pipe, TrainConfig())
+        self.assertEqual(eps.config.prediction_type, "epsilon")
+        self.assertFalse(eps.config.rescale_betas_zero_snr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "vpred.safetensors"
+            save_file({"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}, str(base))
+            cfg = TrainConfig(pretrained_model_name_or_path=str(base))
+        vpred = family.build_noise_scheduler(eps_pipe, cfg)
+        self.assertEqual(vpred.config.prediction_type, "v_prediction")
+        self.assertTrue(vpred.config.rescale_betas_zero_snr)
+
+
+class SampleSchedulerKwargsTest(unittest.TestCase):
+    """A sample pass has to resolve what the model was trained to predict.
+
+    An SDXL base declares epsilons and must keep rendering with them; a v-pred base — because its
+    own `v_pred` / `ztsnr` markers or its scheduler config say so — needs `v_prediction` plus the
+    zero-terminal-SNR betas training used. `TrainConfig` resolves that from the base path, so a
+    `replace()` that swaps the base cannot keep a stale answer.
+    """
+
+    EPSILON_BASE = FrozenDict({"prediction_type": "epsilon", "rescale_betas_zero_snr": False})
+
+    def marked_config(self, tmp: Path, markers: dict) -> TrainConfig:
+        base = tmp / "marked.safetensors"
+        save_file(markers, str(base))
+        return TrainConfig(pretrained_model_name_or_path=str(base))
+
+    def test_epsilon_base_keeps_the_epsilon_schedule(self):
+        self.assertEqual(
+            sample_scheduler_kwargs(TrainConfig(), self.EPSILON_BASE),
+            {"prediction_type": "epsilon", "rescale_betas_zero_snr": False},
+        )
+
+    def test_the_config_picks_the_prediction_type_up_from_the_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.marked_config(Path(tmp), {"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])})
+        self.assertEqual(cfg.prediction_type, "v_prediction")
+        self.assertTrue(cfg.zero_terminal_snr)
+        self.assertEqual(
+            sample_scheduler_kwargs(cfg, self.EPSILON_BASE),
+            {"prediction_type": "v_prediction", "rescale_betas_zero_snr": True},
+        )
+
+    def test_vpred_without_the_zero_snr_marker_trains_and_samples_without_zsnr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.marked_config(Path(tmp), {"v_pred": torch.tensor([])})
+        self.assertEqual(cfg.prediction_type, "v_prediction")
+        self.assertFalse(cfg.zero_terminal_snr)
+        self.assertEqual(
+            sample_scheduler_kwargs(cfg, self.EPSILON_BASE),
+            {"prediction_type": "v_prediction", "rescale_betas_zero_snr": False},
+        )
+
+    def test_a_vpred_base_is_honoured_without_the_markers(self):
+        base = FrozenDict({"prediction_type": "v_prediction", "rescale_betas_zero_snr": False})
+        self.assertEqual(
+            sample_scheduler_kwargs(TrainConfig(), base),
+            {"prediction_type": "v_prediction", "rescale_betas_zero_snr": False},
+        )
+
+    def test_a_zero_snr_base_is_honoured_without_the_markers(self):
+        base = FrozenDict({"prediction_type": "epsilon", "rescale_betas_zero_snr": True})
+        self.assertEqual(
+            sample_scheduler_kwargs(TrainConfig(), base),
+            {"prediction_type": "epsilon", "rescale_betas_zero_snr": True},
+        )
+
+    def test_a_config_without_the_field_reads_as_no(self):
+        base = FrozenDict({"prediction_type": "epsilon", "rescale_betas_zero_snr": False})
+        self.assertEqual(
+            sample_scheduler_kwargs(object(), base)["prediction_type"], "epsilon"
+        )
+
+
+class BaseModelPredictionFlagsTest(unittest.TestCase):
+    """The two marker tensors ComfyUI reads (`supported_models.py:229`)."""
+
+    def test_the_markers_are_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marked = Path(tmp) / "both.safetensors"
+            save_file({"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}, str(marked))
+            self.assertEqual(base_model_prediction_flags(marked), (True, True))
+
+    def test_vpred_without_the_zero_snr_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marked = Path(tmp) / "vpred.safetensors"
+            save_file({"v_pred": torch.tensor([])}, str(marked))
+            self.assertEqual(base_model_prediction_flags(marked), (True, False))
+
+    def test_zero_snr_alone_is_not_vpred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marked = Path(tmp) / "ztsnr.safetensors"
+            save_file({"ztsnr": torch.tensor([])}, str(marked))
+            self.assertEqual(base_model_prediction_flags(marked), (False, False))
+
+    def test_a_diffusers_directory_or_a_missing_path_says_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(base_model_prediction_flags(tmp), (False, False))
+            self.assertEqual(base_model_prediction_flags(Path(tmp) / "gone.safetensors"), (False, False))
+        self.assertEqual(base_model_prediction_flags(None), (False, False))
+        self.assertEqual(base_model_prediction_flags(""), (False, False))
+
+    def test_the_answer_is_cached_by_path_mtime_and_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marked = Path(tmp) / "both.safetensors"
+            save_file({"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}, str(marked))
+            self.assertEqual(base_model_prediction_flags(marked), (True, True))
+            with mock.patch("trainer.config.safe_open", side_effect=AssertionError("re-read")):
+                self.assertEqual(base_model_prediction_flags(marked), (True, True))
 
 
 class KohyaKeyMapTest(unittest.TestCase):
@@ -904,7 +1030,6 @@ class LoconTargetsAndRemapTest(unittest.TestCase):
             network_alpha=8,
             conv_dim=16,
             conv_alpha=8,
-            is_vpred=False,
         )
         family = resolve_family(cfg)
         meta = build_kohya_metadata(
@@ -921,7 +1046,6 @@ class LoconTargetsAndRemapTest(unittest.TestCase):
             network_alpha=8,
             conv_dim=8,
             conv_alpha=4,
-            is_vpred=False,
         )
         family = resolve_family(cfg)
         meta = build_kohya_metadata(

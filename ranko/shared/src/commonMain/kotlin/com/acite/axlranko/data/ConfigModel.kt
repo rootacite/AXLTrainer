@@ -61,7 +61,6 @@ data class ModelSpecConfig(
 
 @Serializable
 data class TrainingConfig(
-    @SerialName("is_vpred") val isVpred: Boolean,
     @SerialName("min_snr_gamma") val minSnrGamma: Double,
     val seed: Long, // 考虑到你的 seed 包含了 1145141919 等较大数值，使用 Long 更安全
     @SerialName("mixed_precision") val mixedPrecision: String,
@@ -149,6 +148,7 @@ data class ValidationConfig(
     @SerialName("sample_seed") val sampleSeed: Long,
     @SerialName("sample_repeat") val sampleRepeat: Int,
     @SerialName("guidance_scale") val guidanceScale: Double,
+    @SerialName("guidance_rescale") val guidanceRescale: Double = 0.0,
     val samples: List<SampleSetConfig> = emptyList()
 )
 
@@ -165,6 +165,7 @@ data class SampleSetConfig(
     val height: Int? = null,
     val steps: Int? = null,
     @SerialName("guidance_scale") val guidanceScale: Double? = null,
+    @SerialName("guidance_rescale") val guidanceRescale: Double? = null,
     val seed: Long? = null,
     val repeat: Int? = null
 )

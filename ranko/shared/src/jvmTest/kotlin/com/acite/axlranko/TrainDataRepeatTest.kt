@@ -232,7 +232,6 @@ class TrainDataRepeatTest {
             modelspec_sai_model_spec = "1.0.0"
 
             [training]
-            is_vpred = false
             min_snr_gamma = 5.0
             seed = 1145141919
             mixed_precision = "bf16"

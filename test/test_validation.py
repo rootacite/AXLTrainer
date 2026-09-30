@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest import mock
 
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ def flat(**overrides) -> dict:
         "sample_seed": 7,
         "sample_repeat": 2,
         "guidance_scale": 5.5,
+        "guidance_rescale": 0.6,
     }
     base.update(overrides)
     return base
@@ -46,6 +48,25 @@ class NoSetsTest(unittest.TestCase):
         self.assertEqual(only.seed, 7)
         self.assertEqual(only.repeat, 2)
         self.assertEqual(only.guidance_scale, 5.5)
+        self.assertEqual(only.guidance_rescale, 0.6)
+
+    def test_rescale_defaults_to_off(self):
+        """ComfyUI's RescaleCFG: off unless the config asks for it.
+
+        `_scalar` falls back to `get_val`, i.e. to the repo's own `config.toml`, so the code
+        default is read with that fallback held out.
+        """
+        without = flat()
+        del without["guidance_rescale"]
+        with mock.patch("trainer.config.get_val", side_effect=lambda key, default: default):
+            self.assertEqual(resolve_sample_sets(without)[0].guidance_rescale, 0.0)
+
+    def test_an_entry_overrides_the_rescale(self):
+        sets = resolve_sample_sets(flat(samples=[
+            {"prompt": "p1"},
+            {"prompt": "p2", "guidance_rescale": 0.3},
+        ]))
+        self.assertEqual([s.guidance_rescale for s in sets], [0.6, 0.3])
 
     def test_name_defaults_to_the_first_prompt_tag(self):
         self.assertEqual(resolve_sample_sets(flat())[0].name, "base prompt")
@@ -107,6 +128,7 @@ class ValidationErrorTest(unittest.TestCase):
             ({"prompt": "p", "width": 32}, "width"),
             ({"prompt": "p", "height": 8192}, "height"),
             ({"prompt": "p", "guidance_scale": 60}, "guidance_scale"),
+            ({"prompt": "p", "guidance_rescale": 1.5}, "guidance_rescale"),
             ({"prompt": "p", "seed": -1}, "seed"),
             ({"prompt": "p", "seed": 2**32}, "seed"),
         ]

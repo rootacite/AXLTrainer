@@ -46,7 +46,6 @@ enum class ConfigSection(
         title = "Training",
         description = "Epochs, batch size, scheduler, and precision",
         fieldKeys = setOf(
-            "is_vpred",
             "min_snr_gamma",
             "seed",
             "mixed_precision",
@@ -146,7 +145,8 @@ enum class ConfigSection(
             "sample_steps",
             "sample_seed",
             "sample_repeat",
-            "guidance_scale"
+            "guidance_scale",
+            "guidance_rescale"
         ),
         errorPrefixes = setOf(SAMPLE_SET_ERROR_PREFIX)
     ),

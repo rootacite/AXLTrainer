@@ -1,8 +1,10 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import torch
+from diffusers.configuration_utils import FrozenDict
 from torch import nn
 
 import sys
@@ -13,9 +15,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from trainer import control
+from trainer.config import TrainConfig
 from trainer.device_swap import SwapContext, run_pause, run_resume
 from trainer.cache import prepare_encoding_devices
+from safetensors.torch import save_file
+
+from trainer.models import sample_scheduler_kwargs
 from trainer.sampling import (
+    _configure_scheduler,
     _offload_text_encoders,
     _prepare_decode_devices,
     _prepare_denoise_device,
@@ -135,6 +142,80 @@ class SamplingOffloadHelperTest(unittest.TestCase):
         loss = module(torch.randn(2, 4)).sum()
         loss.backward()
         self.assertIsNotNone(module.weight.grad)
+
+
+class SamplingSchedulerTest(unittest.TestCase):
+    """The sample pass must denoise with the prediction type the model was trained with.
+
+    `_configure_scheduler` resolves `models.sample_scheduler_kwargs`, and those kwargs reach the
+    real scheduler: a v-pred model gets `v_prediction` plus the zero-terminal-SNR betas (the
+    schedule ComfyUI calls `ModelSamplingDiscrete = v_prediction, zsnr = true`), an SDXL base
+    keeps epsilons. The numbers below are the SDXL betas diffusers builds from the shipped config.
+    """
+
+    BASE_CONFIG = {
+        "num_train_timesteps": 1000,
+        "beta_start": 0.00085,
+        "beta_end": 0.012,
+        "beta_schedule": "scaled_linear",
+        "trained_betas": None,
+        "prediction_type": "epsilon",
+        "timestep_spacing": "leading",
+        "steps_offset": 1,
+        "rescale_betas_zero_snr": False,
+        "clip_sample": False,
+        "set_alpha_to_one": False,
+        "sample_max_value": 1.0,
+        "skip_prk_steps": True,
+        "final_sigmas_type": "zero",
+        "interpolation_type": "linear",
+        "use_karras_sigmas": False,
+        "use_exponential_sigmas": False,
+        "use_beta_sigmas": False,
+        "sigma_min": None,
+        "sigma_max": None,
+        "timestep_type": "discrete",
+    }
+
+    class _StubPipe:
+        def __init__(self, config):
+            self.scheduler = SimpleNamespace(config=FrozenDict(config))
+
+    def marked_config(self, tmp, markers) -> TrainConfig:
+        base = tmp / "marked.safetensors"
+        save_file(markers, str(base))
+        return TrainConfig(pretrained_model_name_or_path=str(base))
+
+    def test_epsilon_model_keeps_the_sdxl_schedule(self):
+        pipe = self._StubPipe(self.BASE_CONFIG)
+        _configure_scheduler(
+            pipe,
+            20,
+            torch.device("cpu"),
+            sample_scheduler_kwargs(TrainConfig(), pipe.scheduler.config),
+        )
+        self.assertEqual(pipe.scheduler.config.prediction_type, "epsilon")
+        self.assertFalse(pipe.scheduler.config.rescale_betas_zero_snr)
+        self.assertEqual(pipe.scheduler.config.timestep_spacing, "linspace")
+        self.assertAlmostEqual(float(pipe.scheduler.alphas_cumprod[-1]), 4.66e-3, places=5)
+
+    def test_vpred_model_switches_prediction_type_and_the_betas(self):
+        pipe = self._StubPipe(self.BASE_CONFIG)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.marked_config(
+                Path(tmp), {"v_pred": torch.tensor([]), "ztsnr": torch.tensor([])}
+            )
+        _configure_scheduler(
+            pipe,
+            20,
+            torch.device("cpu"),
+            sample_scheduler_kwargs(cfg, pipe.scheduler.config),
+        )
+        self.assertEqual(pipe.scheduler.config.prediction_type, "v_prediction")
+        self.assertTrue(pipe.scheduler.config.rescale_betas_zero_snr)
+        # Zero-terminal SNR: the noisiest alpha collapses, so sigma_max is ~4096 instead of 14.6.
+        self.assertAlmostEqual(float(pipe.scheduler.alphas_cumprod[-1]), 2**-24, places=10)
+        self.assertEqual(pipe.scheduler.config.timestep_spacing, "linspace")
 
 
 if __name__ == "__main__":

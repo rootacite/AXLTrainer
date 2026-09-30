@@ -228,7 +228,6 @@ class ResumeConfigTest {
 
             [training]
             # keep this comment
-            is_vpred = false
             min_snr_gamma = 5.0
             seed = 1145141919
             mixed_precision = "bf16"

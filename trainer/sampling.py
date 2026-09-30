@@ -22,11 +22,13 @@ try:
     from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
+    from models import sample_scheduler_kwargs
 except ImportError:
     from trainer.config import TrainConfig, resolve_sample_sets
     from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
+    from trainer.models import sample_scheduler_kwargs
 
 
 def _offload_module(module: torch.nn.Module) -> None:
@@ -112,11 +114,16 @@ def _prepare_encode_device(
     flush_memory(device)
 
 
-def _configure_scheduler(pipe, steps: int, device: torch.device) -> None:
-    """Linspace sigma schedule for one set's step count (sets may differ)."""
+def _configure_scheduler(pipe, steps: int, device: torch.device, scheduler_kwargs: dict) -> None:
+    """Linspace sigma schedule for one set's step count (sets may differ).
+
+    `scheduler_kwargs` carries the prediction type this base/LoRA was trained with
+    (`models.sample_scheduler_kwargs`): rendering a v-pred model with epsilons is noise.
+    """
     pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
         pipe.scheduler.config,
         timestep_spacing="linspace",
+        **scheduler_kwargs,
     )
     sigmas = np.linspace(pipe.scheduler.config.num_train_timesteps - 1, 0, steps)
     sigmas = np.append(sigmas, 0.0).astype(np.float32)
@@ -166,6 +173,7 @@ def generate_sample_image(
 
     sets = resolve_sample_sets(cfg)
     total_images = sum(sample_set.repeat for sample_set in sets)
+    scheduler_kwargs = sample_scheduler_kwargs(cfg, pipe.scheduler.config)
 
     sample_dir = output_dir_base / f"{cfg.output_name}_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +193,7 @@ def generate_sample_image(
             prompt_sets=len(sets),
         )
         for set_index, sample_set in enumerate(sets, start=1):
-            _configure_scheduler(pipe, sample_set.steps, device)
+            _configure_scheduler(pipe, sample_set.steps, device, scheduler_kwargs)
             # Every set encodes on its own, so the chunk padding of one prompt never depends
             # on how long another set's prompt is.
             _prepare_encode_device(trained_te1, trained_te2, device)
@@ -266,6 +274,7 @@ def generate_sample_image(
                     height=sample_set.height,
                     num_inference_steps=sample_set.steps,
                     guidance_scale=sample_set.guidance_scale,
+                    guidance_rescale=sample_set.guidance_rescale,
                     generator=generator,
                     output_type="latent",
                     callback_on_step_end=_on_step_end,

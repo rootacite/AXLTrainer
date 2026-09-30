@@ -896,12 +896,6 @@ private fun TrainingFields(
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
 ) {
-    ConfigSwitch(
-        label = "v-prediction",
-        checked = form.isVpred,
-        description = "Enable v-pred loss (leave off for standard SDXL epsilon)",
-        onChecked = { viewModel.updateForm { copy(isVpred = it) } }
-    )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Epochs",
@@ -1579,6 +1573,14 @@ private fun ValidationFields(
             value = set.guidanceScale,
             error = errors[key("guidance_scale")],
             onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(guidanceScale = value) } },
+            modifier = Modifier.weight(1f)
+        )
+        ConfigTextField(
+            label = "Guidance rescale",
+            value = set.guidanceRescale,
+            error = errors[key("guidance_rescale")],
+            supporting = "0 = off, 0.6 = ComfyUI's RescaleCFG",
+            onValueChange = { value -> viewModel.updateSampleSet(selected) { it.copy(guidanceRescale = value) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
