@@ -132,6 +132,53 @@ def _configure_scheduler(pipe, steps: int, device: torch.device, scheduler_kwarg
 
 
 @torch.no_grad()
+def sample_provenance(
+    *,
+    cfg,
+    sample_set,
+    set_index: int,
+    repeat_idx: int,
+    seed: int,
+    global_step: int,
+):
+    """PNG text chunks recording what drew this sample and where it came from.
+
+    A training sample says nothing about itself: its name holds a step, a set index and a repeat,
+    and the prompt behind that index lives in the config the run was trained with (`config.toml`, or
+    its snapshot in the run's log directory). Once such a file is copied out of the run directory
+    none of that travels with it, so these chunks are written on the image itself — the same facts
+    the job records of generated images carry, under `axl_`-prefixed keys (`axl_mask_blur` in
+    `tools/mask_blur.py` is the existing precedent for that prefix).
+
+    Keys: `axl_run_id`, `axl_output_name`, `axl_step`, `axl_set`, `axl_repeat`, `axl_seed`,
+    `axl_prompt`, `axl_negative`, and the sampling values (`axl_width`, `axl_height`, `axl_steps`,
+    `axl_guidance`, `axl_guidance_rescale`).
+    """
+    from PIL.PngImagePlugin import PngInfo
+
+    run_id = Path(str(getattr(cfg, "run_dir", "") or "")).name
+    fields = [
+        ("axl_run_id", run_id),
+        ("axl_output_name", str(getattr(cfg, "output_name", ""))),
+        ("axl_step", f"{global_step:06d}"),
+        ("axl_set", str(set_index)),
+        ("axl_repeat", str(repeat_idx)),
+        ("axl_seed", str(seed)),
+        ("axl_prompt", str(getattr(sample_set, "prompt", ""))),
+        ("axl_negative", str(getattr(sample_set, "negative", ""))),
+        ("axl_width", str(getattr(sample_set, "width", ""))),
+        ("axl_height", str(getattr(sample_set, "height", ""))),
+        ("axl_steps", str(getattr(sample_set, "steps", ""))),
+        ("axl_guidance", str(getattr(sample_set, "guidance_scale", ""))),
+        ("axl_guidance_rescale", str(getattr(sample_set, "guidance_rescale", ""))),
+    ]
+    info = PngInfo()
+    for key, value in fields:
+        if value:
+            info.add_text(key, value)
+    return info
+
+
 def generate_sample_image(
     *,
     accelerator: Accelerator,
@@ -301,7 +348,17 @@ def generate_sample_image(
                 image = (image * 255).round().astype("uint8")
 
                 out_filename = f"{cfg.output_name}_{global_step:06d}_p{set_index - 1}_{repeat_idx}.png"
-                Image.fromarray(image).save(sample_dir / out_filename)
+                Image.fromarray(image).save(
+                    sample_dir / out_filename,
+                    pnginfo=sample_provenance(
+                        cfg=cfg,
+                        sample_set=sample_set,
+                        set_index=set_index - 1,
+                        repeat_idx=repeat_idx,
+                        seed=current_seed,
+                        global_step=global_step,
+                    ),
+                )
 
                 _offload_module(pipe.vae)
                 repeat_idx += 1

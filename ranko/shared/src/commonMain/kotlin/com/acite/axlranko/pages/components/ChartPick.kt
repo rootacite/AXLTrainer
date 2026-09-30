@@ -169,11 +169,16 @@ internal const val GENERATE_MIN_STEPS = 1
 internal const val GENERATE_MAX_STEPS = 150
 internal const val GENERATE_MAX_SEED = 4_294_967_295L
 
-/** Job modes as api.py writes them: one ad-hoc image, one image per sample set, or that sets pass
- *  for every checkpoint of a step range (one process, one `sets` job per checkpoint). */
+/** Job modes as api.py writes them: one ad-hoc image, one image per sample set, that sets pass for
+ *  every checkpoint of a step range (one process, one `sets` job per checkpoint), or an evaluation
+ *  of one checkpoint (top its samples up, tag them, score them). */
 internal const val JOB_MODE_SINGLE = "single"
 internal const val JOB_MODE_SETS = "sets"
 internal const val JOB_MODE_BATCH = "batch"
+internal const val JOB_MODE_EVALUATE = "evaluate"
+
+/** True for an evaluation job, whose record carries `scores` instead of an image of its own. */
+internal fun isEvaluation(job: GeneratedSampleJob): Boolean = job.mode == JOB_MODE_EVALUATE
 
 /**
  * Null when the form can be submitted, otherwise the message shown in the panel. Mirrors the
@@ -286,11 +291,13 @@ internal fun runningBatch(jobs: List<GeneratedSampleJob>): GeneratedSampleJob? =
 
 /**
  * Progress of a whole-set pass: `set 2/6 · image 3/12 · denoising 12/35`, or null when the job is
- * a single image or no longer running.
+ * a single image or no longer running. An evaluation reports its own stage instead: `rendering
+ * 3/4`, then `tagging 8/21` over the whole set it is scoring.
  */
 internal fun generatedJobSetProgress(job: GeneratedSampleJob?): String? {
     if (job == null || job.state != JOB_RUNNING) return null
     if (job.cancelRequested) return "cancelling…"
+    if (isEvaluation(job)) return evaluationProgressLabel(job)
     if (job.mode != JOB_MODE_SETS) return null
     val parts = mutableListOf<String>()
     if (job.totalSets > 0 && job.currentSet > 0) parts += "set ${job.currentSet}/${job.totalSets}"
@@ -346,12 +353,20 @@ internal fun nearestSampledStep(samples: Map<String, List<SampleItem>>, step: In
 internal fun jobHasImages(job: GeneratedSampleJob): Boolean =
     job.state != JOB_RUNNING && generatedSampleItems(job).isNotEmpty()
 
+/**
+ * Whether a job belongs on a checkpoint card: one with images to show, or an evaluation — which may
+ * have rendered nothing at all (the checkpoint already held enough images) while still carrying the
+ * scores the card is there to show.
+ */
+internal fun jobShowsOnCard(job: GeneratedSampleJob): Boolean =
+    jobHasImages(job) || (isEvaluation(job) && job.state != JOB_RUNNING)
+
 /** Finished generation jobs for [step], in the order they were listed (newest first). */
 internal fun generatedJobsForStep(jobs: List<GeneratedSampleJob>, step: Int?): List<GeneratedSampleJob> =
     if (step == null) {
         emptyList()
     } else {
-        jobs.filter { it.step == step && jobHasImages(it) }
+        jobs.filter { it.step == step && jobShowsOnCard(it) }
     }
 
 /**
@@ -366,7 +381,7 @@ internal fun panelJobsForStep(
     checkpoint: CheckpointItem?,
 ): List<GeneratedSampleJob> {
     val path = checkpoint?.path
-    val own = jobs.filter { jobHasImages(it) && path != null && it.checkpoint == path }
+    val own = jobs.filter { jobShowsOnCard(it) && path != null && it.checkpoint == path }
     return (generatedJobsForStep(jobs, step) + own).distinctBy { it.id }
 }
 
@@ -385,7 +400,9 @@ internal fun runningJob(jobs: List<GeneratedSampleJob>): GeneratedSampleJob? =
 
 /** A generated job as panel slots; empty while it has no image yet. */
 internal fun generatedSampleItems(job: GeneratedSampleJob): List<SampleItem> {
-    if (job.mode == JOB_MODE_SETS) {
+    // A `sets` pass and an evaluation both write `{job_id}_p{set}_{repeat}.png`; an evaluation that
+    // needed no top-up has an empty list and contributes no thumbnail (its scores are its content).
+    if (job.mode == JOB_MODE_SETS || isEvaluation(job)) {
         return job.files.mapNotNull { path ->
             path.takeIf { it.isNotBlank() }?.let { sampleItemForGeneratedFile(path) }
         }

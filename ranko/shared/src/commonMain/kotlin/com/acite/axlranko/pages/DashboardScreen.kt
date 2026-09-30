@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.CircularProgressIndicator
@@ -105,6 +106,8 @@ import com.acite.axlranko.pages.components.ChartPickMarkers
 import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
+import com.acite.axlranko.pages.components.EvaluationCardBlock
+import com.acite.axlranko.pages.components.EvaluationDialog
 import com.acite.axlranko.pages.components.HardwareSection
 import com.acite.axlranko.pages.components.ImagePreviewOverlay
 import com.acite.axlranko.pages.components.MetricCard
@@ -128,12 +131,14 @@ import com.acite.axlranko.pages.components.checkpointSteps
 import com.acite.axlranko.pages.components.checkpointsInRange
 import com.acite.axlranko.pages.components.checkpointRowLabel
 import com.acite.axlranko.pages.components.checkpointRows
+import com.acite.axlranko.pages.components.cardEvaluation
 import com.acite.axlranko.pages.components.clampPanelOrigin
 import com.acite.axlranko.pages.components.clampPanelSize
 import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generatedJobCaption
 import com.acite.axlranko.pages.components.generatedJobProgress
 import com.acite.axlranko.pages.components.generatedJobSetProgress
+import com.acite.axlranko.pages.components.isEvaluation
 import com.acite.axlranko.pages.components.nearestSampledStep
 import com.acite.axlranko.pages.components.panelJobsForStep
 import com.acite.axlranko.pages.components.placePanelOrigin
@@ -303,7 +308,7 @@ fun DashboardScreen(
                             canStart = gpuFree,
                             note = uiState.batchError ?: uiState.generatedError,
                             onSampleRange = viewModel::startSampleBatch,
-                            onCancel = { viewModel.cancelGeneration() },
+                            onCancel = { id -> viewModel.cancelGeneration(id) },
                         )
                     }
 
@@ -330,12 +335,17 @@ fun DashboardScreen(
                                 starting = uiState.isGeneratingCheckpoint == row.checkpoint?.path,
                                 busyElsewhere = uiState.isGeneratingCheckpoint != null &&
                                     uiState.isGeneratingCheckpoint != row.checkpoint?.path,
+                                startingEvaluation = uiState.isStartingEvaluation == row.checkpoint?.path,
+                                evaluationDetailsFor = uiState.evaluationDetailsFor,
                                 pinning = uiState.pinningPath == row.checkpoint?.path,
                                 pinEnabled = uiState.pinningPath == null,
                                 exportInFlightPath = uiState.exportInFlightPath,
                                 exportResult = uiState.exportResult,
                                 onOpen = { viewModel.openPreview(it) },
                                 onGenerate = viewModel::generateCheckpointSamples,
+                                onEvaluate = { checkpoint, images -> viewModel.openEvaluation(checkpoint, images) },
+                                onCancelEvaluation = { id -> viewModel.cancelGeneration(id) },
+                                onToggleEvaluationDetails = viewModel::toggleEvaluationDetails,
                                 onTogglePin = viewModel::toggleCheckpointPin,
                                 onSaveAs = viewModel::saveCheckpointAs,
                             )
@@ -368,6 +378,19 @@ fun DashboardScreen(
         if (uiState.isLoading) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter)
+            )
+        }
+
+        uiState.evaluationTarget?.let { target ->
+            EvaluationDialog(
+                target = target,
+                tagger = uiState.taggerInfo,
+                starting = uiState.isStartingEvaluation == target.checkpoint.path,
+                error = uiState.evaluationError,
+                onStart = { depth, threshold, categories ->
+                    viewModel.startEvaluation(depth, threshold, categories)
+                },
+                onDismiss = viewModel::dismissEvaluation,
             )
         }
 
@@ -699,7 +722,7 @@ internal fun SampleRangeRow(
     canStart: Boolean,
     note: String?,
     onSampleRange: (Int, Int) -> Unit,
-    onCancel: () -> Unit,
+    onCancel: (String) -> Unit,
 ) {
     val colors = rankoColors
     val steps = checkpointSteps(rows)
@@ -727,7 +750,7 @@ internal fun SampleRangeRow(
                 )
                 CapsuleButton(
                     text = "Stop",
-                    onClick = onCancel,
+                    onClick = { onCancel(running.id) },
                     enabled = !running.cancelRequested,
                     compact = true,
                 ) {
@@ -935,6 +958,9 @@ internal fun CheckpointExportStatus(inFlight: Boolean, result: CheckpointExport?
  * the point of a retunable cadence and an optional sampling switch — and can be sampled from here
  * whenever nothing else is using the GPU.
  *
+ * The card also carries the checkpoint's evaluation: the pass still running for it (progress and a
+ * Cancel), or the newest finished one — its F1, a details block, or why it failed.
+ *
  * A pinned checkpoint ([CheckpointRow.pinned]) leads the section, is drawn on an accent-tinted
  * surface so it stands apart from the rest, and carries the pin button that put it there; the pin
  * list is the run's own state, kept in its log directory by the helper.
@@ -948,12 +974,17 @@ internal fun CheckpointRowCard(
     gpuFree: Boolean,
     starting: Boolean,
     busyElsewhere: Boolean,
+    startingEvaluation: Boolean,
+    evaluationDetailsFor: String?,
     pinning: Boolean,
     pinEnabled: Boolean,
     exportInFlightPath: String?,
     exportResult: CheckpointExport?,
     onOpen: (SampleItem) -> Unit,
     onGenerate: (CheckpointItem) -> Unit,
+    onEvaluate: (CheckpointItem, Int) -> Unit,
+    onCancelEvaluation: (String) -> Unit,
+    onToggleEvaluationDetails: (String) -> Unit,
     onTogglePin: (CheckpointItem) -> Unit,
     onSaveAs: (CheckpointItem) -> Unit,
 ) {
@@ -1031,6 +1062,17 @@ internal fun CheckpointRowCard(
                         Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(label, fontWeight = FontWeight.SemiBold)
+                    }
+                    val evaluateLabel = if (startingEvaluation) "Starting…" else "Evaluate"
+                    CapsuleButton(
+                        text = evaluateLabel,
+                        onClick = { onEvaluate(checkpoint, slots.size) },
+                        enabled = gpuFree && !busyElsewhere && !startingEvaluation,
+                        compact = true,
+                    ) {
+                        Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(evaluateLabel, fontWeight = FontWeight.SemiBold)
                     }
                     val pinLabel = when {
                         pinning -> "Pinning…"
@@ -1115,7 +1157,25 @@ internal fun CheckpointRowCard(
                         modifier = Modifier.weight(1f).height(4.dp),
                     )
                     Text(progress, style = MaterialTheme.typography.labelSmall, color = colors.accentPink)
+                    if (running != null && isEvaluation(running)) {
+                        CapsuleButton(
+                            text = "Cancel",
+                            onClick = { onCancelEvaluation(running.id) },
+                            compact = true,
+                        )
+                    }
                 }
+            }
+
+            // A score is worth showing wherever its images are — the card, or a `samples only` row
+            // for a step whose weights a Reset removed.
+            val evaluation = cardEvaluation(row)
+            if (evaluation != null) {
+                EvaluationCardBlock(
+                    job = evaluation,
+                    detailsOpen = evaluationDetailsFor == evaluation.id,
+                    onToggleDetails = onToggleEvaluationDetails,
+                )
             }
 
             if (checkpoint != null) {

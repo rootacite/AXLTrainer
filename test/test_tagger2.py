@@ -28,6 +28,8 @@ from tagger2.main import (
     resolve_categories,
     setup_miopen_cache,
     tag_directory,
+    tag_list,
+    tag_paths,
     tag_text,
 )
 
@@ -72,6 +74,18 @@ class FakeTagger:
                 raise RuntimeError(f"cannot read {image.size}")
             out.append({"results": self.result})
         return out
+
+
+class ShortTagger:
+    """A pipeline that answers with no result at all, one image or a batch."""
+
+    def __init__(self):
+        self.device = "cuda:0"
+        self.calls = []
+
+    def __call__(self, images, batch_size=1, min_threshold=None):
+        self.calls.append((len(images), batch_size, min_threshold))
+        return []
 
 
 class TaggerCliTest(unittest.TestCase):
@@ -139,6 +153,15 @@ class CaptionTest(unittest.TestCase):
     def test_tag_text_unwraps_parentheses_too(self):
         self.assertEqual(tag_text("masking_tape_(medium)"), "masking tape (medium)")
         self.assertEqual(tag_text("1girl"), "1girl")
+
+    def test_tag_list_is_what_the_caption_joins(self):
+        # `caption_for` is `tag_list` joined, so the labels an evaluation compares are exactly the
+        # tags a caption of the same result would carry.
+        self.assertEqual(
+            ", ".join(tag_list(RESULT, ["general", "rating"])),
+            caption_for(RESULT, ["general", "rating"]),
+        )
+        self.assertEqual(tag_list({"general": {}}, ["general"]), [])
 
 
 class CacheTest(unittest.TestCase):
@@ -310,6 +333,18 @@ class TagDirectoryTest(unittest.TestCase):
             self.assertEqual(tagger.calls[0][1], 3)
             self.assertEqual([call[1] for call in tagger.calls[1:]], [1, 1, 1])
 
+    def test_a_short_answer_fails_every_image_of_its_chunk(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            self._folder(folder)
+            result = tag_directory(folder, tagger=ShortTagger(), batch_size=2, categories="general")
+
+            self.assertEqual(result["processed"], 0)
+            self.assertEqual(result["failed"], 3)
+            self.assertEqual([entry["file"] for entry in result["errors"]], ["0001.png", "0002.png", "0003.jpg"])
+            self.assertIn("expected 2 results, got 0", result["errors"][0]["error"])
+            self.assertFalse((folder / "0001.txt").exists())
+
     def test_missing_directory_and_bad_threshold(self):
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaises(NotADirectoryError):
@@ -325,6 +360,134 @@ class TagDirectoryTest(unittest.TestCase):
             names = [path.name for path in list_images(folder)]
         self.assertEqual(names, ["0001.png", "0002.png", "0003.jpg"])
         self.assertNotIn("0001.mask.png", names)
+
+
+class TagPathsTest(unittest.TestCase):
+    """`tag_paths`: the labels themselves, for a caller that keeps no captions (the evaluation)."""
+
+    def _folder(self, root: Path, names=("0001.png", "0002.png", "0003.jpg")) -> list[Path]:
+        from PIL import Image
+
+        paths = []
+        for index, name in enumerate(names):
+            target = root / name
+            Image.new("RGB", (32 + index, 32 + index), color=(10, 20, 30)).save(target)
+            paths.append(target)
+        return paths
+
+    def test_one_entry_per_path_in_order_and_nothing_written(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            paths = self._folder(folder)
+            tagger = FakeTagger()
+            entries = tag_paths(paths, tagger=tagger, categories=["general"])
+
+            self.assertEqual([entry["name"] for entry in entries], ["0001.png", "0002.png", "0003.jpg"])
+            self.assertEqual(entries[0]["path"], str(paths[0]))
+            self.assertEqual(entries[0]["tags"], ["hair between eyes", "1girl", "masking tape (medium)"])
+            self.assertIsNone(entries[0]["error"])
+            self.assertEqual(tagger.calls[0], (1, 1, DEFAULT_THRESHOLD))
+            # No sidecar: the folder holds exactly the images it held before.
+            self.assertEqual(sorted(item.name for item in folder.iterdir()), ["0001.png", "0002.png", "0003.jpg"])
+
+    def test_the_models_calibration_and_the_selected_categories_are_used(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw), names=("0001.png",))
+            tagger = FakeTagger()
+            entries = tag_paths(
+                paths,
+                tagger=tagger,
+                settings=SETTINGS,
+                categories="rating,general",
+                threshold=0.2,
+            )
+            self.assertEqual(
+                entries[0]["tags"],
+                ["hair between eyes", "1girl", "masking tape (medium)", "rating:g"],
+            )
+            self.assertEqual(tagger.calls[0][2], 0.2)
+
+    def test_the_default_category_is_the_cards_default(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw), names=("0001.png",))
+            entries = tag_paths(paths, tagger=FakeTagger())
+            self.assertEqual(entries[0]["tags"], ["hair between eyes", "1girl", "masking tape (medium)"])
+            self.assertEqual(DEFAULT_CATEGORIES, ("general",))
+
+    def test_an_unreadable_image_is_its_own_entry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw))
+            tagger = FakeTagger(fail_sizes={(33, 33)})
+            entries = tag_paths(paths, tagger=tagger, batch_size=1, categories="general")
+
+            self.assertEqual([entry["error"] is None for entry in entries], [True, False, True])
+            self.assertEqual(entries[1]["tags"], [])
+            self.assertIn("cannot read", entries[1]["error"])
+            self.assertEqual(entries[2]["tags"], ["hair between eyes", "1girl", "masking tape (medium)"])
+            self.assertEqual(tagger.calls[0], (1, 1, DEFAULT_THRESHOLD))
+
+    def test_a_failed_batch_falls_back_to_one_image_at_a_time(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw))
+            tagger = FakeTagger(fail_sizes={(0, 0)})
+            entries = tag_paths(paths, tagger=tagger, batch_size=3, categories="general")
+
+            self.assertEqual([entry["error"] for entry in entries], [None, None, None])
+            self.assertEqual(tagger.calls[0][1], 3)
+            self.assertEqual([call[1] for call in tagger.calls[1:]], [1, 1, 1])
+
+    def test_a_short_answer_fails_its_chunk(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw))
+            entries = tag_paths(paths, tagger=ShortTagger(), batch_size=2, categories="general")
+
+            self.assertEqual([entry["error"] for entry in entries], ["expected 2 results, got 0"] * 2 + ["expected 1 results, got 0"])
+            self.assertEqual([entry["tags"] for entry in entries], [[], [], []])
+
+    def test_a_bad_category_is_refused_before_any_image_is_read(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw), names=("0001.png",))
+            tagger = FakeTagger()
+            with self.assertRaises(ValueError):
+                tag_paths(paths, tagger=tagger, settings=SETTINGS, categories="bogus")
+            self.assertEqual(tagger.calls, [])
+
+    def test_a_bad_threshold_is_refused(self):
+        with self.assertRaises(ValueError):
+            tag_paths([], threshold=1.5, tagger=FakeTagger())
+
+    def test_no_paths_needs_no_model(self):
+        tagger = FakeTagger()
+        self.assertEqual(tag_paths([], tagger=tagger), [])
+        self.assertEqual(tagger.calls, [])
+
+    def test_on_entry_sees_every_image_as_it_is_tagged(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw))
+            seen = []
+            entries = tag_paths(
+                paths,
+                tagger=FakeTagger(fail_sizes={(33, 33)}),
+                batch_size=1,
+                categories="general",
+                on_entry=seen.append,
+            )
+            self.assertEqual([entry["name"] for entry in seen], ["0001.png", "0002.png", "0003.jpg"])
+            self.assertEqual(seen, entries)
+            self.assertIn("cannot read", seen[1]["error"])
+
+    def test_raising_from_on_entry_ends_the_pass_there(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = self._folder(Path(raw))
+            seen = []
+
+            def stop_after_one(entry):
+                seen.append(entry["name"])
+                raise RuntimeError("cancel")
+
+            with self.assertRaises(RuntimeError):
+                tag_paths(paths, tagger=FakeTagger(), batch_size=1, categories="general", on_entry=stop_after_one)
+            self.assertEqual(seen, ["0001.png"])
 
 
 if __name__ == "__main__":

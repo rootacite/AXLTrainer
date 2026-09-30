@@ -343,6 +343,50 @@ the range covers no checkpoint of the run (`no checkpoints between step X and Y`
 
 Result: `{job, log_path}` with `mode: "batch"`.
 
+### `evaluate_checkpoint`
+
+Evaluates one checkpoint: its sample images are topped up to `depth` (a floor, not a target), the
+Pixai tagger labels every one of them, and the labels are compared against the prompt each image was
+rendered from. Detached like the generation entries: the reply is `{job, log_path}` and the job file
+carries the progress and the result.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checkpoint` | string | Yes | Path to a `.safetensors` LoRA file. |
+| `depth` | integer | Yes | Lowest number of sample images to score, 1–512. |
+| `threshold` | number | No | Tagger floor, 0–1 (default `0.35`; the model's own per-category calibrated threshold is the floor underneath it). |
+| `categories` | string \| array | No | Tagger categories to score (default `general`). A prompt's tags in another category (`character`, `copyright`) count as misses unless it is selected. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`; the checkpoint's own run wins when its path sits under `output_dir`. |
+
+The record is a job with `mode: "evaluate"`:
+
+| Field | Description |
+|---|---|
+| `depth`, `threshold`, `categories` | The request, as accepted. |
+| `config_source` | The `config.toml` the prompts came from: the one the checkpoint's run saved beside its logs (`{logging_dir}/{run_id}/config.toml`), or today's repo `config.toml` for a run from before those snapshots existed. |
+| `sample_sets` | The resolved prompt sets the top-up renders with. |
+| `plan` | `{needed, depth, passes, per_pass, existing_images, render_total, sets: [{set_index, repeat, existing, render}]}`. `needed` is false when the checkpoint already holds `depth` images — then **nothing is rendered** and the pass goes straight to tagging. Otherwise `passes = ceil((depth - existing_images) / per_pass)` whole copies of the config's sample pass are rendered (`render_total = passes × per_pass` images), each set contributing its own `repeat × passes` and `render` listing the repeat indices that pass writes: the set's numbering continues after the highest index it already uses, so an earlier pass is never written over. The count overshoots `depth` by less than one pass — and the images already there count towards it, whatever produced them (the run's own sample point, an earlier `sets` pass, an earlier evaluation). |
+| `images` | Every image to score: `{name, path, set_index, repeat_idx, source, prompt, tags, error}`. `source` is `run` (the trainer's own sample at the checkpoint's step) or `generated` (a recorded pass; its prompt is the one that pass drew with). `set_index` is `-1` for a `single` ad-hoc image. |
+| `phase` | `rendering` → `tagging` → `scoring` → `done`; `images_done` / `total_images` are that phase's counters (nothing is rescored: a second evaluation re-tags and re-scores). |
+| `files` | The images this job rendered itself (into `{output_dir}/{run_id}/{name}_samples/generated/` as `{job_id}_p{set}_{repeat}.png`), so they show on the checkpoint's card like any other pass. |
+| `scores` | `null` until the pass ends, then `{tp, fp, fn, precision, recall, f1, union_tp, union_fp, union_fn, union_precision, union_recall, union_f1, images_scored, images_failed, images_skipped, groups, top_false_positives, top_false_negatives}`. |
+
+`f1` is the per-image scoreboard: the prompt is the ground truth of what was asked for, the tagger's
+labels are the positive predictions, and the counts are summed over every image (a requested tag
+found on 1 of 20 images is 1 true positive and 19 false negatives). `union_*` is the same over each
+prompt's images pooled: a requested tag counts as found when any of them shows it. `groups` breaks
+both boards down per prompt, and `top_false_positives` / `top_false_negatives` list the tags that
+cost the most, most frequent first — every tag the tagger reports that the prompt did not ask for is
+a false positive. Both are always floats, and every counter is an integer: `0.0` when a denominator
+is empty.
+
+Refused under the same GPU rules as `generate_checkpoint_samples`, plus on a `depth` outside 1–512,
+one whose whole-pass count would exceed 512 images, a `threshold` outside 0–1, and a run config with
+no usable `[[validation.samples]]` set. Cancelled with `cancel_generation` (the SIGTERM lands between
+rendered repeats and between tagged images; the images written so far stay in `files`).
+
 ### `cancel_generation`
 
 Asks a running generation job to stop — the batch one included.

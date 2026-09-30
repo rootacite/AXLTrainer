@@ -31,7 +31,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 _TAGGER_DIR = Path(__file__).resolve().parent
 
@@ -197,14 +197,19 @@ def tag_text(tag: str) -> str:
     return tag.replace("_", " ")
 
 
-def caption_for(result: dict[str, Any], categories: Sequence[str]) -> str:
-    """One caption from the selected categories, most confident first."""
+def tag_list(result: dict[str, Any], categories: Sequence[str]) -> list[str]:
+    """The tags of the selected categories as a list, most confident first."""
     scored: list[tuple[str, float]] = []
     for category in categories:
         for tag, probability in (result.get(category) or {}).items():
             scored.append((str(tag), float(probability)))
     scored.sort(key=lambda item: item[1], reverse=True)
-    return ", ".join(tag_text(tag) for tag, _ in scored)
+    return [tag_text(tag) for tag, _ in scored]
+
+
+def caption_for(result: dict[str, Any], categories: Sequence[str]) -> str:
+    """One caption from the selected categories, most confident first: `tag_list` joined."""
+    return ", ".join(tag_list(result, categories))
 
 
 def _results_of(item: Any) -> dict[str, Any]:
@@ -230,6 +235,164 @@ def _run_batch(
     return [_results_of(item) for item in outputs]
 
 
+def _check_threshold(threshold: Any) -> float:
+    """The tagger floor as a float in 0..1; the message a caller can show as-is."""
+    if not (0.0 <= float(threshold) <= 1.0):
+        raise ValueError("threshold must be between 0.0 and 1.0")
+    return float(threshold)
+
+
+def _resolve_tagger(
+    tagger: Any,
+    settings: Optional[dict[str, Any]],
+    *,
+    model: str,
+    categories: Iterable[str] | str,
+    threshold: float,
+    cpu: bool,
+    download: bool,
+) -> tuple[Any, list[str], dict[str, float], str]:
+    """The pipeline to tag with, plus what it resolved: the categories it writes, their effective
+    floors, and its device. A caller that hands over its own `tagger` skips the load and the log."""
+    _check_threshold(threshold)
+    if tagger is None:
+        _log(f"Resolving {model} from the local cache" + (" (download allowed)" if download else ""))
+        settings = load_model_settings(model, local_files_only=not download)
+        if not settings["available"]:
+            raise RuntimeError(settings["reason"] or f"model not available: {model}")
+        _log(f"Loading pipeline (MIOpen cache {MIOPEN_CACHE_DIR})")
+        tagger = build_pipeline(Path(settings["model_path"]), cpu=cpu)
+    settings = settings or {}
+    chosen = (
+        resolve_categories(categories, settings)
+        if settings.get("categories")
+        else requested_categories(categories)
+    )
+    floors = effective_thresholds(settings, chosen, float(threshold)) if settings.get("categories") else {}
+    return tagger, chosen, floors, str(getattr(tagger, "device", "cpu"))
+
+
+def _failed_entry(path: Path, error: Any) -> dict[str, Any]:
+    return {"path": str(path), "name": path.name, "tags": [], "error": str(error)}
+
+
+def _tagged_entry(path: Path, result: dict[str, Any], categories: Sequence[str]) -> dict[str, Any]:
+    try:
+        tags = tag_list(result, categories)
+    except Exception as exc:  # noqa: BLE001 - one odd result must not end the folder
+        return _failed_entry(path, exc)
+    return {"path": str(path), "name": path.name, "tags": tags, "error": None}
+
+
+def _tag_all(
+    tagger: Any,
+    paths: Sequence[Path],
+    *,
+    categories: Sequence[str],
+    batch_size: int,
+    threshold: float,
+    on_entry: Optional[Callable[[dict[str, Any]], None]] = None,
+) -> list[dict[str, Any]]:
+    """Tag every path, in order, one entry each: tags or the error that stopped it.
+
+    Batched, and a batch that cannot be read falls back to one image at a time, so a single bad
+    file costs one entry instead of the whole chunk. Progress goes to stderr as it goes. `on_entry`
+    sees every entry right after it is built — a caller that persists them one by one (an
+    evaluation's job record) can also raise from it to end the pass at that image.
+    """
+    entries: list[dict[str, Any]] = []
+    current_batch = max(1, int(batch_size))
+    processed = 0
+
+    def record(entry: dict[str, Any]) -> None:
+        nonlocal processed
+        entries.append(entry)
+        if entry["error"]:
+            _log(f"[Error] {entry['name']}: {entry['error']}")
+        else:
+            processed += 1
+            _log(f"[{processed}/{len(paths)}] {entry['name']} -> {len(entry['tags'])} tags")
+        if on_entry is not None:
+            on_entry(entry)
+
+    index = 0
+    while index < len(paths):
+        chunk = list(paths[index : index + current_batch])
+        try:
+            results = _run_batch(tagger, chunk, batch_size=current_batch, threshold=float(threshold))
+        except Exception as exc:  # noqa: BLE001 - one bad image must not end the folder
+            if len(chunk) > 1:
+                _log(f"Batch of {len(chunk)} failed ({exc}); retrying one at a time")
+                current_batch = 1
+                continue
+            record(_failed_entry(chunk[0], exc))
+            index += 1
+            continue
+
+        if len(results) != len(chunk):
+            message = f"expected {len(chunk)} results, got {len(results)}"
+            for path in chunk:
+                record(_failed_entry(path, message))
+            index += len(chunk)
+            continue
+
+        for path, result in zip(chunk, results):
+            record(_tagged_entry(path, result, categories))
+        index += len(chunk)
+    return entries
+
+
+def tag_paths(
+    paths: Sequence[str | Path],
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+    categories: Iterable[str] | str = DEFAULT_CATEGORIES,
+    tagger: Any = None,
+    settings: Optional[dict[str, Any]] = None,
+    model: str = MODEL_ID,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    cpu: bool = False,
+    download: bool = False,
+    on_entry: Optional[Callable[[dict[str, Any]], None]] = None,
+) -> list[dict[str, Any]]:
+    """Tag the images in `paths` and answer with their tags; nothing is written to disk.
+
+    Same pipeline, categories, calibrated floors and error tolerance as `tag_directory`, for a
+    caller that wants the labels themselves - the Dashboard's checkpoint evaluation. Each entry is
+    `{"path", "name", "tags": [...], "error"}` in the input order; an image that could not be read
+    carries its message and no tags rather than raising out of the pass. `on_entry` sees each entry
+    as soon as it is built: the evaluation writes its progress from there, and ends the pass at that
+    image by raising (a cancel, which leaves the entries already reported in place).
+    """
+    if not paths:
+        # Nothing to tag: a caller with no images must not pay for the model load. The threshold is
+        # still checked, so a bad request is answered rather than quietly accepted.
+        _check_threshold(threshold)
+        return []
+    tagger, chosen, _floors, device = _resolve_tagger(
+        tagger,
+        settings,
+        model=model,
+        categories=categories,
+        threshold=threshold,
+        cpu=cpu,
+        download=download,
+    )
+    targets = [Path(str(path)) for path in paths]
+    _log(
+        f"Tagging {len(targets)} images (threshold={float(threshold):g}, batch={max(1, int(batch_size))}, "
+        f"device={device}, categories={', '.join(chosen)})"
+    )
+    return _tag_all(
+        tagger,
+        targets,
+        categories=chosen,
+        batch_size=batch_size,
+        threshold=threshold,
+        on_entry=on_entry,
+    )
+
+
 def tag_directory(
     directory: str | Path,
     *,
@@ -246,26 +409,17 @@ def tag_directory(
     directory = Path(directory).expanduser().resolve()
     if not directory.is_dir():
         raise NotADirectoryError(f"not a directory: {directory}")
-    if not (0.0 <= float(threshold) <= 1.0):
-        raise ValueError("threshold must be between 0.0 and 1.0")
 
     current_batch = max(1, int(batch_size))
-    if tagger is None:
-        _log(f"Resolving {model} from the local cache" + (" (download allowed)" if download else ""))
-        settings = load_model_settings(model, local_files_only=not download)
-        if not settings["available"]:
-            raise RuntimeError(settings["reason"] or f"model not available: {model}")
-        _log(f"Loading pipeline (MIOpen cache {MIOPEN_CACHE_DIR})")
-        tagger = build_pipeline(Path(settings["model_path"]), cpu=cpu)
-
-    settings = settings or {}
-    chosen = (
-        resolve_categories(categories, settings)
-        if settings.get("categories")
-        else requested_categories(categories)
+    tagger, chosen, floors, device = _resolve_tagger(
+        tagger,
+        settings,
+        model=model,
+        categories=categories,
+        threshold=threshold,
+        cpu=cpu,
+        download=download,
     )
-    device = str(getattr(tagger, "device", "cpu"))
-    floors = effective_thresholds(settings, chosen, float(threshold)) if settings.get("categories") else {}
 
     image_files = list_images(directory)
     errors: list[dict[str, str]] = []
@@ -277,39 +431,23 @@ def tag_directory(
         f"categories={', '.join(chosen)})"
     )
 
-    index = 0
-    while index < len(image_files):
-        chunk = image_files[index : index + current_batch]
+    for entry in _tag_all(
+        tagger,
+        image_files,
+        categories=chosen,
+        batch_size=current_batch,
+        threshold=threshold,
+    ):
+        if entry["error"]:
+            errors.append({"file": entry["name"], "error": entry["error"]})
+            continue
         try:
-            results = _run_batch(tagger, chunk, batch_size=current_batch, threshold=float(threshold))
-        except Exception as exc:  # noqa: BLE001 - one bad image must not end the folder
-            if len(chunk) > 1:
-                _log(f"Batch of {len(chunk)} failed ({exc}); retrying one at a time")
-                current_batch = 1
-                continue
-            errors.append({"file": chunk[0].name, "error": str(exc)})
-            _log(f"[Error] {chunk[0].name}: {exc}")
-            index += 1
+            Path(entry["path"]).with_suffix(".txt").write_text(", ".join(entry["tags"]), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - an unwritable sidecar is this file's failure
+            errors.append({"file": entry["name"], "error": str(exc)})
+            _log(f"[Error] {entry['name']}: {exc}")
             continue
-
-        if len(results) != len(chunk):
-            errors.append(
-                {"file": chunk[0].name, "error": f"expected {len(chunk)} results, got {len(results)}"}
-            )
-            index += len(chunk)
-            continue
-
-        for path, result in zip(chunk, results):
-            try:
-                caption = caption_for(result, chosen)
-                path.with_suffix(".txt").write_text(caption, encoding="utf-8")
-                processed += 1
-                n_tags = len([t for t in caption.split(",") if t.strip()]) if caption else 0
-                _log(f"[{processed}/{len(image_files)}] {path.name} -> {n_tags} tags")
-            except Exception as exc:  # noqa: BLE001
-                errors.append({"file": path.name, "error": str(exc)})
-                _log(f"[Error] {path.name}: {exc}")
-        index += len(chunk)
+        processed += 1
 
     elapsed = time.time() - start
     _log(f"Completed {processed}/{len(image_files)} in {elapsed:.2f}s ({len(errors)} failed)")

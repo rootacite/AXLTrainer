@@ -30,12 +30,22 @@ STATE_CANCELLED = "cancelled"
 STATES = (STATE_RUNNING, STATE_DONE, STATE_ERROR, STATE_CANCELLED)
 
 # What one job renders: a single ad-hoc image with its own prompt, every `[[validation.samples]]`
-# set of the config for one checkpoint, or that same sets pass for each checkpoint of a step range
-# (a batch, which drives its own `sets` jobs — one per checkpoint — from one process).
+# set of the config for one checkpoint, that same sets pass for each checkpoint of a step range
+# (a batch, which drives its own `sets` jobs — one per checkpoint — from one process), or an
+# evaluation of one checkpoint (top the sample count up to a depth, tag every image, score it).
 MODE_SINGLE = "single"
 MODE_SETS = "sets"
 MODE_BATCH = "batch"
-MODES = (MODE_SINGLE, MODE_SETS, MODE_BATCH)
+MODE_EVALUATE = "evaluate"
+MODES = (MODE_SINGLE, MODE_SETS, MODE_BATCH, MODE_EVALUATE)
+
+# An evaluation's own progress: which stage it is in. `images_done` / `total_images` are that
+# stage's counters — images rendered while `rendering`, images tagged while `tagging`.
+PHASE_RENDERING = "rendering"
+PHASE_TAGGING = "tagging"
+PHASE_SCORING = "scoring"
+PHASE_DONE = "done"
+PHASES = (PHASE_RENDERING, PHASE_TAGGING, PHASE_SCORING, PHASE_DONE)
 
 # Launch limits, mirrored by Ranko's form validation so a rejected click costs no GPU time.
 MIN_CFG = 1.0
@@ -336,3 +346,57 @@ def checkpoint_step(metadata: Mapping[str, str]) -> Optional[int]:
     """Step a checkpoint was saved at, from its own kohya metadata."""
     raw = str(metadata.get("ss_steps") or "").strip()
     return int(raw) if re.fullmatch(r"-?\d+", raw) else None
+
+
+def new_evaluation_job(
+    *,
+    run_id: str,
+    output_name: str,
+    checkpoint: str,
+    step: Optional[int],
+    depth: int,
+    threshold: float,
+    categories: list[str],
+    config_source: str,
+    config_log_dir: str,
+    plan: Mapping[str, Any],
+    images: list[Mapping[str, Any]],
+    sample_sets: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """The record api.py writes before spawning an evaluation.
+
+    The plan and the image list are the work order: `plan` says which `(set, repeat)` slots to
+    render (none, when the checkpoint already has `depth` images) and `images` is the set to tag and
+    score, each entry already carrying the prompt it was rendered from. `sample_sets` is what the
+    top-up renders with, recorded so the pass does not re-read a config that may have moved on;
+    `config_source` is the file the prompts came from (the run's own copy, or the hparams it recorded
+    at startup) and `config_log_dir` the run directory they were resolved in, which is what the
+    runner resolves again for the model side. The
+    record starts in the phase the plan implies — `rendering` when there is something to draw,
+    `tagging` when there is not, which is what keeps a re-evaluation from loading the diffusion
+    model at all.
+    """
+    needed = bool(plan.get("needed"))
+    phase = PHASE_RENDERING if needed else PHASE_TAGGING
+    return new_job(
+        {"step": step},
+        run_id=run_id,
+        output_name=output_name,
+        checkpoint=str(checkpoint),
+        mode=MODE_EVALUATE,
+        # The counters belong to the phase the record starts in; the tagging phase resets them to
+        # the size of the whole scored set (the run's own samples included) when it begins.
+        total_images=int(plan.get("render_total") or 0) if needed else len(images),
+        extra={
+            "depth": int(depth),
+            "threshold": float(threshold),
+            "categories": [str(category) for category in categories],
+            "config_source": str(config_source),
+            "config_log_dir": str(config_log_dir),
+            "plan": dict(plan),
+            "images": [dict(image) for image in images],
+            "sample_sets": [dict(entry) for entry in sample_sets],
+            "phase": phase,
+            "scores": None,
+        },
+    )

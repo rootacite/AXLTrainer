@@ -13,10 +13,15 @@ import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
+import com.acite.axlranko.model.EvaluationGroup
+import com.acite.axlranko.model.EvaluationScores
+import com.acite.axlranko.model.EvaluationTagCount
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.JOB_DONE
+import com.acite.axlranko.pages.components.JOB_ERROR
 import com.acite.axlranko.pages.components.JOB_MODE_BATCH
+import com.acite.axlranko.pages.components.JOB_MODE_EVALUATE
 import com.acite.axlranko.pages.components.JOB_MODE_SETS
 import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.CheckpointRow
@@ -55,6 +60,9 @@ class CheckpointsSectionRenderTest {
         /** The checkpoint whose Save As is open or copying, and where the last one landed. */
         val exportingPath: String? = null,
         val exportResult: CheckpointExport? = null,
+        /** The checkpoint whose evaluation is being started, if any. */
+        val evaluatingPath: String? = null,
+        val evaluationDetailsFor: String? = null,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -108,6 +116,55 @@ class CheckpointsSectionRenderTest {
             totalSteps = 35,
         )
 
+    /** An evaluation: running mid-phase, scored with a full details block, or failed. */
+    private fun evaluationJob(
+        id: String,
+        step: Int,
+        state: String,
+        phase: String = if (state == JOB_RUNNING) "rendering" else JOB_DONE,
+        scored: Boolean = false,
+    ): GeneratedSampleJob = GeneratedSampleJob(
+        id = id,
+        state = state,
+        mode = JOB_MODE_EVALUATE,
+        step = step,
+        checkpoint = checkpoint(step).path,
+        phase = phase,
+        depth = 12,
+        threshold = 0.35f,
+        categories = listOf("general"),
+        configSource = "/logs/rein_20260911_120000/config.toml",
+        files = if (scored) listOf("/out/rein_20260911_120000/rein_samples/generated/${id}_p0_0.png") else emptyList(),
+        imagesDone = if (state == JOB_RUNNING) 3 else 12,
+        totalImages = if (state == JOB_RUNNING) 8 else 12,
+        scores = if (scored) EvaluationScores(
+            tp = 40,
+            fp = 12,
+            fn = 24,
+            precision = 0.769f,
+            recall = 0.625f,
+            f1 = 0.689f,
+            unionTp = 30,
+            unionFp = 8,
+            unionFn = 12,
+            unionPrecision = 0.789f,
+            unionRecall = 0.714f,
+            unionF1 = 0.75f,
+            imagesScored = 12,
+            imagesFailed = 1,
+            groups = listOf(
+                EvaluationGroup(
+                    prompt = "1girl, solo, long hair",
+                    images = 4,
+                    f1 = 0.7f,
+                    unionF1 = 0.8f,
+                ),
+            ),
+            topFalsePositives = listOf(EvaluationTagCount("solo", 5)),
+            topFalseNegatives = listOf(EvaluationTagCount("long hair", 7)),
+        ) else null,
+    )
+
     private fun render(cases: List<Case>) {
         if (GraphicsEnvironment.isHeadless()) return
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -138,7 +195,7 @@ class CheckpointsSectionRenderTest {
                                         canStart = current.gpuFree,
                                         note = current.error,
                                         onSampleRange = { _, _ -> },
-                                        onCancel = {},
+                                        onCancel = { _ -> },
                                     )
                                 }
                                 if (rows.any { it.pinned }) {
@@ -160,12 +217,17 @@ class CheckpointsSectionRenderTest {
                                             starting = current.generatingPath == row.checkpoint?.path,
                                             busyElsewhere = current.generatingPath != null &&
                                                 current.generatingPath != row.checkpoint?.path,
+                                            startingEvaluation = current.evaluatingPath == row.checkpoint?.path,
+                                            evaluationDetailsFor = current.evaluationDetailsFor,
                                             pinning = current.pinningPath == row.checkpoint?.path,
                                             pinEnabled = current.pinningPath == null,
                                             exportInFlightPath = current.exportingPath,
                                             exportResult = current.exportResult,
                                             onOpen = {},
                                             onGenerate = {},
+                                            onEvaluate = { _, _ -> },
+                                            onCancelEvaluation = { _ -> },
+                                            onToggleEvaluationDetails = {},
                                             onTogglePin = {},
                                             onSaveAs = {},
                                         )
@@ -300,6 +362,44 @@ class CheckpointsSectionRenderTest {
                         path = checkpoint(3050).path,
                         error = "ValueError: destination is the same file as the source",
                     ),
+                ),
+                // Evaluations: one running (rendering its top-up, with its Cancel), one tagging an
+                // already deep enough checkpoint, one scored with its details opened, one failed,
+                // and one whose dialog is being handed to the helper. A scored evaluation that
+                // rendered no image of its own is the case that must still reach its card.
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    jobs = listOf(evaluationJob("live_evaluate_gen_1", 3050, JOB_RUNNING, phase = "rendering")),
+                    gpuFree = false,
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3100)),
+                    jobs = listOf(evaluationJob("live_evaluate_gen_2", 3100, JOB_RUNNING, phase = "tagging")),
+                    gpuFree = false,
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    jobs = listOf(evaluationJob("done_evaluate_gen_3", 3050, JOB_DONE, scored = true)),
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    jobs = listOf(evaluationJob("done_evaluate_gen_4", 3050, JOB_DONE, scored = true)),
+                    evaluationDetailsFor = "done_evaluate_gen_4",
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    jobs = listOf(
+                        evaluationJob("error_evaluate_gen_5", 3050, JOB_ERROR).copy(
+                            error = "RuntimeError: the tagger model is not in the local cache",
+                        ),
+                    ),
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    evaluatingPath = checkpoint(3050).path,
                 ),
             ),
         )

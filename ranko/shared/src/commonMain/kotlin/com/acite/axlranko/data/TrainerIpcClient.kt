@@ -377,6 +377,37 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /**
+     * Evaluate one checkpoint: top its sample images up to [depth] (a floor — a checkpoint that
+     * already holds that many renders nothing), tag every one of them with the Pixai tagger and
+     * score the tags against the prompt each image was rendered from. Detached like the generation
+     * entries; the job file carries the progress and the scores. [categories] are tagger category
+     * keys; an empty list leaves the helper's default (`general`) in place.
+     */
+    suspend fun evaluateCheckpoint(
+        checkpoint: String,
+        depth: Int,
+        threshold: Float,
+        categories: List<String> = emptyList(),
+        name: String? = null,
+        runId: String? = null,
+    ): GenerateSampleResponse {
+        val result = call(
+            "evaluate_checkpoint",
+            buildJsonObject {
+                put("checkpoint", checkpoint)
+                put("depth", depth)
+                put("threshold", threshold)
+                if (categories.isNotEmpty()) {
+                    putJsonArray("categories") { categories.forEach { add(JsonPrimitive(it)) } }
+                }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     /** Ask a running generation job (the batch one included) to stop; [id] null means the running one. */
     suspend fun cancelGeneration(id: String? = null): GenerateSampleResponse {
         val result = call(

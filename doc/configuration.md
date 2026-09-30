@@ -227,6 +227,14 @@ repeat = 3
 - The run's configuration is recorded in TensorBoard's **HParams** tab. `add_hparams` only
   accepts int/float/str/bool/tensor values, so a list-valued key such as `samples` is written
   as a JSON string (`tracker_hparams()` in `trainer/config.py`) rather than passed through raw.
+- **A run also keeps its own copy of this file.** `trainer/main.py` copies the repo's `config.toml`
+  verbatim to `{logging_dir}/{run_id}/config.toml` as soon as the run directory exists, because a
+  run's sample images are *its* config's and the next run is free to edit the repo file. The
+  Dashboard's per-checkpoint **Evaluate** action is what reads it back: it renders the missing
+  samples and scores the tagger's labels against the prompt each image was rendered from, using
+  this run's prompts rather than today's. A run from before these snapshots existed (or one whose
+  snapshot is gone) falls back to the repo's current `config.toml`, and the evaluation record says
+  which file it used (`config_source`).
 
 ### `[bookkeeping]`
 

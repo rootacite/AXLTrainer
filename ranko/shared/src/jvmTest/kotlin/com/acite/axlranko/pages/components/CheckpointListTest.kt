@@ -171,6 +171,46 @@ class CheckpointListTest {
     }
 
     @Test
+    fun aFinishedEvaluationIsListedEvenWithoutAnImageOfItsOwn() {
+        // The checkpoint already held enough images, so the pass rendered nothing — the card is
+        // where its scores are read, and they must not go missing for lack of a PNG.
+        val scored = job(
+            "evaluate_gen_1",
+            3050,
+            mode = JOB_MODE_EVALUATE,
+            files = emptyList(),
+        )
+        val rows = checkpointRows(
+            checkpoints = listOf(checkpoint(3050)),
+            samples = mapOf("3050" to listOf(sample(3050, 0))),
+            jobs = listOf(scored),
+        )
+
+        assertEquals(listOf("evaluate_gen_1"), rows[0].generated.map { it.id })
+        assertEquals(1, rows[0].samples.size)
+        assertTrue(sectionImages(rows).none { it.path.contains("evaluate_gen_1") })
+    }
+
+    @Test
+    fun anEvaluationOfAStepWhoseWeightsAreGoneKeepsASamplesOnlyRow() {
+        val orphan = job(
+            "evaluate_gen_2",
+            3000,
+            checkpointPath = checkpoint(3000).path,
+            mode = JOB_MODE_EVALUATE,
+            files = emptyList(),
+        )
+        val rows = checkpointRows(
+            checkpoints = emptyList(),
+            samples = mapOf("3000" to listOf(sample(3000, 0))),
+            jobs = listOf(orphan),
+        )
+
+        assertEquals(listOf("evaluate_gen_2"), rows.single().generated.map { it.id })
+        assertNull(rows.single().checkpoint)
+    }
+
+    @Test
     fun theRangeCoversTheCheckpointsInsideItOldestFirst() {
         val rows = checkpointRows(
             checkpoints = listOf(checkpoint(3000), checkpoint(1000), checkpoint(2000), checkpoint(null)),

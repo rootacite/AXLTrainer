@@ -1,8 +1,10 @@
 import json
+import shutil
+import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Mapping, Optional, Union
 
 from safetensors import safe_open
 
@@ -84,6 +86,124 @@ _CONFIG = _load_toml_config()
 
 def get_val(key: str, default):
     return _CONFIG.get(key, default)
+
+
+# The file `_load_toml_config` reads, resolved against the working directory (repo root for every
+# entry point), and the name a run saves that same file under inside its own log directory.
+REPO_CONFIG_FILENAME = "config.toml"
+RUN_CONFIG_FILENAME = "config.toml"
+
+
+def save_run_config(
+    logging_dir: Union[str, Path],
+    run_id: str,
+    *,
+    source: Union[str, Path, None] = None,
+) -> Optional[Path]:
+    """Copy the config a run started from into that run's log directory.
+
+    A run's samples are its config's, but the file it trained with is gone the moment the next run
+    edits `config.toml`. Keeping a verbatim copy next to the run's logs (`{logging_dir}/{run_id}/`)
+    is what lets a later sample or an evaluation of one of its checkpoints use the prompts and
+    sampling values that produced those images. A missing source is a warning, never a failure to
+    train.
+    """
+    src = Path(source) if source is not None else Path(REPO_CONFIG_FILENAME)
+    if not src.is_file():
+        print(f"[Warn] {src} not found; this run saves no config snapshot", file=sys.stderr)
+        return None
+    target = Path(logging_dir) / str(run_id) / RUN_CONFIG_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target)
+    return target
+
+
+# `tracker_hparams` writes list-valued keys (the prompt sets, the dataset blocks) as JSON strings;
+# reading them back has to undo that, or `resolve_sample_sets` would see a string and fall back to
+# the `sample_*` scalars.
+_HPARAMS_JSON_KEYS = ("samples", "train_data")
+_HPARAMS_START_TAG = "_hparams_/session_start_info"
+
+
+def _hparams_to_mapping(hparams: Any) -> dict[str, Any]:
+    """Stored hparams as the flattened mapping the rest of the config code reads.
+
+    TensorBoard's hparams plugin keeps every value as a protobuf `Value`: strings stay strings (the
+    JSON-encoded lists decoded again), numbers come back as doubles (an integral one is an int
+    again, or `repeat` could not be used as a range), and bools stay bools.
+    """
+    mapping: dict[str, Any] = {}
+    for key, entry in hparams.items():
+        kind = entry.WhichOneof("kind")
+        if kind == "string_value":
+            value: Any = entry.string_value
+            if key in _HPARAMS_JSON_KEYS:
+                try:
+                    value = json.loads(value)
+                except (TypeError, ValueError):
+                    continue
+            mapping[key] = value
+        elif kind == "number_value":
+            number = float(entry.number_value)
+            mapping[key] = int(number) if number.is_integer() else number
+        elif kind == "bool_value":
+            mapping[key] = bool(entry.bool_value)
+    return mapping
+
+
+def run_hparams_mapping(log_dir: Union[str, Path]) -> tuple[dict[str, Any], str]:
+    """`(flattened config, source)` read back out of a run's own TensorBoard hparams.
+
+    `accelerator.init_trackers` records the whole config in the run's log directory as it starts —
+    `tracker_hparams(cfg)` into an `add_hparams` subdirectory (`{log_dir}/<epoch>/events.*`) — so a
+    run from before these `config.toml` snapshots still has its own prompts and sampling values on
+    disk. `({}, "")` when the run wrote none (it died before the tracker started) or when the event
+    file cannot be read.
+    """
+    try:
+        from tensorboard.backend.event_processing.event_file_loader import EventFileLoader
+        from tensorboard.plugins.hparams import plugin_data_pb2
+    except Exception:  # no tensorboard here: nothing to read it with
+        return {}, ""
+    root = Path(log_dir)
+    if not root.is_dir():
+        return {}, ""
+    for path in sorted(root.glob("*/events.out.tfevents.*")):
+        try:
+            for event in EventFileLoader(str(path)).Load():
+                if not event.HasField("summary"):
+                    continue
+                for value in event.summary.value:
+                    if value.tag != _HPARAMS_START_TAG:
+                        continue
+                    payload = plugin_data_pb2.HParamsPluginData.FromString(
+                        value.metadata.plugin_data.content
+                    )
+                    mapping = _hparams_to_mapping(payload.session_start_info.hparams)
+                    if mapping:
+                        return mapping, str(path)
+        except Exception:  # a torn or unreadable event file: try the next run directory
+            continue
+    return {}, ""
+
+
+def run_config_mapping(log_dir: Union[str, Path]) -> tuple[dict[str, Any], str]:
+    """`(flattened config, the file it came from)` for one run's log directory.
+
+    Three sources, in the order that keeps a run's own prompts: the `config.toml` copy it saved
+    beside its logs, else the hparams it recorded at startup (the only snapshot a run from before
+    those copies has), else the repo's current `config.toml` — whose prompts may well differ from
+    the ones that run drew with, which is why the source travels with the mapping and is recorded in
+    anything derived from it.
+    """
+    snapshot = Path(log_dir) / RUN_CONFIG_FILENAME
+    if snapshot.is_file():
+        return _load_toml_config(str(snapshot)), str(snapshot.resolve())
+    recorded, recorded_source = run_hparams_mapping(log_dir)
+    if recorded:
+        return recorded, recorded_source
+    repo = Path(REPO_CONFIG_FILENAME)
+    return _load_toml_config(str(repo)), str(repo.resolve())
 
 
 # Ranges shared with the Ranko Validation form; a value outside them is rejected
@@ -449,6 +569,18 @@ class TrainConfig:
     ss_bucket_info: Optional[str] = get_val("ss_bucket_info", None)
 
     _current_epoch: int = field(default=0, init=False)
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> "TrainConfig":
+        """A config built from an already-flattened mapping instead of the repo's own file.
+
+        A run's old samples are its own config's, so rendering them again must not read today's
+        `config.toml` (`run_config_mapping` hands over the run's snapshot or the fallback). Keys the
+        mapping does not carry keep the dataclass defaults; a key this config does not declare - a
+        `[bookkeeping]` extra, or a section the GUI wrote - is ignored rather than an error.
+        """
+        declared = {item.name for item in fields(cls) if item.init}
+        return cls(**{key: value for key, value in mapping.items() if key in declared})
 
     def __post_init__(self) -> None:
         # Derived on every construction (as `run_dir` is written by `main.py`), so `replace()` on

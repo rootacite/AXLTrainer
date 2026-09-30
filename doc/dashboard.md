@@ -84,7 +84,9 @@ The heart of the app. It spawns `api.py` on first use and polls it (every 1 s wh
 - **Metric cards**: Current Step, Latest Loss, UNet LR, TE Effective LR.
 - **Training charts**: Train/Avg_Loss, Train/Loss, UNet/LR/Effective_Actual_LR, TE/LR/Base_Scheduled, TE/LR/Effective_Actual_LR — interactive line charts with an always-on hover readout (see interactions below). On **Train / Avg Loss**, `Ctrl` + left click or a left double click opens the checkpoint panel described below.
 - **Checkpoints**: one card per LoRA checkpoint the run being shown wrote, newest step first, each with the step badge (`step 3050`, or `step 3050 · final`), the artifact directory, the run / step / r-α / size line, the checkpoint's path, and the images that belong to that step: the samples the run wrote for it (in `(set, repeat)` order) followed by any generated pass, each marked `GENERATED` (and the ones started in this session `NEW`). A pass that was stopped or that failed part way is shown with the images it did write — files on
-disk belong on the card — and only a job that is still running is the progress line instead.
+disk belong on the card — and only a job that is still running is the progress line instead. An
+evaluation rides the same card whether or not it rendered anything: a scored result whose checkpoint
+already held enough images has no thumbnail of its own, and its score is what the card is showing.
 
 Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc closes, ←/→ navigate). The preview cycles the section's own images in the section's own order — a card's training samples, then the images of the passes that joined it, then the `samples only` rows — so whatever the section draws can be opened, a generated pass recorded without a step included. When a run used several prompt sets, every thumbnail carries a small `P1`/`P2` badge saying which `[[validation.samples]]` entry rendered it (a single-set run and a run from before this feature show no badge).
   - **Pin**: every checkpoint card carries a pin button. Pinning lifts that card to the top of the
@@ -114,6 +116,46 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
     another generation. **Stop** asks the generator to finish the step it is in and stop: the cards
     keep what was already rendered, the batch closes as cancelled (not as a failure), and the
     checkpoint it was in the middle of shows the images it had written.
+  - **Evaluate**: every checkpoint card can be *scored* against the prompt it was drawn from. Press
+    **Evaluate** and the dialog asks for a **Depth** (prefilled with the images the card already
+    shows, since the depth is a floor: a checkpoint that already has that many images renders
+    nothing and goes straight to tagging), a tagger **Threshold** (default 0.35, the model's own
+    calibrated value stays the floor underneath it) and which of the tagger's **categories** count —
+    the same category pills the Utils Auto-tag card uses, `general` on its own by default (a prompt
+    tag the tagger would file under `character` or `copyright` cannot be found unless that category
+    is ticked, and counts against the score).
+    The pass runs detached and uses **the config that run saved**, not today's `config.toml`:
+    `trainer/main.py` keeps a copy of the file beside each run's logs, so an old checkpoint's images
+    are topped up with the prompts, size, steps, CFG and seeds it was trained with. A run from
+    before those snapshots existed (or one whose copy is gone) falls back to the current file, and
+    the card says which one was used (`run config · <run id>` / `current config.toml`).
+    What it reports, and what it means:
+    - **Depth is a floor, counted in images.** The program counts the checkpoint's existing sample
+      images — the run's own at that step plus every recorded pass for it — and renders more only if
+      there are fewer. It renders **whole copies of the config's sample pass** (`N` images each), as
+      many as the shortfall needs: `ceil((Depth − existing) / N)`. So Depth 20 over a 7-image config
+      with nothing on disk is 3 passes (21 images); Depth 50 over a checkpoint that already has 21
+      images is 5 more passes (35 images, 56 in all — 6 over the depth, where a partial pass would
+      have split the config's own per-set balance). Each new pass continues its set's own repeat
+      numbering after the highest index that set already uses, so nothing on disk is overwritten —
+      the new images are further samples of the same prompts. A second press with the same or a
+      smaller Depth therefore renders nothing and only tags and scores again.
+    - **It tags every image** with the Pixai tagger (the same model the Auto-tag card runs) and
+      compares the labels with the prompt that image was rendered from. The card's headline is the
+      **per-image** scoreboard: a requested tag found on an image is a hit, one the tagger did not
+      report is a miss, and a tag the tagger reported that was not requested is an extra —
+      `F1 0.69 · P 0.77 · R 0.62 · 21 images`. The line under it is the same over each prompt's
+      images pooled (`union F1 …`): a requested tag counts as found when any of that prompt's images
+      shows it. **No threshold or lexicon is applied beyond the tagger's own:** every tag it reports
+      that the prompt did not ask for costs precision, which is why `Details` lists the tags that
+      cost the most (`most drawn but not asked: solo ×5`, `most asked but not drawn: long hair ×7`)
+      along with each prompt's own numbers and how many images were scored, failed or skipped
+      (an image whose tagging failed, or whose prompt holds no tag, is counted but not scored).
+    - **While it runs** the card shows its phase — `rendering 3/4` (the top-up), then `tagging 8/21`
+      (the whole set) and `scoring` — with a progress bar and a **Cancel**; a cancel stops between
+      images and keeps whatever has been written. It needs the GPU to itself, so the button is off
+      while a live trainer is using the card or another generation is running (a **paused** run is
+      fine), and the job is cancelled with the same helper call as any generation.
   - A checkpoint with **no** images yet is listed too — that is what a run with `sampling_enabled = false`, or an early checkpoint, looks like — with a **Generate samples** button instead. Pressing it renders the config's whole `[[validation.samples]]` list for that checkpoint (one image per set and repeat, the prompt/size/steps/CFG/seed/repeat from `config.toml`, the network settings from the checkpoint's own metadata) as a detached job, writing `{...}_p{set}_{repeat}.png` into the run's `{output_name}_samples/generated/`. The card shows `set s/S · image i/N · denoising k/K` while it runs, and the images appear under that checkpoint when it finishes. Nothing is overwritten: the run's own samples stay the record of what training produced.
   - The button is enabled only while no live trainer is using the GPU — the run is **paused** (pause offloaded every module, so the card is free), **stopped** or **over**. While a run is training the card says so instead; while another generation is running the button is off, because the GPU is single-tenant. `train_resume` refuses while a generation is running, so resuming cannot put a second SDXL on the card.
   - A step whose images outlived its weights (`clean.py` removed the checkpoint dirs, or they were deleted by hand) keeps a **samples only** card, so those pictures never become unreachable.

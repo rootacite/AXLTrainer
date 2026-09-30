@@ -756,8 +756,9 @@ class ListRunsIpcTest(unittest.TestCase):
         self.assertEqual(list(result["samples"]), ["200"])
 
 
-class GeneratedSampleIpcTest(unittest.TestCase):
-    """generate_sample / list_generated_samples: job records, GPU guard, validation."""
+class GeneratedFixture:
+    """The generation/evaluation tests' fixture: a temp run with a real checkpoint file, a mocked
+    spawner (no test may start a real generator) and the helpers that read the spec back."""
 
     RUN_ID = "rein_20260911_120000"
 
@@ -861,6 +862,10 @@ class GeneratedSampleIpcTest(unittest.TestCase):
 
     def _spec_written_by_last_spawn(self) -> dict:
         return json.loads(Path(self.popen.call_args.args[0][4]).read_text())
+
+
+class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
+    """generate_sample / list_generated_samples: job records, GPU guard, validation."""
 
     def test_dispatch_registered(self):
         self.assertIn("generate_sample", api._HANDLERS)
@@ -1293,6 +1298,68 @@ class GeneratedSampleIpcTest(unittest.TestCase):
             api.handle_cancel_generation({"id": "done_gen_1"})
         self.assertIn("done_gen_1 is not running", str(ctx.exception))
 
+    def test_cancel_by_id_needs_no_run_of_its_own(self):
+        """The reported bug: a pass started from a past run's card, with `state.json` carrying no run.
+
+        The card sends the running job's id; the helper must find that job where it lives instead of
+        resolving a run from the request (which found none and answered `no run to cancel a
+        generation for`).
+        """
+        from trainer import control
+
+        child = self._sleeping_generator("past_run_gen_1")
+        try:
+            self.cfg["logging_dir"] = str(Path(self.tmp.name) / "empty-logs")
+            self.cfg["output_dir"] = str(self.out)  # the job is still under the configured root
+            control.reset_to_idle()  # no run recorded at all
+
+            result = api.handle_cancel_generation({"id": "past_run_gen_1"})
+
+            self.assertTrue(result["cancelled"])
+            stored = json.loads(
+                genjob.job_path(self.generated, "past_run_gen_1").read_text(encoding="utf-8")
+            )
+            self.assertTrue(stored["cancel_requested"])
+            self.assertTrue(self._wait_gone(child.pid))
+        finally:
+            child.wait()
+
+    def test_cancel_with_no_id_still_finds_the_only_running_job(self):
+        """What a client that sends no id at all relies on: the GPU is single-tenant."""
+        from trainer import control
+
+        child = self._sleeping_generator("only_gen_1")
+        try:
+            self.cfg["output_dir"] = str(self.out)
+            control.reset_to_idle()  # no run recorded, so nothing names the job either
+
+            result = api.handle_cancel_generation({})
+
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(result["job"]["id"], "only_gen_1")
+            self.assertTrue(self._wait_gone(child.pid))
+        finally:
+            child.wait()
+
+    def test_cancel_by_id_refuses_an_unknown_or_finished_job(self):
+        """With a run named, an id that is not a running job of it (or anywhere) is refused."""
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_cancel_generation({"id": "never_ran_gen_1", "run_id": self.RUN_ID})
+        self.assertIn("never_ran_gen_1 is not running", str(ctx.exception))
+
+        self._write_job("done_gen_1", state="done")
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_cancel_generation({"id": "done_gen_1", "run_id": self.RUN_ID})
+        self.assertIn("is not running", str(ctx.exception))
+
+        # Nothing named and no run recorded: the old message still says what is missing.
+        from trainer import control
+
+        control.reset_to_idle()
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_cancel_generation({})
+        self.assertIn("no run to cancel a generation for", str(ctx.exception))
+
     def test_cancel_can_name_one_job(self):
         first = self._sleeping_generator("first_gen_1")
         second = self._sleeping_generator("second_gen_1")
@@ -1401,6 +1468,283 @@ class GeneratedSampleIpcTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             api.handle_generate_sample({"checkpoint": str(self.checkpoint), "prompt": "p"})
         self.assertIn("already running", str(ctx.exception))
+
+
+class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
+    """`evaluate_checkpoint`: the plan it writes, the run it belongs to, and its refusals."""
+
+    def _write_snapshot(self, *sets, run_id=None):
+        """The `config.toml` a run saves beside its logs, as `trainer/main.py` writes it."""
+        text = "".join(
+            "[[validation.samples]]\n"
+            f'name = "set {index}"\n'
+            f'prompt = "{prompt}"\n'
+            f"steps = {steps}\n"
+            f"repeat = {repeat}\n\n"
+            for index, (prompt, steps, repeat) in enumerate(sets)
+        )
+        target = self.logs / (run_id or self.RUN_ID) / "config.toml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return target
+
+    def _evaluate(self, **params):
+        return api.handle_evaluate_checkpoint(
+            {"checkpoint": str(self.checkpoint), "depth": 4, **params}
+        )
+
+    def _stored(self) -> dict:
+        return self._spec_written_by_last_spawn()
+
+    def test_dispatch_registered(self):
+        self.assertIn("evaluate_checkpoint", api._HANDLERS)
+
+    def test_a_short_checkpoint_gets_a_plan_to_render(self):
+        self._write_snapshot(("first prompt", 9, 1), ("second prompt", 9, 1))
+        result = self._evaluate(depth=3)
+
+        stored = self._stored()
+        self.assertEqual(stored["mode"], "evaluate")
+        self.assertEqual(stored["state"], "running")
+        self.assertEqual(stored["phase"], "rendering")
+        self.assertEqual(stored["depth"], 3)
+        self.assertEqual(stored["threshold"], 0.35)
+        self.assertEqual(stored["categories"], ["general"])
+        self.assertEqual(stored["step"], 3050)
+        self.assertEqual(stored["run_id"], self.RUN_ID)
+        self.assertEqual(stored["checkpoint"], str(self.checkpoint))
+        self.assertEqual(
+            stored["config_source"], str((self.logs / self.RUN_ID / "config.toml").resolve())
+        )
+        self.assertEqual(stored["images"], [])
+        # Two images a pass, a depth of three and nothing on disk yet: two whole passes.
+        self.assertEqual(stored["plan"]["passes"], 2)
+        self.assertEqual(stored["plan"]["per_pass"], 2)
+        self.assertEqual(stored["plan"]["existing_images"], 0)
+        self.assertTrue(stored["plan"]["needed"])
+        self.assertEqual(stored["plan"]["render_total"], 4)
+        self.assertEqual((stored["images_done"], stored["total_images"]), (0, 4))
+        self.assertEqual(
+            [entry["prompt"] for entry in stored["sample_sets"]], ["first prompt", "second prompt"]
+        )
+        # The runner rebuilds `SampleSet(**entry)` from these, so the record must carry exactly the
+        # dataclass's fields.
+        from dataclasses import fields
+
+        from trainer.config import SampleSet
+
+        self.assertEqual(
+            set(stored["sample_sets"][0]), {item.name for item in fields(SampleSet)}
+        )
+        self.assertIsNone(stored["scores"])
+        for key in ("current_step", "total_steps", "images_done", "total_images"):
+            self.assertIsInstance(stored[key], int, key)
+        self.assertEqual(result["job"]["id"], stored["id"])
+        json.dumps(result)
+        self.popen.assert_called_once()
+        self.assertTrue(self.generated.is_dir())
+
+    def test_enough_images_mean_no_render_at_all(self):
+        self._write_snapshot(("first prompt", 9, 1), ("second prompt", 9, 1))
+        for set_index in range(2):
+            (self.samples / f"rein_003050_p{set_index}_0.png").write_bytes(b"png")
+
+        self._evaluate(depth=2)
+
+        stored = self._stored()
+        self.assertEqual(stored["phase"], "tagging")
+        self.assertFalse(stored["plan"]["needed"])
+        self.assertEqual(stored["plan"]["render_total"], 0)
+        # The counters are the phase's own: nothing to render, so they count the scored set.
+        self.assertEqual((stored["images_done"], stored["total_images"]), (0, 2))
+        self.assertEqual([image["set_index"] for image in stored["images"]], [0, 1])
+        self.assertEqual(
+            [image["prompt"] for image in stored["images"]], ["first prompt", "second prompt"]
+        )
+        self.assertEqual([image["source"] for image in stored["images"]], ["run", "run"])
+
+    def test_images_of_an_earlier_pass_count_and_keep_their_own_prompt(self):
+        self._write_snapshot(("first prompt", 9, 2))
+        job_id = "rein_s003050_sets_gen_20260911_120000"
+        self.generated.mkdir(parents=True, exist_ok=True)
+        (self.generated / f"{job_id}.json").write_text(
+            json.dumps(
+                {
+                    "id": job_id,
+                    "state": "done",
+                    "mode": "sets",
+                    "checkpoint": str(self.checkpoint),
+                    "step": 3050,
+                    "files": [
+                        str(self.generated / "a_p0_0.png"),
+                        str(self.generated / "a_p0_1.png"),
+                    ],
+                    "sample_sets": [{"prompt": "recorded prompt", "repeat": 2}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self._evaluate(depth=2)
+
+        stored = self._stored()
+        self.assertFalse(stored["plan"]["needed"])
+        self.assertEqual(len(stored["images"]), 2)
+        self.assertEqual([image["source"] for image in stored["images"]], ["generated", "generated"])
+        # Its own pass recorded what it drew with, which is not necessarily today's snapshot.
+        self.assertEqual([image["prompt"] for image in stored["images"]], ["recorded prompt"] * 2)
+
+    def test_a_bad_depth_or_threshold_is_refused_before_spawning(self):
+        self._write_snapshot(("p", 9, 1))
+        for params in ({"depth": 0}, {"depth": 513}, {"depth": "many"}, {"depth": 4, "threshold": 1.5}):
+            with self.subTest(params=params):
+                with self.assertRaises(ValueError):
+                    api.handle_evaluate_checkpoint({"checkpoint": str(self.checkpoint), **params})
+        self.popen.assert_not_called()
+
+    def test_a_depth_past_the_render_cap_is_refused(self):
+        self._write_snapshot(("a", 9, 1), ("b", 9, 1), ("c", 9, 1))
+        with self.assertRaises(ValueError) as ctx:
+            self._evaluate(depth=512)
+        self.assertIn(str(512), str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_the_categories_default_and_follow_the_request(self):
+        self._write_snapshot(("p", 9, 1))
+        self._evaluate(depth=1)
+        self.assertEqual(self._stored()["categories"], ["general"])
+
+        self._evaluate(depth=1, categories="general,rating", threshold=0.2)
+        self.assertEqual(self._stored()["categories"], ["general", "rating"])
+        self.assertEqual(self._stored()["threshold"], 0.2)
+
+    def test_a_live_trainer_and_another_generation_are_refused(self):
+        from trainer import control
+
+        self._write_snapshot(("p", 9, 1))
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        with self.assertRaises(ValueError) as ctx:
+            self._evaluate(depth=1)
+        self.assertIn("GPU", str(ctx.exception))
+
+        control.write_state({"status": "finished", "pid": None}, force=True)
+        self._write_job("live_gen_1", pid=os.getpid())
+        with self.assertRaises(ValueError) as ctx:
+            self._evaluate(depth=1)
+        self.assertIn("already running", str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_a_checkpoint_that_is_not_a_file_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_evaluate_checkpoint(
+                {"checkpoint": str(self.run_dir / "nope.safetensors"), "depth": 1}
+            )
+        self.assertIn("not a checkpoint file", str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_a_broken_snapshot_is_reported_before_spawning(self):
+        self._write_snapshot(("", 9, 1))
+        with self.assertRaises(ValueError):
+            self._evaluate(depth=1)
+        self.popen.assert_not_called()
+
+    def test_a_run_without_a_snapshot_falls_back_to_the_current_config(self):
+        self.cfg.pop("samples", None)
+        with mock.patch.object(
+            api,
+            "run_config_mapping",
+            return_value=(
+                {"samples": [{"prompt": "current config prompt", "steps": 9, "repeat": 1}]},
+                "/repo/config.toml",
+            ),
+        ):
+            self._evaluate(depth=1)
+        stored = self._stored()
+        self.assertEqual(stored["config_source"], "/repo/config.toml")
+        self.assertEqual([entry["prompt"] for entry in stored["sample_sets"]], ["current config prompt"])
+
+    def test_a_run_without_a_snapshot_uses_the_prompts_it_recorded_itself(self):
+        """A run from before the `config.toml` copies: its own hparams supply the prompts."""
+        from torch.utils.tensorboard import SummaryWriter
+
+        from trainer.config import tracker_hparams
+
+        writer = SummaryWriter(log_dir=str(self.logs / self.RUN_ID))
+        try:
+            writer.add_hparams(
+                tracker_hparams(
+                    {
+                        "output_name": "rein",
+                        "samples": [{"name": "recorded", "prompt": "its own prompt", "steps": 17, "repeat": 1}],
+                    }
+                ),
+                {},
+            )
+        finally:
+            writer.close()
+
+        self._evaluate(depth=1)
+
+        stored = self._stored()
+        self.assertIn("events.out.tfevents.", stored["config_source"])
+        self.assertIn(self.RUN_ID, stored["config_source"])
+        self.assertEqual([entry["prompt"] for entry in stored["sample_sets"]], ["its own prompt"])
+        self.assertEqual(stored["plan"]["per_pass"], 1)
+
+    def test_the_checkpoint_of_another_run_is_evaluated_with_that_runs_config(self):
+        other = "kanae_20260101_000000"
+        other_checkpoint = self.out / other / "kanae_s000100" / "kanae.safetensors"
+        other_checkpoint.parent.mkdir(parents=True)
+        other_checkpoint.write_bytes(b"weights")
+        self._write_snapshot(("other run prompt", 9, 1), run_id=other)
+        self._write_snapshot(("the named run prompt", 9, 1))
+
+        api.handle_evaluate_checkpoint({"checkpoint": str(other_checkpoint), "depth": 1})
+
+        stored = self._stored()
+        self.assertEqual(stored["run_id"], other)
+        self.assertEqual(stored["output_name"], "kanae")
+        self.assertEqual(
+            stored["config_source"], str((self.logs / other / "config.toml").resolve())
+        )
+        self.assertEqual([entry["prompt"] for entry in stored["sample_sets"]], ["other run prompt"])
+        # The job lives beside the samples it is about, which is where that card reads it from.
+        self.assertTrue(
+            (self.out / other / "kanae_samples" / "generated" / f"{stored['id']}.json").is_file()
+        )
+
+    def test_a_checkpoint_outside_the_output_root_uses_the_named_run(self):
+        stray = Path(self.tmp.name) / "elsewhere" / "rein.safetensors"
+        stray.parent.mkdir(parents=True)
+        stray.write_bytes(b"weights")
+        self._write_snapshot(("the named run prompt", 9, 1))
+
+        api.handle_evaluate_checkpoint({"checkpoint": str(stray), "depth": 1})
+
+        stored = self._stored()
+        self.assertEqual(stored["run_id"], self.RUN_ID)
+        self.assertEqual(stored["config_source"], str((self.logs / self.RUN_ID / "config.toml").resolve()))
+        self.assertTrue((self.generated / f"{stored['id']}.json").is_file())
+
+    def test_the_step_falls_back_to_the_metadata(self):
+        from safetensors.torch import save_file
+
+        target = self.run_dir / "rein_renamed" / "rein.safetensors"
+        target.parent.mkdir(parents=True)
+        save_file(
+            {"lora_unet_x.lora_down.weight": torch.zeros(4, 2)},
+            str(target),
+            metadata={"ss_steps": "4242"},
+        )
+        self._write_snapshot(("p", 9, 1))
+        (self.samples / "rein_004242_p0_0.png").write_bytes(b"png")
+
+        api.handle_evaluate_checkpoint({"checkpoint": str(target), "depth": 1})
+
+        stored = self._stored()
+        self.assertEqual(stored["step"], 4242)
+        self.assertFalse(stored["plan"]["needed"])
+        self.assertEqual([image["name"] for image in stored["images"]], ["rein_004242_p0_0.png"])
 
 
 class DatasetTagIpcTest(unittest.TestCase):

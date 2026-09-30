@@ -145,7 +145,74 @@ data class GeneratedSampleJob(
     @SerialName("from_step") val fromStep: Int? = null,
     @SerialName("to_step") val toStep: Int? = null,
     @SerialName("started_at") val startedAt: Double = 0.0,
+    /** An evaluation's stage: `rendering` → `tagging` → `scoring` → `done`. */
+    val phase: String = "",
+    /** The depth it was asked for: a floor, so enough images mean nothing was rendered. */
+    val depth: Int? = null,
+    val threshold: Float? = null,
+    val categories: List<String> = emptyList(),
+    /** The `config.toml` its prompts came from: the run's own snapshot, or the repo's. */
+    @SerialName("config_source") val configSource: String = "",
+    /** An evaluation's result, `null` until the pass ends. */
+    val scores: EvaluationScores? = null,
 )
+
+/**
+ * Both scoreboards of one evaluation. The per-image one is the headline: every image's tags are
+ * compared with the prompt it was rendered from, and the counts are summed over all of them, so a
+ * requested tag that shows up on 1 of 20 images is one true positive and 19 false negatives. The
+ * `union*` board pools each prompt's images instead: a requested tag counts as found when any of
+ * them shows it.
+ */
+@Serializable
+data class EvaluationScores(
+    val tp: Int = 0,
+    val fp: Int = 0,
+    val fn: Int = 0,
+    val precision: Float = 0f,
+    val recall: Float = 0f,
+    val f1: Float = 0f,
+    @SerialName("union_tp") val unionTp: Int = 0,
+    @SerialName("union_fp") val unionFp: Int = 0,
+    @SerialName("union_fn") val unionFn: Int = 0,
+    @SerialName("union_precision") val unionPrecision: Float = 0f,
+    @SerialName("union_recall") val unionRecall: Float = 0f,
+    @SerialName("union_f1") val unionF1: Float = 0f,
+    @SerialName("images_scored") val imagesScored: Int = 0,
+    @SerialName("images_failed") val imagesFailed: Int = 0,
+    @SerialName("images_skipped") val imagesSkipped: Int = 0,
+    /** One row per prompt, both boards, images counted first. */
+    val groups: List<EvaluationGroup> = emptyList(),
+    /** The tags that cost the most precision / recall, most frequent first. */
+    @SerialName("top_false_positives") val topFalsePositives: List<EvaluationTagCount> = emptyList(),
+    @SerialName("top_false_negatives") val topFalseNegatives: List<EvaluationTagCount> = emptyList(),
+)
+
+/** One prompt of an evaluation: how many images were scored, and both boards for it. */
+@Serializable
+data class EvaluationGroup(
+    val prompt: String = "",
+    val images: Int = 0,
+    val tp: Int = 0,
+    val fp: Int = 0,
+    val fn: Int = 0,
+    val precision: Float = 0f,
+    val recall: Float = 0f,
+    val f1: Float = 0f,
+    @SerialName("union_precision") val unionPrecision: Float = 0f,
+    @SerialName("union_recall") val unionRecall: Float = 0f,
+    @SerialName("union_f1") val unionF1: Float = 0f,
+)
+
+/** One tag of an evaluation's offender list, with how many images it cost. */
+@Serializable
+data class EvaluationTagCount(val tag: String = "", val count: Int = 0)
+
+/**
+ * The checkpoint an evaluation dialog is open for, and how many sample images it already shows.
+ * UI-only: the depth field starts there, since the depth is a floor and not a target.
+ */
+data class EvaluationTarget(val checkpoint: CheckpointItem, val existingImages: Int)
 
 @Serializable
 data class GeneratedSamplesResponse(
@@ -431,6 +498,15 @@ data class DashboardUiState(
     /** True while a step-range batch is being handed to the helper. */
     val isStartingBatch: Boolean = false,
     val batchError: String? = null,
+    /** The checkpoint whose evaluation dialog is open, if any. */
+    val evaluationTarget: EvaluationTarget? = null,
+    /** Checkpoint path whose evaluation is on its way to the helper. */
+    val isStartingEvaluation: String? = null,
+    val evaluationError: String? = null,
+    /** Evaluation job whose details block is expanded on its card. */
+    val evaluationDetailsFor: String? = null,
+    /** The tagger's own categories, for the dialog; fetched once when one opens. */
+    val taggerInfo: TaggerInfoResult? = null,
     val hardware: HardwareStatus = HardwareStatus(),
     val hardwareHistory: HardwareHistory = HardwareHistory(),
 )

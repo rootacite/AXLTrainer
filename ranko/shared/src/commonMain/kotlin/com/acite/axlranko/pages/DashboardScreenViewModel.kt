@@ -10,6 +10,7 @@ import com.acite.axlranko.model.ChartPickState
 import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.DashboardUiState
+import com.acite.axlranko.model.EvaluationTarget
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.HardwareHistory
 import com.acite.axlranko.model.HardwareStatus
@@ -114,6 +115,9 @@ class DashboardScreenViewModel(
                 runId = run?.runId,
                 chartPick = null,
                 previewIndex = null,
+                evaluationTarget = null,
+                evaluationDetailsFor = null,
+                evaluationError = null,
                 samples = emptyMap(),
                 checkpointPins = emptyList(),
                 checkpointPinsFile = null,
@@ -392,6 +396,79 @@ class DashboardScreenViewModel(
                     it.copy(isStartingBatch = false, batchError = e.message ?: e.toString())
                 }
             }
+        }
+    }
+
+    /**
+     * Opens the evaluation dialog for one checkpoint. [existingImages] is what the card already
+     * shows, and it prefills the depth field — the depth is a floor, so that is the "score what is
+     * there" default. The tagger's own categories are fetched once, for the dialog's pills; a
+     * helper that cannot answer leaves the field on the tagger's own default.
+     */
+    fun openEvaluation(checkpoint: CheckpointItem, existingImages: Int) {
+        _uiState.update {
+            it.copy(
+                evaluationTarget = EvaluationTarget(checkpoint, existingImages),
+                evaluationError = null,
+            )
+        }
+        if (_uiState.value.taggerInfo != null) return
+        viewModelScope.launch {
+            val info = runCatching { withContext(IoDispatcher) { ipc.taggerInfo() } }.getOrNull()
+            _uiState.update { state -> state.copy(taggerInfo = info) }
+        }
+    }
+
+    fun dismissEvaluation() {
+        _uiState.update { it.copy(evaluationTarget = null, evaluationError = null) }
+    }
+
+    /**
+     * Starts the evaluation: api.py tops the checkpoint's sample images up to the depth, tags every
+     * one of them and scores the tags against each prompt, in one detached job this page follows.
+     */
+    fun startEvaluation(depth: Int, threshold: Float, categories: List<String>) {
+        val target = _uiState.value.evaluationTarget ?: return
+        if (_uiState.value.isStartingEvaluation != null) return
+        _uiState.update { it.copy(isStartingEvaluation = target.checkpoint.path, evaluationError = null) }
+        viewModelScope.launch {
+            try {
+                val selected = _uiState.value.selectedRun
+                val response = withContext(IoDispatcher) {
+                    ipc.evaluateCheckpoint(
+                        checkpoint = target.checkpoint.path,
+                        depth = depth,
+                        threshold = threshold,
+                        categories = categories,
+                        name = selected?.outputName,
+                        runId = selected?.runId ?: _uiState.value.runId,
+                    )
+                }
+                sessionJobIds += response.job.id
+                _uiState.update { state ->
+                    state.copy(
+                        sessionJobIds = sessionJobIds.toSet(),
+                        isStartingEvaluation = null,
+                        evaluationTarget = null,
+                        generatedJobs = (listOf(response.job) + state.generatedJobs).distinctBy { it.id },
+                    )
+                }
+                startGeneratedPolling()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isStartingEvaluation = null,
+                        evaluationError = e.message ?: e.toString(),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Expands or collapses one card's evaluation details block. */
+    fun toggleEvaluationDetails(id: String) {
+        _uiState.update { state ->
+            state.copy(evaluationDetailsFor = if (state.evaluationDetailsFor == id) null else id)
         }
     }
 

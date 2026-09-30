@@ -1,16 +1,19 @@
-"""Generate one extra sample image from a LoRA checkpoint, outside any training run.
+"""Generate one extra sample image from a LoRA checkpoint, outside any training run, or evaluate one.
 
     python -u trainer/generate_sample.py --spec <job.json>
 
 api.py writes the spec (a job record, see `trainer/genjob.py`), spawns this
-script detached, and Ranko follows the job file while it runs. The image is
-written next to its spec under `{name}_samples/generated/`, so it sits beside the
-run's own samples without entering their `_<step>_<repeat>.png` namespace.
+script detached, and Ranko follows the job file while it runs. A generated image
+is written next to its spec under `{name}_samples/generated/`, so it sits beside
+the run's own samples without entering their `_<step>_<repeat>.png` namespace.
 
 The settings come from the checkpoint's own kohya metadata where possible
 (network_type, network_dim/alpha, conv_dim/alpha, clip_skip, max_token_length,
 base model), so a sample of an old checkpoint is reproduced with the settings
-it was trained with rather than with whatever config.toml says today.
+it was trained with rather than with whatever config.toml says today. An
+evaluation (`mode: evaluate`, see `run_evaluation`) adds one more source: the
+config the run saved beside its logs, which is what decides the prompts and the
+sampling values its images are held to.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import sys
 import traceback
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import torch
@@ -29,6 +33,7 @@ import torch
 # `python trainer/generate_sample.py` puts trainer/ on sys.path, `import api` does
 # not; support both (see AGENT.md "Import dualism").
 try:
+    import evaluation
     import genjob
     from checkpoints import (
         conv_dim_alpha_from_metadata,
@@ -36,19 +41,19 @@ try:
         read_lora_metadata,
         resolve_resume_path,
     )
-    from config import TrainConfig, resolve_sample_sets
+    from config import SampleSet, TrainConfig, resolve_sample_sets, run_config_mapping
     from env import flush_memory, setup_migraphx_cache
     from family import require_trainable, resolve_family
     from models import enable_flash_attention, sample_scheduler_kwargs
 except ImportError:
-    from trainer import genjob
+    from trainer import evaluation, genjob
     from trainer.checkpoints import (
         conv_dim_alpha_from_metadata,
         infer_network_type,
         read_lora_metadata,
         resolve_resume_path,
     )
-    from trainer.config import TrainConfig, resolve_sample_sets
+    from trainer.config import SampleSet, TrainConfig, resolve_sample_sets, run_config_mapping
     from trainer.env import flush_memory, setup_migraphx_cache
     from trainer.family import require_trainable, resolve_family
     from trainer.models import enable_flash_attention, sample_scheduler_kwargs
@@ -105,9 +110,14 @@ def _meta_int(metadata: dict[str, str], key: str, fallback: int) -> int:
         return fallback
 
 
-def _build_config(metadata: dict[str, str], checkpoint: Path) -> TrainConfig:
-    """config.toml, corrected with the settings the checkpoint was trained with."""
-    cfg = TrainConfig()
+def _build_config(
+    metadata: dict[str, str],
+    checkpoint: Path,
+    base_cfg: Optional[TrainConfig] = None,
+) -> TrainConfig:
+    """`base_cfg` (config.toml, or a run's own saved config) corrected with the settings the
+    checkpoint was trained with."""
+    cfg = base_cfg if base_cfg is not None else TrainConfig()
 
     version = str(metadata.get("ss_base_model_version") or "").strip()
     if version and version != cfg.base_model_version:
@@ -345,6 +355,21 @@ def _load_family(cfg, dtype: torch.dtype):
     return pipe, modules
 
 
+def _plan_slots(
+    sets: Sequence[SampleSet],
+    plan: Optional[Sequence[tuple[int, int]]] = None,
+) -> dict[int, list[int]]:
+    """Which repeat indices each set gets: the whole pass when `plan` is None, else exactly the
+    slots it lists. Grouped per set with the repeats ascending, and a set with nothing to draw is
+    absent, so an evaluation's top-up encodes only the prompts it is actually going to use."""
+    slots: dict[int, list[int]] = {}
+    for set_index, repeat_idx in plan if plan is not None else (
+        (index, repeat) for index, entry in enumerate(sets) for repeat in range(entry.repeat)
+    ):
+        slots.setdefault(int(set_index), []).append(int(repeat_idx))
+    return {set_index: sorted(repeats) for set_index, repeats in slots.items()}
+
+
 def _shape_key(cfg) -> tuple:
     """What the LoRA wrap is built from, so a batch knows when it needs a new pipeline.
 
@@ -373,19 +398,27 @@ def _render_sets(
     job_id: str,
     device: torch.device,
     dtype: torch.dtype,
-) -> list[str]:
-    """Render every set of `sets` for the checkpoint already loaded in `pipe` / `modules`.
+    plan: Optional[Sequence[tuple[int, int]]] = None,
+) -> list[tuple[int, int, str]]:
+    """Render the slots of `sets` for the checkpoint already loaded in `pipe` / `modules`.
 
-    One image per (set, repeat), named `{job_id}_p{set}_{repeat}.png` in `generated/`, with the job
-    record's progress updated as it goes. Returns the written paths in render order.
+    One image per `(set, repeat)`, named `{job_id}_p{set}_{repeat}.png` in `generated/`, with the
+    job record's progress updated as it goes. `plan` lists exactly which slots to render — the whole
+    sets pass when it is None, and an evaluation's missing positions otherwise, so a set with
+    nothing to draw costs no encode. Returns `(set_index, repeat_idx, path)` in render order.
     """
+    slots = _plan_slots(sets, plan)
+    total_images = sum(len(repeats) for repeats in slots.values())
+
     trained_unet = modules.denoise
     te1, te2 = modules.text_encoders[0], modules.text_encoders[1]
-    total_images = sum(sample_set.repeat for sample_set in sets)
-    files: list[str] = []
+    rendered: list[tuple[int, int, str]] = []
     scheduler_kwargs = sample_scheduler_kwargs(cfg, pipe.scheduler.config)
 
     for set_index, sample_set in enumerate(sets):
+        repeats = slots.get(set_index, [])
+        if not repeats:
+            continue
         if _cancel_asked():
             raise _Cancelled()
         _prepare_scheduler(pipe, sample_set.steps, device, scheduler_kwargs)
@@ -419,12 +452,12 @@ def _render_sets(
             module.to("cpu")
         flush_memory(device)
         _log(
-            f"set {set_index + 1}/{len(sets)} {sample_set.name}: {sample_set.repeat} image(s), "
+            f"set {set_index + 1}/{len(sets)} {sample_set.name}: {len(repeats)} image(s), "
             f"{sample_set.width}x{sample_set.height}, {sample_set.steps} steps, "
             f"cfg {sample_set.guidance_scale}, seed {sample_set.seed}"
         )
 
-        for repeat_idx in range(sample_set.repeat):
+        for repeat_idx in repeats:
             generator = torch.Generator(device="cpu")
             seed = _seed_for(sample_set, repeat_idx)
             generator.manual_seed(seed)
@@ -437,7 +470,7 @@ def _render_sets(
                     job_id,
                     current_step=int(step_index) + 1,
                     total_steps=sample_set.steps,
-                    images_done=len(files),
+                    images_done=len(rendered),
                     total_images=total_images,
                     current_set=set_index + 1,
                     total_sets=len(sets),
@@ -473,12 +506,12 @@ def _render_sets(
             target = genjob.set_image_path(generated, job_id, set_index, repeat_idx)
             target.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(image).save(target)
-            files.append(str(target))
+            rendered.append((set_index, repeat_idx, str(target)))
             genjob.update_job(
                 generated,
                 job_id,
-                files=files,
-                images_done=len(files),
+                files=[path for _set, _repeat, path in rendered],
+                images_done=len(rendered),
                 total_images=total_images,
                 current_step=0,
                 total_steps=sample_set.steps,
@@ -486,8 +519,8 @@ def _render_sets(
                 total_sets=len(sets),
                 seed=seed,
             )
-            _log(f"saved {target} ({len(files)}/{total_images})")
-    return files
+            _log(f"saved {target} ({len(rendered)}/{total_images})")
+    return rendered
 
 
 @torch.no_grad()
@@ -530,7 +563,7 @@ def run_sample_sets(spec: dict, generated: Path) -> None:
 
     pipe, modules = _load_family(cfg, dtype)
     try:
-        files = _render_sets(
+        rendered = _render_sets(
             pipe=pipe,
             modules=modules,
             cfg=cfg,
@@ -545,6 +578,7 @@ def run_sample_sets(spec: dict, generated: Path) -> None:
             module.to("cpu")
         flush_memory(device)
 
+    files = [path for _set, _repeat, path in rendered]
     genjob.update_job(
         generated,
         job_id,
@@ -667,7 +701,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                     _log(f"[{index}/{len(entries)}] loading the LoRA weights of {label}")
                     resolve_family(cfg).load_lora(cfg, modules)
 
-                files = _render_sets(
+                rendered = _render_sets(
                     pipe=pipe,
                     modules=modules,
                     cfg=cfg,
@@ -677,6 +711,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                     device=device,
                     dtype=dtype,
                 )
+                files = [path for _set, _repeat, path in rendered]
                 images_done += len(files)
                 rendered += 1
                 genjob.update_job(
@@ -751,6 +786,164 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
         + (" (cancelled)" if cancelled else "")
     )
 
+def _record_config(spec: dict) -> TrainConfig:
+    """The config an evaluation is held to, resolved the way api.py resolved it when it planned the
+    pass: the run's own `config.toml` copy, the hparams it recorded at startup when it predates
+    those copies, else today's `config.toml`. `config_source` in the spec says which one that was;
+    `config_log_dir` is what the resolution runs on again here, so one function decides."""
+    log_dir = str(spec.get("config_log_dir") or "")
+    if not log_dir:
+        _log("no run log directory on this spec; using config.toml")
+        return TrainConfig()
+    mapping, source = run_config_mapping(log_dir)
+    _log(f"config from {source}")
+    return TrainConfig.from_mapping(mapping)
+
+
+def _record_sets(spec: dict) -> list[SampleSet]:
+    """The prompt sets the plan was built from. Empty when the record carries none (a hand-written
+    spec), which sends the caller back to `resolve_sample_sets`."""
+    raw = spec.get("sample_sets")
+    if not isinstance(raw, list):
+        return []
+    sets: list[SampleSet] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            sets.append(SampleSet(**entry))
+        except TypeError:
+            continue
+    return sets
+
+
+@torch.no_grad()
+def run_evaluation(spec: dict, generated: Path) -> None:
+    """Evaluate one checkpoint: top its sample count up to the spec's depth, tag every image, score.
+
+    The record api.py wrote is the work order. `plan` lists the `(set, repeat)` slots that are
+    missing (none at all when the checkpoint already holds `depth` images), `sample_sets` is what to
+    render them with, and `images` is the set to tag and score — the run's own samples at the
+    checkpoint's step included, each already carrying the prompt it was rendered from. Rendering
+    happens first and only when there is something to draw, so a re-evaluation of a checkpoint that
+    already has enough images never loads the diffusion model; the tagger is the only model it
+    touches. Both scoreboards go back into the same record (`evaluation.score_images`).
+    """
+    job_id = str(spec["id"])
+    checkpoint = resolve_resume_path(spec["checkpoint"])
+    metadata = read_lora_metadata(checkpoint)
+    cfg = _build_config(metadata, checkpoint, base_cfg=_record_config(spec))
+    plan = dict(spec.get("plan") or {})
+    slots = evaluation.render_slots(plan)
+    images = evaluation.images_from_payload(spec.get("images"))
+    raw_threshold = spec.get("threshold")
+    threshold = float(raw_threshold) if raw_threshold is not None else 0.35
+    categories = [str(item) for item in spec.get("categories") or ["general"]]
+
+    genjob.update_job(
+        generated,
+        job_id,
+        state=genjob.STATE_RUNNING,
+        pid=os.getpid(),
+        error=None,
+        cancel_requested=False,
+    )
+    _log(
+        f"checkpoint={checkpoint} depth={spec.get('depth')} images={len(images)} "
+        f"to render={len(slots)} threshold={threshold:g} categories={','.join(categories)}"
+    )
+
+    if slots:
+        sets = _record_sets(spec) or resolve_sample_sets(cfg)
+        dtype = torch.float16 if cfg.mixed_precision == "fp16" else torch.bfloat16
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pipe, modules = _load_family(cfg, dtype)
+        try:
+            rendered = _render_sets(
+                pipe=pipe,
+                modules=modules,
+                cfg=cfg,
+                sets=sets,
+                generated=generated,
+                job_id=job_id,
+                device=device,
+                dtype=dtype,
+                plan=slots,
+            )
+        finally:
+            for module in (modules.denoise, *modules.text_encoders):
+                module.to("cpu")
+            flush_memory(device)
+
+        for set_index, repeat_idx, path in rendered:
+            images.append(
+                evaluation.ImageRef(
+                    path=str(path),
+                    set_index=int(set_index),
+                    repeat_idx=int(repeat_idx),
+                    source=evaluation.SOURCE_GENERATED,
+                    prompt=evaluation.sample_set_prompt(sets[set_index]) if set_index < len(sets) else "",
+                )
+            )
+
+    total_images = len(images)
+    tagged: list[evaluation.ImageRef] = []
+    # Matched on the normalized path: the tagger answers with `str(Path(path))`, which can differ
+    # from the recorded string in a slash or a `.` while naming the same file.
+    by_path = {os.path.normpath(image.path): image for image in images}
+
+    def _on_entry(entry: dict[str, Any]) -> None:
+        """Persist one tagged image and stop the pass when a cancel has arrived."""
+        image = by_path.get(os.path.normpath(str(entry.get("path") or "")))
+        if image is not None:
+            image.tags = [str(tag) for tag in entry.get("tags") or []]
+            image.error = None if entry.get("error") is None else str(entry["error"])
+            tagged.append(image)
+            genjob.update_job(
+                generated,
+                job_id,
+                phase=genjob.PHASE_TAGGING,
+                images=[item.to_dict() for item in tagged],
+                images_done=len(tagged),
+                total_images=total_images,
+            )
+        if _cancel_asked():
+            raise _Cancelled()
+
+    genjob.update_job(
+        generated,
+        job_id,
+        phase=genjob.PHASE_TAGGING,
+        images=[image.to_dict() for image in images],
+        images_done=0,
+        total_images=total_images,
+    )
+
+    import tagger2.main as tagger
+
+    tagger.tag_paths(
+        [image.path for image in images],
+        threshold=threshold,
+        categories=categories,
+        on_entry=_on_entry,
+    )
+
+    genjob.update_job(generated, job_id, phase=genjob.PHASE_SCORING)
+    scores = evaluation.score_images(images)
+    genjob.update_job(
+        generated,
+        job_id,
+        state=genjob.STATE_DONE,
+        phase=genjob.PHASE_DONE,
+        scores=scores,
+        images=[image.to_dict() for image in images],
+        images_done=total_images,
+        total_images=total_images,
+        error=None,
+    )
+    _log(f"scored {scores['images_scored']} image(s): F1 {scores['f1']} (micro), {scores['union_f1']} (union)")
+
+
 def main() -> int:
     _install_signal_handler()
     parser = argparse.ArgumentParser(description="Generate sample images from a LoRA checkpoint")
@@ -771,6 +964,8 @@ def main() -> int:
             run_sample_batch(spec, generated)
         elif mode == genjob.MODE_SETS:
             run_sample_sets(spec, generated)
+        elif mode == genjob.MODE_EVALUATE:
+            run_evaluation(spec, generated)
         else:
             run_generation(spec, generated)
     except _Cancelled:

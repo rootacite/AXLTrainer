@@ -42,7 +42,7 @@ internal fun checkpointRows(
     jobs: List<GeneratedSampleJob>,
     pinned: Set<String> = emptySet(),
 ): List<CheckpointRow> {
-    val done = jobs.filter { jobHasImages(it) }
+    val done = jobs.filter { jobShowsOnCard(it) }
     val rows = mutableListOf<CheckpointRow>()
     val claimedSteps = mutableSetOf<Int>()
     val claimedJobs = mutableSetOf<String>()

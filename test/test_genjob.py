@@ -120,6 +120,81 @@ class SetsJobTest(unittest.TestCase):
             self.assertEqual(genjob.list_jobs(generated)[0]["mode"], genjob.MODE_SINGLE)
 
 
+    def test_a_jobs_id_and_set_names_carry_their_mode(self):
+        self.assertRegex(
+            genjob.new_job_id("lllj_s003050", mode=genjob.MODE_EVALUATE),
+            r"^lllj_s003050_evaluate_gen_\d{8}_\d{6}$",
+        )
+        self.assertRegex(
+            genjob.new_job_id("lllj_s003050", mode=genjob.MODE_BATCH),
+            r"^lllj_s003050_batch_gen_\d{8}_\d{6}$",
+        )
+
+
+class EvaluationJobTest(unittest.TestCase):
+    """The record api.py writes before an evaluation: a plan plus the set of images to score."""
+
+    def _job(self, *, plan, images=None, **fields):
+        return genjob.new_evaluation_job(
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+            step=100,
+            depth=fields.pop("depth", 7),
+            threshold=fields.pop("threshold", 0.35),
+            categories=fields.pop("categories", ["general"]),
+            config_source="/logs/rein_20260101_000000/config.toml",
+            config_log_dir="/logs/rein_20260101_000000",
+            plan=plan,
+            images=images if images is not None else [],
+            sample_sets=fields.pop("sample_sets", [{"prompt": "a set", "repeat": 1}]),
+            **fields,
+        )
+
+    def test_a_top_up_starts_in_the_rendering_phase(self):
+        plan = {"k": 1, "needed": True, "render_total": 4, "sets": []}
+        job = self._job(plan=plan)
+        self.assertEqual(job["mode"], genjob.MODE_EVALUATE)
+        self.assertEqual(job["phase"], genjob.PHASE_RENDERING)
+        # The counters belong to the phase: images to render first, then the scored set.
+        self.assertEqual((job["images_done"], job["total_images"]), (0, 4))
+        self.assertEqual(job["depth"], 7)
+        self.assertEqual(job["threshold"], 0.35)
+        self.assertEqual(job["categories"], ["general"])
+        self.assertEqual(job["config_source"], "/logs/rein_20260101_000000/config.toml")
+        self.assertEqual(job["config_log_dir"], "/logs/rein_20260101_000000")
+        self.assertEqual(job["plan"], plan)
+        self.assertIsNone(job["scores"])
+        self.assertEqual(job["step"], 100)
+
+    def test_a_deep_enough_checkpoint_starts_in_the_tagging_phase(self):
+        plan = {"k": 0, "needed": False, "render_total": 0, "sets": []}
+        images = [{"path": "/x/a.png", "set_index": 0, "repeat_idx": 0} for _ in range(9)]
+        job = self._job(plan=plan, images=images, depth=7)
+        self.assertEqual(job["phase"], genjob.PHASE_TAGGING)
+        self.assertEqual((job["images_done"], job["total_images"]), (0, 9))
+        self.assertEqual(len(job["images"]), 9)
+
+    def test_no_counter_is_ever_null(self):
+        job = self._job(plan={"k": 1, "needed": True, "render_total": 2, "sets": []})
+        for key in ("current_step", "total_steps", "images_done", "total_images"):
+            self.assertIsInstance(job[key], int, key)
+        payload = json.loads(json.dumps(job))
+        self.assertIsNone(payload["scores"])
+        self.assertIsInstance(payload["images"], list)
+
+    def test_listing_keeps_an_evaluation_a_mode_of_its_own(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            generated = genjob.generated_dir(Path(tmp) / "rein_samples")
+            generated.mkdir(parents=True)
+            job = self._job(plan={"k": 0, "needed": False, "render_total": 0, "sets": []})
+            genjob.write_job(generated, job)
+            stored = genjob.list_jobs(generated)[0]
+            self.assertEqual(stored["mode"], genjob.MODE_EVALUATE)
+            self.assertEqual(stored["phase"], genjob.PHASE_TAGGING)
+            self.assertIn(stored["phase"], genjob.PHASES)
+
+
 class RequestValidationTest(unittest.TestCase):
     defaults = {
         "prompt": "config prompt",

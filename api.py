@@ -32,7 +32,13 @@ from trainer.checkpoints import (
     unpin_entry,
     write_pins,
 )
-from trainer.config import TrainConfig, _load_toml_config, resolve_sample_sets, resolve_train_data_entries
+from trainer.config import (
+    TrainConfig,
+    _load_toml_config,
+    resolve_sample_sets,
+    resolve_train_data_entries,
+    run_config_mapping,
+)
 from trainer.family import require_trainable, resolve_family
 from trainer.cleanup import run_cleanup
 from trainer.control import (
@@ -52,7 +58,7 @@ from trainer.control import (
 from trainer.hardware import collect_hardware_status
 from trainer import orphans
 from trainer.runs import find_samples_dir, list_runs, run_output_name, safe_name
-from trainer import automation, blobcodec, comfy, fsrpc, genjob
+from trainer import automation, blobcodec, comfy, evaluation, fsrpc, genjob
 
 _TAG_BLOCKED = frozenset(
     {
@@ -990,28 +996,65 @@ def _signal_generator(pid: Any) -> None:
         pass
 
 
+def _find_running_job(output_dir: Path, job_id: str = "") -> Optional[tuple[Path, dict[str, Any]]]:
+    """`(generated dir, job)` of the running job called `job_id`, or of the running one when no id is
+    given, wherever it lives under `output_dir`.
+
+    An id names one job (its stem carries the checkpoint and a timestamp), so a cancel does not have
+    to know which run it belongs to: the page can be showing a past run that `state.json` does not
+    carry at all. With no id the GPU is single-tenant, so there is at most one job to mean. A job
+    whose process is gone is closed on the way past, exactly as `_close_dead_jobs` does.
+    """
+    if not output_dir.is_dir():
+        return None
+    for spec in sorted(output_dir.glob("*/*_samples/generated/*.json")):
+        job = genjob.read_job(spec)
+        if job is None:
+            continue
+        if job_id and str(job.get("id") or spec.stem) != job_id:
+            continue
+        _close_dead_jobs(spec.parent)
+        job = genjob.read_job(spec)
+        if job is not None and job.get("state") == genjob.STATE_RUNNING:
+            return spec.parent, job
+        if job_id:
+            return None
+    return None
+
+
 def handle_cancel_generation(params: dict[str, Any]) -> dict[str, Any]:
     """Ask a running generation job to stop, the batch one included.
 
     The job keeps its state until its process is gone (so the card can say `cancelling…` and no new
     generation starts on the same card meanwhile); whatever images it had written stay in `files`.
-    No GPU gate: this has to work while the trainer is using the card.
+    No GPU gate: this has to work while the trainer is using the card. The job is looked for under
+    every run, by `id` when the request names one and by "the running one" otherwise — the page's
+    own run (`name` / `run_id`, else `state.json`) says nothing about a pass started from a past
+    run's card, and a helper whose `state.json` carries no run can still stop the only running job.
     """
     cfg = _train_config_dict()
-    resolved = _generated_dir(params, cfg)
-    if resolved is None:
-        raise ValueError("no run to cancel a generation for")
-    _run_id, _output_name, generated = resolved
-
     wanted = str(params.get("id") or "").strip()
-    job = next(
-        (
-            item
-            for item in _reconcile_generated(generated)
-            if item.get("state") == genjob.STATE_RUNNING and (not wanted or str(item.get("id")) == wanted)
-        ),
-        None,
-    )
+    resolved = _generated_dir(params, cfg)
+    generated: Optional[Path] = resolved[2] if resolved is not None else None
+
+    job: Optional[dict[str, Any]] = None
+    if generated is not None:
+        job = next(
+            (
+                item
+                for item in _reconcile_generated(generated)
+                if item.get("state") == genjob.STATE_RUNNING
+                and (not wanted or str(item.get("id")) == wanted)
+            ),
+            None,
+        )
+    if job is None:
+        found = _find_running_job(_output_dir(cfg), wanted)
+        if found is not None:
+            generated, job = found
+
+    if generated is None:
+        raise ValueError("no run to cancel a generation for")
     if job is None:
         if wanted:
             raise ValueError(f"{wanted} is not running")
@@ -1079,6 +1122,85 @@ def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str
         from_step=from_step,
         to_step=to_step,
         images_per_checkpoint=images_per_checkpoint,
+    )
+    job, log = _spawn_generator(generated, job)
+    return {"job": _json_safe(job), "log_path": log}
+
+
+def _checkpoint_run(
+    params: dict[str, Any],
+    cfg: dict[str, Any],
+    checkpoint: Path,
+) -> tuple[str, str, Path]:
+    """`(run_id, output_name, samples dir)` of the run a checkpoint belongs to.
+
+    A checkpoint sits at `{output_dir}/{run_id}/{name}_sXXX/{name}.safetensors`, so the path names
+    its own run: an evaluation of a past run's checkpoint is held to *that* run's config and topped
+    up beside *that* run's samples, even while the Dashboard is showing another run. A checkpoint
+    outside the configured `output_dir` (a copied file) falls back to the run this request resolved.
+    """
+    output_root = Path(str(cfg.get("output_dir") or ".")).expanduser()
+    resolved_run, resolved_name = _resolve_run(params, cfg)
+    candidate = ""
+    try:
+        parts = checkpoint.expanduser().resolve().relative_to(output_root.resolve()).parts
+        if len(parts) > 1:
+            candidate = str(parts[0])
+    except ValueError:  # not under output_dir at all
+        candidate = ""
+    if candidate and run_output_name(candidate):
+        name = run_output_name(candidate)
+        return candidate, name, find_samples_dir(output_root / candidate, name)
+    return resolved_run, resolved_name, _samples_dir(cfg, resolved_run, resolved_name)
+
+
+def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
+    """Start one evaluation of this checkpoint: top its samples up to Depth, tag them, score them.
+
+    Returns immediately (`{job, log_path}`), like the generation entries; Ranko follows the job file
+    and the reply's record already carries the plan (which slots to render, and which images are to
+    be scored with which prompt). Prompts and sampling values come from the config the run that
+    trained this checkpoint saved beside its logs, falling back to today's `config.toml` for a run
+    from before snapshots existed — `config_source` says which one was used. A checkpoint that
+    already holds `depth` images renders nothing and goes straight to tagging.
+    """
+    cfg, _run_id, _output_name, _generated, checkpoint = _claim_generation(params)
+
+    depth = evaluation.normalize_depth(params.get("depth"))
+    raw_threshold = params.get("threshold")
+    threshold = evaluation.normalize_threshold(0.35 if raw_threshold is None else raw_threshold)
+    categories = _clean_tagger_categories(params.get("categories")) or ["general"]
+
+    run_id, output_name, samples_dir = _checkpoint_run(params, cfg, checkpoint)
+    config_log_dir = _log_dir(cfg, run_id)
+    mapping, config_source = run_config_mapping(config_log_dir)
+    sets = resolve_sample_sets(mapping)
+    step = _checkpoint_step(checkpoint, output_name)
+
+    images = evaluation.collect_images(
+        samples_dir=samples_dir,
+        generated_dir=genjob.generated_dir(samples_dir),
+        checkpoint=checkpoint,
+        step=step,
+        sets=sets,
+    )
+    plan = evaluation.expansion_plan(sets, depth, images)
+
+    generated = genjob.generated_dir(samples_dir)
+    generated.mkdir(parents=True, exist_ok=True)
+    job = genjob.new_evaluation_job(
+        run_id=run_id,
+        output_name=output_name,
+        checkpoint=str(checkpoint),
+        step=step,
+        depth=depth,
+        threshold=threshold,
+        categories=categories,
+        config_source=config_source,
+        config_log_dir=str(config_log_dir),
+        plan=plan,
+        images=[image.to_dict() for image in images],
+        sample_sets=[asdict(sample_set) for sample_set in sets],
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
@@ -1883,6 +2005,7 @@ _HANDLERS = {
     "generate_sample": handle_generate_sample,
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
     "generate_checkpoint_samples_batch": handle_generate_checkpoint_samples_batch,
+    "evaluate_checkpoint": handle_evaluate_checkpoint,
     "cancel_generation": handle_cancel_generation,
     "list_generated_samples": handle_list_generated_samples,
     "config_get": handle_config_get,

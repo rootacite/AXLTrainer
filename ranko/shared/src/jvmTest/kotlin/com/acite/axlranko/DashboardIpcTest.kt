@@ -207,6 +207,96 @@ class DashboardIpcTest {
     }
 
     @Test
+    fun anEvaluationJobParsesItsPlanAndScores() {
+        val raw = """
+            {
+              "id": "rein_s003050_evaluate_gen_20261001_120000",
+              "state": "done",
+              "mode": "evaluate",
+              "step": 3050,
+              "phase": "done",
+              "depth": 20,
+              "threshold": 0.35,
+              "categories": ["general"],
+              "config_source": "/logs/rein_20260911_120000/config.toml",
+              "checkpoint": "/out/rein_20260911_120000/rein_s003050/rein.safetensors",
+              "files": [
+                "/out/rein_20260911_120000/rein_samples/generated/rein_s003050_evaluate_gen_20261001_120000_p0_3.png"
+              ],
+              "images_done": 21,
+              "total_images": 21,
+              "scores": {
+                "tp": 40, "fp": 12, "fn": 24,
+                "precision": 0.769, "recall": 0.625, "f1": 0.689,
+                "union_tp": 30, "union_fp": 8, "union_fn": 12,
+                "union_precision": 0.789, "union_recall": 0.714, "union_f1": 0.75,
+                "images_scored": 21, "images_failed": 1, "images_skipped": 0,
+                "groups": [
+                  {"prompt": "1girl, solo", "images": 3, "tp": 5, "fp": 2, "fn": 1,
+                   "precision": 0.7, "recall": 0.83, "f1": 0.76,
+                   "union_precision": 0.8, "union_recall": 1.0, "union_f1": 0.88}
+                ],
+                "top_false_positives": [{"tag": "solo", "count": 5}],
+                "top_false_negatives": [{"tag": "long hair", "count": 7}]
+              }
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(
+            com.acite.axlranko.model.GeneratedSampleJob.serializer(),
+            raw,
+        )
+        assertEquals("evaluate", parsed.mode)
+        assertEquals("done", parsed.phase)
+        assertEquals(20, parsed.depth)
+        assertEquals(0.35f, parsed.threshold)
+        assertEquals(listOf("general"), parsed.categories)
+        assertEquals("/logs/rein_20260911_120000/config.toml", parsed.configSource)
+        assertEquals(1, parsed.files.size)
+        val scores = parsed.scores ?: error("scores must parse")
+        assertEquals(0.689f, scores.f1)
+        assertEquals(0.75f, scores.unionF1)
+        assertEquals(21, scores.imagesScored)
+        assertEquals(1, scores.imagesFailed)
+        assertEquals(1, scores.groups.size)
+        assertEquals("1girl, solo", scores.groups.first().prompt)
+        assertEquals(3, scores.groups.first().images)
+        assertEquals(0.88f, scores.groups.first().unionF1)
+        assertEquals("solo", scores.topFalsePositives.first().tag)
+        assertEquals(5, scores.topFalsePositives.first().count)
+        assertEquals("long hair", scores.topFalseNegatives.first().tag)
+        // Its own rendered image carries the set/repeat name a thumbnail reads the Pn badge from.
+        assertEquals(0, com.acite.axlranko.pages.components.generatedSampleItems(parsed).first().setIndex)
+    }
+
+    @Test
+    fun aRunningEvaluationHasNoScores() {
+        val raw = """
+            {
+              "id": "rein_s003050_evaluate_gen_20261001_120000",
+              "state": "running",
+              "mode": "evaluate",
+              "phase": "rendering",
+              "depth": 12,
+              "threshold": 0.35,
+              "images_done": 3,
+              "total_images": 8,
+              "scores": null
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(
+            com.acite.axlranko.model.GeneratedSampleJob.serializer(),
+            raw,
+        )
+        assertEquals("rendering", parsed.phase)
+        assertEquals(3, parsed.imagesDone)
+        assertEquals(8, parsed.totalImages)
+        assertEquals(null, parsed.scores)
+        assertTrue(parsed.files.isEmpty())
+        assertTrue(parsed.categories.isEmpty())
+        assertEquals("", parsed.configSource)
+    }
+
+    @Test
     fun aNullInANumericFieldReadsAsItsDefault() {
         // The record api.py writes before the generator touches it can carry `null` where the model
         // declares an Int; one such job must not take the whole generated-samples list down.

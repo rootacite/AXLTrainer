@@ -28,6 +28,7 @@ from trainer.sampling import (
     _prepare_denoise_device,
     _reify_autograd_tensors,
     _restore_train_modules,
+    sample_provenance,
 )
 
 
@@ -142,6 +143,80 @@ class SamplingOffloadHelperTest(unittest.TestCase):
         loss = module(torch.randn(2, 4)).sum()
         loss.backward()
         self.assertIsNotNone(module.weight.grad)
+
+
+class SampleProvenanceTest(unittest.TestCase):
+    """The PNG text chunks a training sample carries: what drew it, and which run it belongs to."""
+
+    def setUp(self):
+        from trainer.config import SampleSet, TrainConfig
+
+        self.cfg = TrainConfig()
+        self.cfg.run_dir = "/out/rein_20260911_120000"
+        self.cfg.output_name = "rein"
+        self.sample_set = SampleSet(
+            name="set 0",
+            prompt="1girl, (anal:1.2)",
+            negative="worst quality",
+            width=1152,
+            height=768,
+            steps=35,
+            guidance_scale=6.0,
+            guidance_rescale=0.6,
+            seed=0,
+            repeat=1,
+        )
+
+    def _round_trip(self, **overrides):
+        """Write a tiny PNG with the chunks, read them back the way any viewer would."""
+        import tempfile
+
+        from PIL import Image
+
+        fields = {
+            "cfg": self.cfg,
+            "sample_set": self.sample_set,
+            "set_index": 2,
+            "repeat_idx": 1,
+            "seed": 3571650068,
+            "global_step": 600,
+        }
+        fields.update(overrides)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rein_000600_p2_1.png"
+            Image.new("RGB", (8, 8)).save(path, pnginfo=sample_provenance(**fields))
+            with Image.open(path) as image:
+                return dict(image.text)
+
+    def test_every_fact_a_copied_file_needs_travels_with_it(self):
+        text = self._round_trip()
+        self.assertEqual(text["axl_run_id"], "rein_20260911_120000")
+        self.assertEqual(text["axl_output_name"], "rein")
+        self.assertEqual(text["axl_step"], "000600")
+        self.assertEqual(text["axl_set"], "2")
+        self.assertEqual(text["axl_repeat"], "1")
+        # The seed that was really used, not the config's `0` = "random per image".
+        self.assertEqual(text["axl_seed"], "3571650068")
+        self.assertEqual(text["axl_prompt"], "1girl, (anal:1.2)")
+        self.assertEqual(text["axl_negative"], "worst quality")
+        self.assertEqual(text["axl_width"], "1152")
+        self.assertEqual(text["axl_height"], "768")
+        self.assertEqual(text["axl_steps"], "35")
+        self.assertEqual(text["axl_guidance"], "6.0")
+        self.assertEqual(text["axl_guidance_rescale"], "0.6")
+
+    def test_a_config_without_a_run_directory_still_names_itself(self):
+        self.cfg.run_dir = ""
+        text = self._round_trip()
+        self.assertNotIn("axl_run_id", text)
+        self.assertEqual(text["axl_output_name"], "rein")
+
+    def test_an_empty_prompt_is_not_written(self):
+        from dataclasses import replace as dataclass_replace
+
+        text = self._round_trip(sample_set=dataclass_replace(self.sample_set, prompt=""))
+        self.assertNotIn("axl_prompt", text)
+        self.assertEqual(text["axl_set"], "2")
 
 
 class SamplingSchedulerTest(unittest.TestCase):

@@ -6,7 +6,13 @@ from pathlib import Path
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 
-from config import TrainConfig, resolve_sample_sets, resolve_train_data_entries, tracker_hparams
+from config import (
+    TrainConfig,
+    resolve_sample_sets,
+    resolve_train_data_entries,
+    save_run_config,
+    tracker_hparams,
+)
 from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
@@ -52,6 +58,9 @@ def main() -> None:
     # earlier run (including step names restarting at 0) are never overwritten.
     run_id = create_run_dirs(cfg.output_dir, cfg.logging_dir, cfg.output_name)
     cfg.run_dir = str(Path(cfg.output_dir) / run_id)
+    # Keep the file this run trained with beside its logs: the next run may edit config.toml, and a
+    # later sample or evaluation of one of this run's checkpoints has to use its prompts, not theirs.
+    save_run_config(cfg.logging_dir, run_id)
 
     control.begin_run(os.getpid(), cfg.output_name, run_id=run_id)
     set_seed(cfg.seed)

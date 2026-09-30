@@ -235,6 +235,8 @@ internal object IpcResources {
         "generate_sample" to { _ -> listOf(gpu()) },
         "generate_checkpoint_samples" to { _ -> listOf(gpu()) },
         "generate_checkpoint_samples_batch" to { _ -> listOf(gpu()) },
+        // An evaluation renders its missing images and then tags them, so it holds the GPU itself.
+        "evaluate_checkpoint" to { _ -> listOf(gpu()) },
         "dataset_tag" to { params -> listOf(dataset(params.text("directory")), gpu()) },
         "automation_job_start" to { _ -> listOf(gpu()) },
         "automation_job_retry_failed" to { params -> listOf(job(params.text("id")), gpu()) },
