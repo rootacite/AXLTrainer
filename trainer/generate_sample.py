@@ -615,7 +615,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
     pipe = None
     modules = None
     images_done = 0
-    rendered = 0
+    checkpoints_done = 0
     failed: list[dict] = []
     job_ids: list[str] = []
 
@@ -713,7 +713,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                 )
                 files = [path for _set, _repeat, path in rendered]
                 images_done += len(files)
-                rendered += 1
+                checkpoints_done += 1
                 genjob.update_job(
                     generated,
                     job_id,
@@ -763,7 +763,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
     if cancelled:
         state = genjob.STATE_CANCELLED
         error = None
-    elif rendered:
+    elif checkpoints_done:
         state = genjob.STATE_DONE
         error = None
     else:
@@ -782,7 +782,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
         error=error,
     )
     _log(
-        f"batch {batch_id}: {rendered}/{len(entries)} checkpoint(s), {images_done} image(s)"
+        f"batch {batch_id}: {checkpoints_done}/{len(entries)} checkpoint(s), {images_done} image(s)"
         + (" (cancelled)" if cancelled else "")
     )
 

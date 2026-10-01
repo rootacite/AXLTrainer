@@ -3,12 +3,16 @@
 Importing this module pulls torch and diffusers in; nothing here touches the GPU.
 """
 
+import contextlib
+import io
 import os
 import signal
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # `python test/test_generate_sample.py` has to import the repo's own packages, exactly like
 # `unittest discover -s test` does from the repo root.
@@ -16,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from trainer import genjob
 from trainer import generate_sample as generator
+from trainer.config import SampleSet
 
 
 class CancelFlagTest(unittest.TestCase):
@@ -260,6 +265,80 @@ class BatchSpecTest(unittest.TestCase):
         self.assertEqual(len(stored["failed"]), 1)
         self.assertIn("gone.safetensors", stored["failed"][0]["checkpoint"])
         self.assertEqual(stored["images_done"], 0)
+
+    def test_a_range_that_renders_finishes_every_checkpoint(self):
+        """The render's own list and the counter the batch reports are two different things.
+
+        They once shared the name `rendered`, so `rendered += 1` added an image slot to an image
+        list: every checkpoint of a range that actually rendered was recorded as failed while its
+        images were written anyway. The model side is stubbed here — the point is the loop's own
+        bookkeeping, and no GPU is involved.
+        """
+        job = self._spec(
+            [
+                {"path": "rein_s000100", "step": 100},
+                {"path": "rein_s000200", "step": 200},
+            ]
+        )
+        cfg = types.SimpleNamespace(
+            pretrained_model_name_or_path="base.safetensors",
+            network_type="standard",
+            network_dim=8,
+            network_alpha=4,
+            conv_dim=0,
+            conv_alpha=0,
+            mixed_precision="bf16",
+        )
+        sets = [
+            SampleSet(
+                name="probe",
+                prompt="a prompt",
+                negative="",
+                width=8,
+                height=8,
+                steps=1,
+                guidance_scale=1.0,
+                guidance_rescale=0.0,
+                seed=1,
+                repeat=2,
+            )
+        ]
+        calls = []
+
+        def fake_render(**kwargs):
+            calls.append(kwargs["job_id"])
+            return [(0, index, f"{kwargs['job_id']}_p0_{index}.png") for index in range(2)]
+
+        stdout = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(generator, "resolve_resume_path", lambda raw: Path(str(raw)).with_suffix(".safetensors")))
+            stack.enter_context(mock.patch.object(generator, "read_lora_metadata", lambda path: {}))
+            stack.enter_context(mock.patch.object(generator, "_build_config", lambda metadata, checkpoint: cfg))
+            stack.enter_context(mock.patch.object(generator, "resolve_sample_sets", lambda cfg: sets))
+            stack.enter_context(mock.patch.object(generator, "_render_sets", fake_render))
+            stack.enter_context(mock.patch.object(generator, "_load_family", lambda cfg, dtype: (None, None)))
+            stack.enter_context(
+                mock.patch.object(
+                    generator,
+                    "resolve_family",
+                    lambda cfg: types.SimpleNamespace(load_lora=lambda cfg, modules: {}),
+                )
+            )
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            generator.run_sample_batch(job, self.generated)
+
+        stored = genjob.read_job(genjob.job_path(self.generated, str(job["id"])))
+        self.assertEqual(stored["state"], genjob.STATE_DONE)
+        self.assertEqual(stored["failed"], [])
+        self.assertEqual(stored["checkpoint_index"], 2)
+        self.assertEqual(stored["images_done"], 4)
+        self.assertEqual(len(stored["job_ids"]), 2)
+        for job_id in stored["job_ids"]:
+            entry = genjob.read_job(genjob.job_path(self.generated, job_id))
+            self.assertEqual(entry["state"], genjob.STATE_DONE)
+            self.assertEqual(len(entry["files"]), 2)
+        self.assertEqual(len(calls), 2, "the pass renders once per checkpoint")
+        self.assertIn("2/2 checkpoint(s), 4 image(s)", stdout.getvalue())
 
 
 if __name__ == "__main__":
