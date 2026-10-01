@@ -26,6 +26,7 @@ import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
 import com.acite.axlranko.pages.components.generatedSampleItems
 import com.acite.axlranko.pages.components.nearestCheckpoint
+import com.acite.axlranko.pages.components.newlyFailedJob
 import com.acite.axlranko.pages.components.sectionImages
 import com.acite.axlranko.util.PathPicker
 import com.acite.axlranko.util.checkpointSaveName
@@ -636,6 +637,12 @@ class DashboardScreenViewModel(
     /** 1.5 s poll while a generator works: it runs in its own process and reports through its job file. */
     private fun startGeneratedPolling() {
         if (generatedPollJob?.isActive == true) return
+        // Everything already finished is history: a run keeps its failed job records, so announcing
+        // the newest one would repeat a failure from an earlier session on every later generation.
+        val history = _uiState.value.generatedJobs
+            .filter { it.state != JOB_RUNNING }
+            .map { it.id }
+            .toSet()
         generatedPollJob = viewModelScope.launch {
             while (isActive) {
                 delay(GENERATED_POLL_MILLIS.milliseconds)
@@ -644,7 +651,7 @@ class DashboardScreenViewModel(
                 val runId = selected?.runId ?: state.runId ?: return@launch
                 val jobs = fetchGeneratedJobs(runId, selected?.outputName)
                 if (jobs.isEmpty()) return@launch
-                val failed = jobs.firstOrNull { it.state == JOB_ERROR }?.error
+                val failed = newlyFailedJob(jobs, history)?.error
                 _uiState.update { current ->
                     // A switch to another run under the poll must not inject the old run's jobs.
                     if ((current.selectedRun?.runId ?: current.runId) != runId) return@update current

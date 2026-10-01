@@ -372,6 +372,20 @@ internal fun generatedJobsForStep(jobs: List<GeneratedSampleJob>, step: Int?): L
     }
 
 /**
+ * The failure a poll should announce: the first job that errored *during this session*, or null.
+ *
+ * [history] is every job that had already finished when the poll started. A run keeps its failed
+ * records on disk for good, so an unfiltered "first job in error" reports a failure from days ago
+ * again and again — most visibly on the banner, which came back on every later generation as if the
+ * pass that was running had failed. A job the poll saw running and then fail is not in `history`,
+ * so a real failure is still announced.
+ */
+internal fun newlyFailedJob(
+    jobs: List<GeneratedSampleJob>,
+    history: Set<String>,
+): GeneratedSampleJob? = jobs.firstOrNull { it.state == JOB_ERROR && it.id !in history }
+
+/**
  * The finished jobs the panel's row for [step] shows: [generatedJobsForStep]'s list — every job
  * recorded at that step — plus any pass rendered from [checkpoint] whatever step its record
  * carries, which is what keeps a job that names no step from going missing for the very checkpoint

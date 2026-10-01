@@ -314,4 +314,25 @@ class GeneratedSampleTest {
             list.map { it.path },
         )
     }
+
+    @Test
+    fun aFailedJobFromAnEarlierSessionIsNotAnnouncedAgain() {
+        // The run keeps this record on disk, so an unfiltered "first job in error" reported the same
+        // failure on every later generation — the banner came back while the pass that was running
+        // went on to succeed.
+        val old = job(id = "old_evaluate_gen_1", state = JOB_ERROR, imagePath = null)
+            .copy(error = "OutOfMemoryError: CUDA out of memory")
+        val running = job(id = "new_sets_gen_2", state = JOB_RUNNING, imagePath = null)
+
+        assertNull(newlyFailedJob(listOf(running, old), history = setOf(old.id)))
+        // A job the poll watched fail was not in the history, so it is still announced.
+        val failedNow = job(id = "new_sets_gen_3", state = JOB_ERROR, imagePath = null)
+            .copy(error = "RuntimeError: base model is gone")
+        assertEquals(
+            "RuntimeError: base model is gone",
+            newlyFailedJob(listOf(failedNow, old), history = setOf(old.id, running.id))?.error,
+        )
+        // Nothing in history at all (a fresh page) still reports the failure.
+        assertEquals(old.error, newlyFailedJob(listOf(old), history = emptySet())?.error)
+    }
 }
