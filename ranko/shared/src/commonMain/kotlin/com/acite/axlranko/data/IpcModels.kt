@@ -333,7 +333,8 @@ data class AutomationJobListResult(
  */
 @Serializable
 data class JobPass(
-    /** `image` (redraw one image in place) or `append` (add N images). */
+    /** `image` (redraw one image in place), `append` (add N images to one prompt) or
+     * `append_all` (add N to every prompt). */
     val mode: String = "",
     @SerialName("prompt_index") val promptIndex: Int = 0,
     @SerialName("images_done") val imagesDone: Int = 0,

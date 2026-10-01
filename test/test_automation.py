@@ -677,6 +677,41 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(automation.PROMPT_STATE_DONE, job["prompts"][0]["state"])
         self.assertEqual([1, 1, 1], [w["4"]["inputs"]["batch_size"] for w in self.stub.queued[-3:]])
 
+    def test_append_all_adds_images_to_every_prompt(self):
+        job_id = self._job(["first", "second"])
+        _proc, job = self._run(job_id)
+        before = [list(entry["images"]) for entry in job["prompts"]]
+        seeds_before = [list(entry["image_seeds"]) for entry in job["prompts"]]
+
+        proc, job = self._run(job_id, "--append-all", "--images", "2")
+
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        images = automation.images_dir(job_id, self.output_dir)
+        self.assertEqual(
+            ["p0001_01.png", "p0001_02.png", "p0001_03.png", "p0002_01.png", "p0002_02.png", "p0002_03.png"],
+            sorted(path.name for path in images.glob("p*.png")),
+        )
+        for entry, had, had_seeds in zip(job["prompts"], before, seeds_before):
+            # Each entry continues its own numbering, and keeps the images it already had.
+            self.assertEqual(had + [f"p{entry['index'] + 1:04d}_{n:02d}.png" for n in (2, 3)], entry["images"])
+            self.assertEqual(had_seeds, entry["image_seeds"][: len(had_seeds)])
+            self.assertEqual(3, len(set(entry["image_seeds"])), "each appended image drew its own random seed")
+            self.assertEqual(automation.PROMPT_STATE_DONE, entry["state"])
+        queued_texts = [call["2"]["inputs"]["text"] for call in self.stub.queued[-4:]]
+        self.assertEqual(["first", "first", "second", "second"], queued_texts)
+        self.assertEqual([1, 1, 1, 1], [call["4"]["inputs"]["batch_size"] for call in self.stub.queued[-4:]])
+
+    def test_append_all_reports_its_progress_over_every_prompt(self):
+        job_id = self._job(["first", "second"])
+        _proc, _job = self._run(job_id)
+
+        seen = self._run_and_watch(job_id, ["--append-all", "--images", "1"], expect_done=1)
+
+        self.assertEqual("append_all", seen["mode"])
+        self.assertEqual(2, seen["total_images"], "the pass covers one image per prompt")
+        self.assertGreaterEqual(seen["images_done"], 1)
+        self.assertIsNone(automation.read_job(automation.job_path(job_id, self.output_dir)).get("pass"))
+
     def test_a_targeted_pass_leaves_the_other_prompts_alone(self):
         job_id = self._job(["first", "second"], count=1)
         _proc, job = self._run(job_id)
@@ -702,9 +737,14 @@ class RunnerTest(unittest.TestCase):
 
     def test_image_and_append_are_two_different_passes(self):
         job_id = self._job(["only prompt"])
-        proc, _job = self._run(job_id, "--image", "p0001_01.png", "--append", "0")
-        self.assertEqual(2, proc.returncode)
-        self.assertIn("two different passes", proc.stderr)
+        for extra in (
+            ["--image", "p0001_01.png", "--append", "0"],
+            ["--append", "0", "--append-all"],
+            ["--image", "p0001_01.png", "--append-all"],
+        ):
+            proc, _job = self._run(job_id, *extra)
+            self.assertEqual(2, proc.returncode, extra)
+            self.assertIn("two different passes", proc.stderr, extra)
 
     def test_a_targeted_pass_reports_its_progress_while_it_runs(self):
         job_id = self._job(["only prompt"])
@@ -1005,6 +1045,25 @@ class AutomationApiTest(unittest.TestCase):
         self.assertEqual(4, len(list(images.glob("p*.png"))))
         api.dispatch("automation_job_delete", {"id": job_id})
 
+    def test_extending_every_prompt_appends_to_each(self):
+        self._settings()
+        job_id = api.dispatch("automation_job_start", {"prompts": ["first", "second"]})["job"]["id"]
+        job = self._wait_for(job_id)
+        first = [entry["images"][0] for entry in job["prompts"]]
+
+        api.dispatch("automation_prompt_extend_all", {"id": job_id, "count": 2})
+        job = self._wait_for(job_id)
+
+        images = automation.images_dir(job_id, self.output_dir)
+        self.assertEqual(6, job["summary"]["images"])
+        self.assertEqual(["p0001_01.png", "p0001_02.png", "p0001_03.png"], job["prompts"][0]["images"])
+        self.assertEqual(["p0002_01.png", "p0002_02.png", "p0002_03.png"], job["prompts"][1]["images"])
+        self.assertEqual(first, [entry["images"][0] for entry in job["prompts"]], "nothing is overwritten")
+        self.assertEqual(6, len(list(images.glob("p*.png"))))
+        for entry in job["prompts"]:
+            self.assertEqual(3, len(set(entry["image_seeds"])), "every added image drew its own seed")
+        api.dispatch("automation_job_delete", {"id": job_id})
+
     def test_deleting_the_last_image_drops_the_prompt_entry(self):
         self._settings(count=2)
         job_id = api.dispatch("automation_job_start", {"prompts": ["solo", "second"]})["job"]["id"]
@@ -1055,6 +1114,14 @@ class AutomationApiTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 api.dispatch("automation_prompt_extend", params)
         for params in (
+            {"id": job_id, "count": 0},
+            {"id": job_id, "count": 17},
+            {"id": job_id, "count": "many"},
+            {"id": "nope", "count": 1},
+        ):
+            with self.assertRaises(ValueError):
+                api.dispatch("automation_prompt_extend_all", params)
+        for params in (
             {"id": job_id, "prompt_index": 0, "text": "   "},
             {"id": job_id, "prompt_index": 7, "text": "x"},
             {"id": job_id, "prompt_index": 0, "text": "x" * 4001},
@@ -1092,6 +1159,7 @@ class AutomationApiTest(unittest.TestCase):
             ("automation_image_delete", {"id": job_id, "image": "p0001_01.png"}),
             ("automation_image_regenerate", {"id": job_id, "image": "p0001_01.png"}),
             ("automation_prompt_extend", {"id": job_id, "prompt_index": 0, "count": 1}),
+            ("automation_prompt_extend_all", {"id": job_id, "count": 1}),
         ):
             with self.assertRaises(ValueError) as ctx:
                 api.dispatch(method, params)

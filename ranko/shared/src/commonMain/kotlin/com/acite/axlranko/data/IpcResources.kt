@@ -242,6 +242,7 @@ internal object IpcResources {
         "automation_job_retry_failed" to { params -> listOf(job(params.text("id")), gpu()) },
         "automation_image_regenerate" to { params -> listOf(job(params.text("id")), gpu()) },
         "automation_prompt_extend" to { params -> listOf(job(params.text("id")), gpu()) },
+        "automation_prompt_extend_all" to { params -> listOf(job(params.text("id")), gpu()) },
 
         // --- one dataset folder: a tag holds it for minutes, so the next writer is refused ---
         "caption_write" to { params -> listOf(dataset(params.text("directory"))) },
@@ -366,6 +367,7 @@ internal object IpcResources {
         "automation_job_retry_failed" to 60_000L,
         "automation_image_regenerate" to 60_000L,
         "automation_prompt_extend" to 60_000L,
+        "automation_prompt_extend_all" to 60_000L,
         "automation_workflow_validate" to 60_000L,
         "caption_write" to 60_000L,
         "mask_write" to 60_000L,

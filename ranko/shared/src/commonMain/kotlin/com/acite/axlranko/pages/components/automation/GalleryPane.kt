@@ -124,9 +124,21 @@ fun GalleryPane(
                 }
                 if (state.visibleJobs.isEmpty()) {
                     Text(text = uiText(lang, "no_jobs"), color = colors.textDim, fontSize = 11.sp)
-                }
-                state.visibleJobs.forEach { job ->
-                    JobRow(job, state, viewModel)
+                } else {
+                    // The history is unbounded, so the list scrolls inside the card instead of
+                    // growing with it and pushing the gallery that follows it off the page. The
+                    // bounded height is what the inner scroll is measured against.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        state.visibleJobs.forEach { job ->
+                            JobRow(job, state, viewModel)
+                        }
+                    }
                 }
                 state.jobsError?.let { Text(it, color = colors.qualityRed, fontSize = 11.sp) }
             }
@@ -139,6 +151,9 @@ fun GalleryPane(
                     modifier = Modifier.fillMaxWidth().padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // A pass owns the record and the folder while it runs, so every button that
+                    // touches either is off for the whole of it.
+                    val busy = detail.state == "running" || state.jobActionBusy != ""
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             text = detail.id,
@@ -146,6 +161,12 @@ fun GalleryPane(
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
                             modifier = Modifier.weight(1f),
+                        )
+                        CapsuleButton(
+                            text = uiText(lang, "append_all"),
+                            onClick = { viewModel.openPromptAppendAll(detail.id) },
+                            enabled = !busy,
+                            compact = true,
                         )
                         CapsuleButton(
                             text = uiText(lang, "cancel_job"),
@@ -201,7 +222,6 @@ fun GalleryPane(
                         Text(text = uiText(lang, "no_images_yet"), color = colors.textDim, fontSize = 11.sp)
                     } else {
                         var startIndex = 0
-                        val busy = detail.state == "running" || state.jobActionBusy != ""
                         detail.prompts.forEach { prompt ->
                             if (prompt.images.isEmpty()) return@forEach
                             val first = startIndex
@@ -380,6 +400,47 @@ fun GalleryPane(
                             CapsuleButton(
                                 text = uiText(lang, "no"),
                                 onClick = viewModel::dismissPromptExtend,
+                                compact = true,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        state.appendingAllPrompts?.let { draft ->
+            Dialog(onDismissRequest = viewModel::dismissPromptAppendAll) {
+                PorcelainCard {
+                    Column(
+                        modifier = Modifier.width(470.dp).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = uiText(lang, "append_all_title"),
+                            color = colors.text,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        OutlinedTextField(
+                            value = draft.count,
+                            onValueChange = viewModel::updatePromptAppendAll,
+                            singleLine = true,
+                            label = { Text(uiText(lang, "images_count"), fontSize = 11.sp) },
+                            colors = rankoFieldColors(),
+                            modifier = Modifier.width(120.dp),
+                        )
+                        Text(text = uiText(lang, "append_all_note"), color = colors.textDim, fontSize = 10.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CapsuleButton(
+                                text = uiText(lang, "yes"),
+                                onClick = viewModel::confirmPromptAppendAll,
+                                enabled = draft.images != null && state.jobActionBusy == "",
+                                emphasized = true,
+                                compact = true,
+                            )
+                            CapsuleButton(
+                                text = uiText(lang, "no"),
+                                onClick = viewModel::dismissPromptAppendAll,
                                 compact = true,
                             )
                         }
@@ -702,6 +763,9 @@ private fun JobPassLine(pass: JobPass, lang: PromptLang) {
 private fun passLabel(lang: PromptLang, pass: JobPass): String = when (pass.mode) {
     "image" -> uiText(lang, "pass_redraw").replace("{image}", pass.image ?: "")
     "append" -> uiText(lang, "pass_add")
+        .replace("{done}", pass.imagesDone.toString())
+        .replace("{total}", pass.totalImages.toString())
+    "append_all" -> uiText(lang, "pass_add_all")
         .replace("{done}", pass.imagesDone.toString())
         .replace("{total}", pass.totalImages.toString())
     else -> uiText(lang, "pass_waiting")

@@ -182,6 +182,12 @@ private val UI_TEXT: Map<String, Pair<String, String>> = mapOf(
         "每一张各用一个新随机种子，追加在这条 prompt 下。" to
             "Each one draws its own new random seed and is added under this prompt."
         ),
+    "append_all" to ("追加…" to "Append…"),
+    "append_all_title" to ("给所有提示词追加图片" to "Append images to every prompt"),
+    "append_all_note" to (
+        "每条提示词各追加这么多张，每张各用一个新随机种子，接在它已有的图片后面。" to
+            "Every prompt gets this many more images, each from its own new random seed, added after the ones it already has."
+        ),
     "delete_last_image_note" to (
         "如果这是这条 prompt 的最后一张图，整条记录也会一起删掉。" to
             "If it is this prompt's last image, the whole record entry goes with it."
@@ -190,6 +196,9 @@ private val UI_TEXT: Map<String, Pair<String, String>> = mapOf(
     "images_count" to ("张数" to "Images"),
     "pass_redraw" to ("正在用新种子重画 {image}" to "Redrawing {image} with a new seed"),
     "pass_add" to ("正在追加 {done}/{total} 张" to "Adding image {done}/{total}"),
+    "pass_add_all" to (
+        "正在给所有提示词追加 {done}/{total} 张" to "Appending to every prompt: {done}/{total} images"
+        ),
     "pass_waiting" to ("已提交，等待出图…" to "Submitted, waiting for the image…"),
     "prompt_edit_note" to (
         "只改任务记录里的文本：已经出图的 .txt 边车保持当时真正发出去的原文，下次重新生成用新文本。" to

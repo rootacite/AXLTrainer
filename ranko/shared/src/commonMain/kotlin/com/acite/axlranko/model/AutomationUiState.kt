@@ -147,6 +147,8 @@ data class AutomationUiState(
     val editingPrompt: PromptEditDraft? = null,
     /** The prompt the "add N images" dialog is open for (`null` = closed), with its draft count. */
     val extendingPrompt: PromptExtendDraft? = null,
+    /** The "add N images to every prompt" dialog, with its draft count (`null` = closed). */
+    val appendingAllPrompts: PromptAppendAllDraft? = null,
 ) {
     /** Keys of the wizard pages that apply to the current spec, in order. */
     val applicablePageKeys: List<String>
@@ -210,6 +212,12 @@ data class PromptEditDraft(val jobId: String, val promptIndex: Int, val text: St
 
 /** The open "add N images" dialog: which entry, and the count being typed. */
 data class PromptExtendDraft(val jobId: String, val promptIndex: Int, val count: String = "1") {
+    /** The count to send, or null while the field does not hold a usable number. */
+    val images: Int? get() = count.trim().toIntOrNull()?.takeIf { it in 1..16 }
+}
+
+/** The open "add N images to every prompt" dialog: which job, and the count being typed. */
+data class PromptAppendAllDraft(val jobId: String, val count: String = "1") {
     /** The count to send, or null while the field does not hold a usable number. */
     val images: Int? get() = count.trim().toIntOrNull()?.takeIf { it in 1..16 }
 }

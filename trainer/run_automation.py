@@ -1,17 +1,20 @@
 """Run one Automation job: push prompts through a ComfyUI workflow, keep the images.
 
     python -u trainer/run_automation.py --spec <job.json> [--only-failed]
-                                        [--image p0003_01.png | --append 2 --images 4]
+                                        [--image p0003_01.png
+                                         | --append 2 --images 4
+                                         | --append-all --images 4]
 
 `api.py` writes the job record (see `trainer/automation.py`) and spawns this detached,
 so a long batch survives Ranko closing. Progress, seeds and ComfyUI's own file names go
 back into the job file; the images land in `<job>/images/` under our own names
 (`p0003_01.png`) so the order never depends on ComfyUI's `filename_prefix`.
 
-`--only-failed` re-runs the prompts that produced nothing yet. The two targeted forms run
-exactly one prompt entry instead, which is what the Gallery's per-image buttons ask for:
-`--image` redraws that one image in place (new random seed, its sidecar rewritten), and
-`--append N` adds N images to the entry, each from its own random seed.
+`--only-failed` re-runs the prompts that produced nothing yet. The targeted forms narrow the
+pass down, which is what the Gallery's actions ask for: `--image` redraws that one image in
+place (new random seed, its sidecar rewritten), `--append <index> --images N` adds N images
+to that one entry, and `--append-all --images N` adds N to every entry — each image from its
+own random seed, appended after the images the entry already has.
 
 A SIGTERM (the Cancel button) stops between prompts and inside a history poll, then the
 job is marked `cancelled` — the trainer's own rule that a half-finished run keeps what
@@ -251,10 +254,11 @@ def run_job(spec_path: Path, only_failed: bool = False, target: Optional[Mapping
         automation.update_job(job_id, output_dir, comfy_url=client.server)
 
         # What this pass runs. A normal pass walks every entry and queues each once with the
-        # configured images-per-prompt; a targeted pass (the Gallery's per-image buttons) runs
-        # exactly one entry — `image` redraws that one image in place, `append` adds `images` more,
-        # each from its own random seed.
+        # configured images-per-prompt; a targeted pass (the Gallery's actions) narrows that down —
+        # `image` redraws one image in place, `append` adds `images` more to one entry, and
+        # `append_all` adds `images` more to every entry, each image from its own random seed.
         mode = str((target or {}).get("mode") or "")
+        queues = max(1, int((target or {}).get("images") or 1))
         plans: list[dict[str, Any]] = []
         if not mode:
             for position, prompt in enumerate(prompts):
@@ -269,6 +273,14 @@ def run_job(spec_path: Path, only_failed: bool = False, target: Optional[Mapping
             if position is None:
                 raise comfy.ComfyError(f"no prompt holds the image {wanted}")
             plans.append({"index": position, "queues": 1, "batch": 1, "redraw": True, "fixed": [wanted]})
+        elif mode == "append_all":
+            plans = [
+                {"index": position, "queues": queues, "batch": 1, "redraw": True, "fixed": None}
+                for position, prompt in enumerate(prompts)
+                if isinstance(prompt, dict)
+            ]
+            if not plans:
+                raise comfy.ComfyError("this job has no prompt to append to")
         else:
             position = int((target or {}).get("index") or 0)
             if automation.prompt_entry_at(prompts, position) is None:
@@ -276,14 +288,14 @@ def run_job(spec_path: Path, only_failed: bool = False, target: Optional[Mapping
             plans.append(
                 {
                     "index": position,
-                    "queues": max(1, int((target or {}).get("images") or 1)),
+                    "queues": queues,
                     "batch": 1,
                     "redraw": True,
                     "fixed": None,
                 }
             )
         if mode:
-            _log(f"{mode} pass: entry {plans[0]['index']}, {plans[0]['queues']} image(s)")
+            _log(f"{mode} pass: {len(plans)} entry(s), {queues} image(s) each")
 
         planned_images = sum(int(plan["queues"]) for plan in plans)
         written_images = 0
@@ -474,17 +486,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--only-failed", action="store_true", help="skip the prompts that already produced images")
     parser.add_argument("--image", help="redraw this one image in place, with a new random seed")
     parser.add_argument("--append", type=int, help="append images to this prompt index")
-    parser.add_argument("--images", type=int, default=1, help="how many images an --append pass adds")
+    parser.add_argument("--append-all", action="store_true", help="append images to every prompt")
+    parser.add_argument("--images", type=int, default=1, help="how many images an append pass adds")
     args = parser.parse_args(argv)
 
-    if args.image and args.append is not None:
-        print("[automation] --image and --append are two different passes", file=sys.stderr)
+    chosen = [
+        flag
+        for flag, given in (
+            ("--image", bool(args.image)),
+            ("--append", args.append is not None),
+            ("--append-all", bool(args.append_all)),
+        )
+        if given
+    ]
+    if len(chosen) > 1:
+        print(f"[automation] {chosen[0]} and {chosen[1]} are two different passes", file=sys.stderr)
         return 2
     target: Optional[dict[str, Any]] = None
     if args.image:
         target = {"mode": "image", "name": str(args.image)}
     elif args.append is not None:
         target = {"mode": "append", "index": int(args.append), "images": max(1, int(args.images))}
+    elif args.append_all:
+        target = {"mode": "append_all", "images": max(1, int(args.images))}
     return run_job(Path(args.spec), only_failed=args.only_failed, target=target)
 
 

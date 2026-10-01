@@ -28,6 +28,7 @@ import com.acite.axlranko.model.AutomationUiState
 import com.acite.axlranko.model.GalleryImageAction
 import com.acite.axlranko.model.GalleryImagePrompt
 import com.acite.axlranko.model.GalleryImageRef
+import com.acite.axlranko.model.PromptAppendAllDraft
 import com.acite.axlranko.model.PromptEditDraft
 import com.acite.axlranko.model.PromptExtendDraft
 import com.acite.axlranko.pages.components.automation.ComfyPane
@@ -283,6 +284,21 @@ class AutomationPanesRenderTest {
                     jobDetail = detail,
                     extendingPrompt = PromptExtendDraft(job.id, 0, count = "4"),
                 ),
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job),
+                    selectedJobId = job.id,
+                    jobDetail = detail,
+                    appendingAllPrompts = PromptAppendAllDraft(job.id, count = "3"),
+                ),
+                // A long history: the list scrolls inside its own card, which is measurable only
+                // because the card bounds its height.
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = List(30) { index -> job.copy(id = "Kirika_20260928_%06d".format(index)) },
+                    selectedJobId = "Kirika_20260928_000000",
+                    jobDetail = detail,
+                ),
                 // A redraw and an append in flight: the job row says what is happening (a redraw
                 // does not move the job's own counters) and so does the card above the thumbnails,
                 // which is where the user is looking.
@@ -310,6 +326,16 @@ class AutomationPanesRenderTest {
                             totalImages = 1,
                             image = "p0001_01.png",
                         ),
+                    ),
+                ),
+                // An "append to every prompt" pass: the line follows the entry it is working on.
+                AutomationUiState(
+                    section = AutomationSection.Gallery,
+                    jobs = listOf(job.copy(state = "running", pass = JobPass(mode = "append_all", promptIndex = 1, imagesDone = 3, totalImages = 4))),
+                    selectedJobId = job.id,
+                    jobDetail = detail.copy(
+                        state = "running",
+                        pass = JobPass(mode = "append_all", promptIndex = 1, imagesDone = 3, totalImages = 4),
                     ),
                 ),
             ),

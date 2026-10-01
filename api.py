@@ -1652,6 +1652,7 @@ def _spawn_automation_job(
     only_failed: bool = False,
     image: str = "",
     append: Optional[int] = None,
+    append_all: bool = False,
     images: int = 1,
 ) -> int:
     spec_path = automation.job_path(job_id, output_dir)
@@ -1664,6 +1665,8 @@ def _spawn_automation_job(
         command += ["--image", str(image)]
     elif append is not None:
         command += ["--append", str(int(append)), "--images", str(int(images))]
+    elif append_all:
+        command += ["--append-all", "--images", str(int(images))]
     with open(log, "a", encoding="utf-8") as handle:
         proc = subprocess.Popen(
             command,
@@ -1914,12 +1917,8 @@ def handle_automation_image_regenerate(params: dict[str, Any]) -> dict[str, Any]
     return _automation_job_detail(updated, settings)
 
 
-def handle_automation_prompt_extend(params: dict[str, Any]) -> dict[str, Any]:
-    """Add `count` images to one prompt entry, each from its own new random seed."""
-    job, settings, output_dir, job_id = _automation_idle_job(params)
-    index = _automation_prompt_index(params)
-    if automation.prompt_entry_at(job.get("prompts"), index) is None:
-        raise ValueError(f"{job_id} has no prompt at index {index}")
+def _automation_append_count(params: dict[str, Any]) -> int:
+    """How many images an append pass adds, refused outside the documented range."""
     count = params.get("count", 1)
     try:
         images = int(count)  # type: ignore[arg-type]
@@ -1927,7 +1926,40 @@ def handle_automation_prompt_extend(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"count must be a number, not {count!r}") from None
     if not automation.MIN_COUNT <= images <= automation.MAX_COUNT:
         raise ValueError(f"count must be {automation.MIN_COUNT}..{automation.MAX_COUNT}")
+    return images
+
+
+def handle_automation_prompt_extend(params: dict[str, Any]) -> dict[str, Any]:
+    """Add `count` images to one prompt entry, each from its own new random seed."""
+    job, settings, output_dir, job_id = _automation_idle_job(params)
+    index = _automation_prompt_index(params)
+    if automation.prompt_entry_at(job.get("prompts"), index) is None:
+        raise ValueError(f"{job_id} has no prompt at index {index}")
+    images = _automation_append_count(params)
     pid = _spawn_automation_job(job_id, output_dir, append=index, images=images)
+    updated = automation.update_job(
+        job_id,
+        output_dir,
+        state=automation.STATE_RUNNING,
+        pid=pid,
+        error=None,
+        finished_at=None,
+    )
+    return _automation_job_detail(updated, settings)
+
+
+def handle_automation_prompt_extend_all(params: dict[str, Any]) -> dict[str, Any]:
+    """Add `count` images to every prompt entry, each from its own new random seed.
+
+    The same pass the per-prompt action runs, for a set that wants more takes of everything:
+    the runner walks the entries in order and appends to each one's own numbering.
+    """
+    job, settings, output_dir, job_id = _automation_idle_job(params)
+    prompts = job.get("prompts")
+    if not any(isinstance(entry, dict) for entry in prompts or []):
+        raise ValueError(f"{job_id} has no prompt to extend")
+    images = _automation_append_count(params)
+    pid = _spawn_automation_job(job_id, output_dir, append_all=True, images=images)
     updated = automation.update_job(
         job_id,
         output_dir,
@@ -2039,6 +2071,7 @@ _HANDLERS = {
     "automation_image_delete": handle_automation_image_delete,
     "automation_image_regenerate": handle_automation_image_regenerate,
     "automation_prompt_extend": handle_automation_prompt_extend,
+    "automation_prompt_extend_all": handle_automation_prompt_extend_all,
     "automation_job_prompt_edit": handle_automation_job_prompt_edit,
     "tag_lexicon": handle_tag_lexicon,
     "dataset_list": handle_dataset_list,

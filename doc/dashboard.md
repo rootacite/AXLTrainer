@@ -257,11 +257,13 @@ of the app uses, so no new image path exists.
 **Gallery** — the jobs and their images:
 
 - Newest first, with state, `done/total`, image count and elapsed time; filter chips (all / running
-  / done / failed / cancelled) and a search box over the job id and workflow path.
-- The selected job offers **Cancel** (SIGTERMs the runner), **Retry failed** (runs only the prompts
-  that produced no image, in the same folder), **Save records .txt** (one line per image: name,
-  seed, `prompt_id`, prompt), **Open folder** (desktop) and **Delete** (asks first; removes the job
-  directory).
+  / done / failed / cancelled) and a search box over the job id and workflow path. The list itself
+  scrolls inside its card (a history is unbounded, and every job ever run would otherwise push the
+  gallery below it off the page); the filter chips, the search box and the job below stay put.
+- The selected job offers **Append…** (add N images to *every* prompt, see below), **Cancel**
+  (SIGTERMs the runner), **Retry failed** (runs only the prompts that produced no image, in the same
+  folder), **Save records .txt** (one line per image: name, seed, `prompt_id`, prompt), **Open
+  folder** (desktop) and **Delete** (asks first; removes the job directory).
 - Thumbnails are grouped per prompt and wrap instead of scrolling sideways; the slider sets their
   size (80–360 px). Clicking one opens the same fullscreen preview the Dashboard uses, with the
   caption (seed, `prompt_id`, prompt), prev/next, **Save this image…** (the image at full size) and
@@ -278,6 +280,12 @@ of the app uses, so no new image path exists.
   - **Add images** queues the prompt N times (1–16), each with its own new random seed, and appends
     the results after the images the prompt already has (`p0003_02.png`, `p0003_03.png`…). Nothing
     is overwritten, so this is how you fish for a better take on the same prompt.
+  - The job card's **Append…** is that same pass for the whole set at once: it asks for a count
+    (1–16) and then walks every prompt of the job in order, N images each, every image from its own
+    new random seed. Each prompt keeps its images and continues its own numbering
+    (`p0001_02.png`…, then `p0002_02.png`…), the progress line follows the prompt being worked on,
+    and the job's `done/total` is as still as any other targeted pass — the images counted on the
+    card are what tell you it is moving.
   - **Edit prompt** rewrites that prompt's text in the job record only. The `.txt` beside an image
     that already exists keeps what was actually sent to ComfyUI — that is the record of what made
     it — and the next redraw or added image uses the new text.

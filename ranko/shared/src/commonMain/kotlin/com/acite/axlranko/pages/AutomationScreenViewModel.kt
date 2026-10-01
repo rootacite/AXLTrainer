@@ -16,6 +16,7 @@ import com.acite.axlranko.model.GalleryImageAction
 import com.acite.axlranko.model.GalleryImagePrompt
 import com.acite.axlranko.model.GalleryImageRef
 import com.acite.axlranko.model.JobFilter
+import com.acite.axlranko.model.PromptAppendAllDraft
 import com.acite.axlranko.model.PromptEditDraft
 import com.acite.axlranko.model.PromptExtendDraft
 import com.acite.axlranko.model.PromptSource
@@ -1004,6 +1005,27 @@ class AutomationScreenViewModel(
         val images = draft.images ?: return
         _uiState.update { it.copy(extendingPrompt = null) }
         galleryDetailAction(draft.jobId) { ipc.automationPromptExtend(draft.jobId, draft.promptIndex, images) }
+    }
+
+    fun openPromptAppendAll(jobId: String) {
+        _uiState.update { it.copy(appendingAllPrompts = PromptAppendAllDraft(jobId), jobsError = null) }
+    }
+
+    fun updatePromptAppendAll(count: String) {
+        val digits = count.filter { it.isDigit() }.take(2)
+        _uiState.update { state -> state.copy(appendingAllPrompts = state.appendingAllPrompts?.copy(count = digits)) }
+    }
+
+    fun dismissPromptAppendAll() {
+        _uiState.update { it.copy(appendingAllPrompts = null) }
+    }
+
+    /** Adds the drafted number of images to every prompt, each from its own new random seed. */
+    fun confirmPromptAppendAll() {
+        val draft = _uiState.value.appendingAllPrompts ?: return
+        val images = draft.images ?: return
+        _uiState.update { it.copy(appendingAllPrompts = null) }
+        galleryDetailAction(draft.jobId) { ipc.automationPromptExtendAll(draft.jobId, images) }
     }
 
     /**

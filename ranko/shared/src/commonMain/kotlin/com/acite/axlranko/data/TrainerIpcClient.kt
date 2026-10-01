@@ -658,6 +658,18 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /** Adds [count] images to every prompt entry, each from its own new random seed. */
+    suspend fun automationPromptExtendAll(id: String, count: Int): AutomationJobDetail {
+        val result = call(
+            "automation_prompt_extend_all",
+            buildJsonObject {
+                put("id", id)
+                put("count", count)
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     /** Rewrites one prompt entry's text in the job record; nothing is rendered. */
     suspend fun automationJobPromptEdit(id: String, promptIndex: Int, text: String): AutomationJobDetail {
         val result = call(

@@ -351,12 +351,30 @@ class AutomationIpcTest {
         assertEquals("4", extend.params["count"]?.jsonPrimitive?.content)
         assertEquals("3", extend.params["prompt_index"]?.jsonPrimitive?.content)
 
-        val edit = json.decodeFromString(
+        val extendAll = json.decodeFromString(
             IpcRequest.serializer(),
             json.encodeToString(
                 IpcRequest.serializer(),
                 IpcRequest(
                     id = 33,
+                    method = "automation_prompt_extend_all",
+                    params = buildJsonObject {
+                        put("id", "Kirika_20260928_101500")
+                        put("count", 2)
+                    },
+                ),
+            ),
+        )
+        assertEquals("automation_prompt_extend_all", extendAll.method)
+        assertEquals("2", extendAll.params["count"]?.jsonPrimitive?.content)
+        assertEquals(null, extendAll.params["prompt_index"], "the pass covers every entry")
+
+        val edit = json.decodeFromString(
+            IpcRequest.serializer(),
+            json.encodeToString(
+                IpcRequest.serializer(),
+                IpcRequest(
+                    id = 34,
                     method = "automation_job_prompt_edit",
                     params = buildJsonObject {
                         put("id", "Kirika_20260928_101500")
