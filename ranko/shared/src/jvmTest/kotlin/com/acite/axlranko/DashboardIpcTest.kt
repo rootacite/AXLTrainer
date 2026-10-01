@@ -9,6 +9,8 @@ import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
+import com.acite.axlranko.model.EvaluationPromptsResponse
+import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.TaggerInfoResult
 import com.acite.axlranko.model.TrainStatus
 import kotlin.test.Test
@@ -732,11 +734,176 @@ class DashboardIpcTest {
     }
 
     @Test
+    fun datasetTagRequestCarriesThePartialTags() {
+        val encoded = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 13,
+                method = "dataset_tag",
+                params = buildJsonObject {
+                    put("directory", "/tmp/alice")
+                    put("threshold", 0.6)
+                    putJsonArray("only_tags") { listOf("anal", "pussy").forEach { add(JsonPrimitive(it)) } }
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), encoded)
+        val onlyTags = decoded.params["only_tags"] as JsonArray
+        assertEquals(listOf("anal", "pussy"), onlyTags.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun aPartialTaggingResultParses() {
+        val raw = """
+            {
+              "directory": "/tmp/alice",
+              "engine": "pixai-tagger-v1.0",
+              "mode": "partial",
+              "only_tags": ["anal", "pussy"],
+              "categories": [],
+              "threshold": 0.6,
+              "provider": "pixai-tagger-v1.0 on cuda:0",
+              "device": "cuda:0",
+              "total": 100,
+              "processed": 15,
+              "failed": 0,
+              "seconds": 12.5,
+              "errors": [],
+              "added": {"anal": 12, "pussy": 3},
+              "unmatched": ["nonexistent tag"]
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(DatasetTagResult.serializer(), raw)
+        assertEquals("partial", parsed.mode)
+        assertEquals(listOf("anal", "pussy"), parsed.onlyTags)
+        assertEquals(mapOf("anal" to 12, "pussy" to 3), parsed.added)
+        assertEquals(listOf("nonexistent tag"), parsed.unmatched)
+        assertEquals(15, parsed.processed)
+    }
+
+    @Test
+    fun aFullTaggingResultWithoutThePartialFieldsStillParses() {
+        val raw = """{"directory": "/tmp/alice", "processed": 2, "total": 2, "categories": ["general"]}"""
+        val parsed = json.decodeFromString(DatasetTagResult.serializer(), raw)
+        assertEquals("full", parsed.mode)
+        assertEquals(emptyMap(), parsed.added)
+        assertEquals(emptyList(), parsed.unmatched)
+        assertEquals(emptyList(), parsed.onlyTags)
+    }
+
+    @Test
     fun errorEnvelopeParses() {
         val raw = """{"id": 3, "ok": false, "error": "unknown method: generate"}"""
         val parsed = json.decodeFromString(IpcResponse.serializer(), raw)
         assertEquals(3, parsed.id)
         assertTrue(!parsed.ok)
         assertEquals("unknown method: generate", parsed.error)
+    }
+
+    @Test
+    fun anEvaluationWithAScoredTagSelectionParses() {
+        val raw =
+            """
+            {
+              "id": "evaluate_gen_1",
+              "state": "done",
+              "mode": "evaluate",
+              "step": 3050,
+              "depth": 12,
+              "threshold": 0.35,
+              "categories": ["general"],
+              "tags": ["anal", "pussy"],
+              "config_source": "/logs/rein_20260911_120000/config.toml",
+              "scores": {
+                "tp": 40, "fp": 12, "fn": 24,
+                "precision": 0.769, "recall": 0.625, "f1": 0.689,
+                "union_tp": 30, "union_fp": 8, "union_fn": 12,
+                "union_precision": 0.789, "union_recall": 0.714, "union_f1": 0.75,
+                "images_scored": 12, "images_failed": 1, "images_skipped": 0,
+                "tags": ["anal", "pussy"]
+              }
+            }
+            """.trimIndent()
+        val parsed = json.decodeFromString(GeneratedSampleJob.serializer(), raw)
+        assertEquals(listOf("anal", "pussy"), parsed.tags)
+        assertEquals(listOf("anal", "pussy"), parsed.scores?.tags)
+        assertEquals(0.625f, parsed.scores?.recall)
+        // A record from before the selection existed still parses, with an empty list.
+        val older = json.decodeFromString(
+            GeneratedSampleJob.serializer(),
+            """{"id": "evaluate_gen_2", "state": "done", "mode": "evaluate", "scores": {"recall": 0.5}}""",
+        )
+        assertEquals(emptyList(), older.tags)
+        assertEquals(emptyList(), older.scores?.tags)
+    }
+
+    @Test
+    fun evaluationPromptsPayloadParses() {
+        val raw =
+            """
+            {
+              "run_id": "rein_20260911_120000",
+              "output_name": "rein",
+              "checkpoint": "/out/rein/rein_s000100/rein.safetensors",
+              "config_source": "/logs/rein_20260911_120000/config.toml",
+              "sample_sets": [{"prompt": "1girl, anal", "repeat": 2}],
+              "tags": [
+                {"tag": "1girl", "count": 6, "frequency": 100.0},
+                {"tag": "anal", "count": 2, "frequency": 33.3333}
+              ],
+              "reason": ""
+            }
+            """.trimIndent()
+        val parsed = json.decodeFromString(EvaluationPromptsResponse.serializer(), raw)
+        assertEquals("rein_20260911_120000", parsed.runId)
+        assertEquals(listOf("1girl", "anal"), parsed.tags.map { it.tag })
+        assertEquals(2, parsed.tags[1].count)
+        assertEquals(33.3333f, parsed.tags[1].frequency)
+        assertEquals("", parsed.reason)
+    }
+
+    @Test
+    fun anUnusablePromptPayloadParsesWithItsReason() {
+        val raw = """{"run_id": "rein_x", "tags": [], "reason": "validation.samples is empty"}"""
+        val parsed = json.decodeFromString(EvaluationPromptsResponse.serializer(), raw)
+        assertEquals(emptyList(), parsed.tags)
+        assertEquals("validation.samples is empty", parsed.reason)
+    }
+
+    @Test
+    fun theEvaluationRequestsCarryTheirSelection() {
+        val evaluate = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 21,
+                method = "evaluate_checkpoint",
+                params = buildJsonObject {
+                    put("checkpoint", "/out/rein/rein_s000100/rein.safetensors")
+                    put("depth", 12)
+                    put("threshold", 0.35)
+                    putJsonArray("tags") { listOf("anal", "pussy").forEach { add(JsonPrimitive(it)) } }
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), evaluate)
+        assertEquals(
+            listOf("anal", "pussy"),
+            (decoded.params["tags"] as JsonArray).map { it.jsonPrimitive.content },
+        )
+
+        val prompts = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 22,
+                method = "evaluation_prompts",
+                params = buildJsonObject {
+                    put("checkpoint", "/out/rein/rein_s000100/rein.safetensors")
+                    put("run_id", "rein_20260911_120000")
+                },
+            ),
+        )
+        val decodedPrompts = json.decodeFromString(IpcRequest.serializer(), prompts)
+        assertEquals("evaluation_prompts", decodedPrompts.method)
+        assertEquals("rein_20260911_120000", decodedPrompts.params["run_id"]?.jsonPrimitive?.content)
     }
 }

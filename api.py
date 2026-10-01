@@ -15,7 +15,7 @@ import traceback
 from collections import defaultdict
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
@@ -40,6 +40,7 @@ from trainer.config import (
     run_config_mapping,
 )
 from trainer.family import require_trainable, resolve_family
+from trainer import estimate
 from trainer.cleanup import run_cleanup
 from trainer.control import (
     LIVE_STATUSES,
@@ -716,10 +717,18 @@ def run_tagger_process(
     threshold: float,
     batch_size: int | None = None,
     categories: str | None = None,
+    only_tags: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Caption a folder with the Pixai tagger; `categories` is a comma-joined list of names."""
+    """Caption a folder with the Pixai tagger; `categories` is a comma-joined list of names.
+
+    `only_tags` switches the pass to partial tagging: the named tags are added to the captions that
+    show them and nothing else is touched, and the categories do not take part (a requested tag is
+    looked up in all of them). The two are mutually exclusive by construction here.
+    """
     argv = [str(directory), "--threshold", str(threshold), "--json"]
-    if categories:
+    if only_tags:
+        argv += ["--only-tags", ",".join(str(tag) for tag in only_tags)]
+    elif categories:
         argv += ["--categories", str(categories)]
     # No `--batch-size` when the caller did not ask for one: the script's own default applies.
     if batch_size is not None:
@@ -1170,6 +1179,8 @@ def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
     raw_threshold = params.get("threshold")
     threshold = evaluation.normalize_threshold(0.35 if raw_threshold is None else raw_threshold)
     categories = _clean_tagger_categories(params.get("categories")) or ["general"]
+    # The tags the scoring is narrowed to; empty means every tag a prompt asks for.
+    tags = sorted(evaluation.selected_tags(_clean_string_list(params.get("tags"), "tags")))
 
     run_id, output_name, samples_dir = _checkpoint_run(params, cfg, checkpoint)
     config_log_dir = _log_dir(cfg, run_id)
@@ -1201,9 +1212,47 @@ def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
         plan=plan,
         images=[image.to_dict() for image in images],
         sample_sets=[asdict(sample_set) for sample_set in sets],
+        tags=tags,
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
+
+
+def handle_evaluation_prompts(params: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: the prompts (and their tag frequencies) an evaluation of this checkpoint would use.
+
+    The panel asks this before anything is rendered, so the operator can pick which tags the scoring
+    should look at. It resolves the run exactly as `evaluate_checkpoint` does — the checkpoint's own
+    run wins when its path sits under `output_dir` — and reads the same config snapshot or hparams
+    fallback, so what the picker offers is what the pass will score against.
+
+    Never fails for a config it cannot use: `tags` comes back empty with `reason` set, and the panel
+    falls back to "score every tag the prompt asks for".
+    """
+    cfg = _train_config_dict()
+    raw = str(params.get("checkpoint") or "").strip()
+    if not raw:
+        raise ValueError("checkpoint is empty")
+    checkpoint = resolve_resume_path(raw)
+    run_id, output_name, _samples_dir = _checkpoint_run(params, cfg, checkpoint)
+    mapping, config_source = run_config_mapping(_log_dir(cfg, run_id))
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "output_name": output_name,
+        "checkpoint": str(checkpoint),
+        "config_source": config_source,
+        "sample_sets": [],
+        "tags": [],
+        "reason": "",
+    }
+    try:
+        sets = resolve_sample_sets(mapping)
+    except ValueError as exc:
+        payload["reason"] = str(exc)[-500:]
+        return payload
+    payload["sample_sets"] = [_json_safe(asdict(sample_set)) for sample_set in sets]
+    payload["tags"] = evaluation.prompt_tag_counts(sets)
+    return payload
 
 
 def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
@@ -1236,6 +1285,7 @@ def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
 
     # The script refuses a name the model does not have; this only cleans the request up.
     categories = _clean_tagger_categories(params.get("categories"))
+    only_tags = _clean_string_list(params.get("only_tags"), "only_tags")
 
     batch_raw = params.get("batch_size")
     batch_size: int | None = None
@@ -1252,11 +1302,12 @@ def handle_dataset_tag(params: dict[str, Any]) -> dict[str, Any]:
         threshold,
         batch_size=batch_size,
         categories=",".join(categories) if categories else None,
+        only_tags=only_tags or None,
     )
 
 
-def _clean_tagger_categories(raw: Any) -> list[str]:
-    """Requested tagger categories as a clean, de-duplicated list; empty means the caller's default."""
+def _clean_string_list(raw: Any, field: str) -> list[str]:
+    """A comma-separated string or a list of names as a clean, ordered, de-duplicated list."""
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -1264,13 +1315,18 @@ def _clean_tagger_categories(raw: Any) -> list[str]:
     elif isinstance(raw, (list, tuple)):
         items = [str(item) for item in raw]
     else:
-        raise ValueError("categories must be a list of names or a comma-separated string")
+        raise ValueError(f"{field} must be a list of names or a comma-separated string")
     ordered: list[str] = []
     for item in items:
         name = str(item).strip()
         if name and name not in ordered:
             ordered.append(name)
     return ordered
+
+
+def _clean_tagger_categories(raw: Any) -> list[str]:
+    """Requested tagger categories as a clean, de-duplicated list; empty means the caller's default."""
+    return _clean_string_list(raw, "categories")
 
 
 def handle_tagger_info(_params: dict[str, Any]) -> dict[str, Any]:
@@ -1288,6 +1344,27 @@ def handle_tagger_info(_params: dict[str, Any]) -> dict[str, Any]:
             "default_categories": [],
             "reason": str(exc)[-500:],
         }
+
+
+def handle_dataset_counts(params: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: how many images each training folder holds, and the per-epoch sample total.
+
+    The Utils → Training section asks this so its step estimate follows unsaved edits: the caller
+    hands over the folders the form currently holds (`[{path, repeat}]`), and a request that names
+    none falls back to the config's own `[[environment.train_data]]` entries. Counting is a
+    directory walk; the epoch/batch/GA arithmetic stays on the client, so editing those costs no
+    round trip. A folder that is missing answers with its reason instead of failing the call.
+    """
+    raw = params.get("dirs")
+    if raw is None:
+        entries: list[Any] = resolve_train_data_entries(_train_config_dict())
+    elif isinstance(raw, (list, tuple)):
+        entries = [item for item in raw if isinstance(item, dict)]
+        if len(entries) != len(raw):
+            raise ValueError("dirs must be a list of {path, repeat} objects")
+    else:
+        raise ValueError("dirs must be a list of {path, repeat} objects")
+    return _json_safe(estimate.count_train_images(entries))
 
 
 def handle_config_get(_params: dict[str, Any]) -> dict[str, Any]:
@@ -2032,12 +2109,14 @@ _HANDLERS = {
     "train_settings": handle_train_settings,
     "train_reset": handle_train_reset,
     "dataset_tag": handle_dataset_tag,
+    "dataset_counts": handle_dataset_counts,
     "tagger_info": handle_tagger_info,
     "hardware_status": handle_hardware_status,
     "generate_sample": handle_generate_sample,
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
     "generate_checkpoint_samples_batch": handle_generate_checkpoint_samples_batch,
     "evaluate_checkpoint": handle_evaluate_checkpoint,
+    "evaluation_prompts": handle_evaluation_prompts,
     "cancel_generation": handle_cancel_generation,
     "list_generated_samples": handle_list_generated_samples,
     "config_get": handle_config_get,

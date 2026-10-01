@@ -151,6 +151,8 @@ data class GeneratedSampleJob(
     val depth: Int? = null,
     val threshold: Float? = null,
     val categories: List<String> = emptyList(),
+    /** The tags the scoring was narrowed to; empty means every tag a prompt asks for. */
+    val tags: List<String> = emptyList(),
     /** The `config.toml` its prompts came from: the run's own snapshot, or the repo's. */
     @SerialName("config_source") val configSource: String = "",
     /** An evaluation's result, `null` until the pass ends. */
@@ -181,6 +183,8 @@ data class EvaluationScores(
     @SerialName("images_scored") val imagesScored: Int = 0,
     @SerialName("images_failed") val imagesFailed: Int = 0,
     @SerialName("images_skipped") val imagesSkipped: Int = 0,
+    /** The tags this evaluation was narrowed to; empty means every tag a prompt asks for. */
+    val tags: List<String> = emptyList(),
     /** One row per prompt, both boards, images counted first. */
     val groups: List<EvaluationGroup> = emptyList(),
     /** The tags that cost the most precision / recall, most frequent first. */
@@ -209,10 +213,36 @@ data class EvaluationGroup(
 data class EvaluationTagCount(val tag: String = "", val count: Int = 0)
 
 /**
- * The checkpoint an evaluation dialog is open for, and how many sample images it already shows.
- * UI-only: the depth field starts there, since the depth is a floor and not a target.
+ * The checkpoint the evaluation panel is open for, how many sample images it already shows, and the
+ * evaluation job it is reporting on (a running one, the newest finished one, or none when the
+ * checkpoint has never been evaluated). UI-only: the depth field starts at [existingImages], since
+ * the depth is a floor and not a target.
  */
-data class EvaluationTarget(val checkpoint: CheckpointItem, val existingImages: Int)
+data class EvaluationTarget(
+    val checkpoint: CheckpointItem,
+    val existingImages: Int,
+    val jobId: String? = null,
+)
+
+/** One prompt tag the evaluation picker offers, with how many prompt sets ask for it. */
+@Serializable
+data class PromptTagCount(
+    val tag: String = "",
+    val count: Int = 0,
+    val frequency: Float = 0f,
+)
+
+/** `evaluation_prompts`: what an evaluation of this checkpoint would score against. */
+@Serializable
+data class EvaluationPromptsResponse(
+    @SerialName("run_id") val runId: String = "",
+    @SerialName("output_name") val outputName: String = "",
+    val checkpoint: String = "",
+    @SerialName("config_source") val configSource: String = "",
+    /** The tags the prompts ask for, most frequent first; empty with [reason] set when unusable. */
+    val tags: List<PromptTagCount> = emptyList(),
+    val reason: String = "",
+)
 
 @Serializable
 data class GeneratedSamplesResponse(
@@ -236,7 +266,11 @@ data class DatasetTagError(
 data class DatasetTagResult(
     val directory: String = "",
     val engine: String = "",
+    /** `full` (a caption per image) or `partial` (only the requested tags were added). */
+    val mode: String = "full",
     val categories: List<String> = emptyList(),
+    /** Partial tagging: the tags the pass was asked to add, as they were written. */
+    @SerialName("only_tags") val onlyTags: List<String> = emptyList(),
     val threshold: Float = 0.35f,
     val provider: String = "",
     val device: String = "",
@@ -245,10 +279,36 @@ data class DatasetTagResult(
     val failed: Int = 0,
     val seconds: Float = 0f,
     val errors: List<DatasetTagError> = emptyList(),
+    /** Partial tagging: how many images gained each requested tag. */
+    val added: Map<String, Int> = emptyMap(),
+    /** Partial tagging: requested tags that matched no image at all. */
+    val unmatched: List<String> = emptyList(),
 )
 
-/** One of the tagger's categories, as the model declares it (`tagger_info`). */
+/** One training folder as the Training form holds it, for `dataset_counts`. */
 @Serializable
+data class TrainDataCountRequest(val path: String = "", val repeat: Int = 1)
+
+/** One folder's image count, with the reason when it could not be read. */
+@Serializable
+data class DatasetCountEntry(
+    val path: String = "",
+    val repeat: Int = 1,
+    val images: Int = 0,
+    val error: String? = null,
+)
+
+/** `dataset_counts`: what one per-epoch pass over the training folders would draw. */
+@Serializable
+data class DatasetCountsResponse(
+    val entries: List<DatasetCountEntry> = emptyList(),
+    /** Unique images across the folders. */
+    val images: Int = 0,
+    /** Images drawn in one epoch, repeats included. */
+    val samples: Int = 0,
+)
+
+/** One of the tagger's categories, as the model declares it (`tagger_info`). */@Serializable
 data class TaggerCategoryInfo(
     val key: String = "",
     val count: Int = 0,
@@ -498,13 +558,19 @@ data class DashboardUiState(
     /** True while a step-range batch is being handed to the helper. */
     val isStartingBatch: Boolean = false,
     val batchError: String? = null,
-    /** The checkpoint whose evaluation dialog is open, if any. */
+    /** The checkpoint the evaluation panel is open for, if any. */
     val evaluationTarget: EvaluationTarget? = null,
     /** Checkpoint path whose evaluation is on its way to the helper. */
     val isStartingEvaluation: String? = null,
     val evaluationError: String? = null,
-    /** Evaluation job whose details block is expanded on its card. */
-    val evaluationDetailsFor: String? = null,
+    /** The panel's `Details` block (the per-prompt breakdown) is expanded. */
+    val evaluationDetailsOpen: Boolean = false,
+    /** What the panel's tag picker offers: the prompts the pass will score against. */
+    val evaluationPrompts: EvaluationPromptsResponse? = null,
+    val evaluationPromptsLoading: Boolean = false,
+    val evaluationPromptsError: String? = null,
+    /** The picker's selection; empty scores every tag the prompts ask for. */
+    val evaluationTagSelection: Set<String> = emptySet(),
     /** The tagger's own categories, for the dialog; fetched once when one opens. */
     val taggerInfo: TaggerInfoResult? = null,
     val hardware: HardwareStatus = HardwareStatus(),

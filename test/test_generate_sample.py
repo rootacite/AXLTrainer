@@ -189,6 +189,61 @@ class EvaluationWithoutRenderTest(unittest.TestCase):
         self.assertEqual((stored["images_done"], stored["total_images"]), (0, 0))
         self.assertEqual(list(self.generated.glob("*.png")), [])
 
+    def test_the_recorded_tag_selection_narrows_the_scoring(self):
+        from safetensors.torch import save_file
+
+        checkpoint = Path(self.tmp.name) / "rein_s000100" / "rein.safetensors"
+        checkpoint.parent.mkdir(parents=True)
+        save_file({}, str(checkpoint), metadata={"ss_steps": "100"})
+
+        images = [
+            {
+                "path": str(self.generated / "a.png"),
+                "set_index": 0,
+                "repeat_idx": 0,
+                "prompt": "1girl, anal",
+            }
+        ]
+        (self.generated / "a.png").write_bytes(b"png")
+        job = genjob.new_evaluation_job(
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint=str(checkpoint),
+            step=100,
+            depth=1,
+            threshold=0.35,
+            categories=["general"],
+            config_source="/tmp/gone-config.toml",
+            config_log_dir="/tmp/gone-log-dir",
+            plan={"k": 0, "needed": False, "render_total": 0, "sets": []},
+            images=images,
+            sample_sets=[{"prompt": "1girl, anal", "repeat": 1}],
+            tags=["anal"],
+        )
+        genjob.write_job(self.generated, job)
+        previous = generator._cancel["asked"]
+        generator._cancel["asked"] = False
+        self.addCleanup(lambda: generator._cancel.__setitem__("asked", previous))
+
+        def fake_tag_paths(paths, *, threshold, categories, on_entry=None):
+            entries = []
+            for path in paths:
+                entry = {"path": str(path), "name": Path(path).name, "tags": ["anal", "outdoor"], "error": None}
+                entries.append(entry)
+                if on_entry is not None:
+                    on_entry(entry)
+            return entries
+
+        with mock.patch("tagger2.main.tag_paths", side_effect=fake_tag_paths):
+            generator.run_evaluation(job, self.generated)
+
+        stored = genjob.read_job(genjob.job_path(self.generated, str(job["id"])))
+        self.assertEqual(stored["state"], genjob.STATE_DONE)
+        self.assertEqual(stored["scores"]["tags"], ["anal"])
+        # `outdoor` was not asked about, so it is not a false positive; `1girl` is not a miss.
+        self.assertEqual((stored["scores"]["tp"], stored["scores"]["fp"], stored["scores"]["fn"]), (1, 0, 0))
+        self.assertEqual(stored["scores"]["recall"], 1.0)
+
 
 class ShapeKeyTest(unittest.TestCase):
     """What forces a batch to rebuild the pipeline instead of only reloading the weights."""

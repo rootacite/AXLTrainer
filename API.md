@@ -358,6 +358,7 @@ Params:
 | `depth` | integer | Yes | Lowest number of sample images to score, 1–512. |
 | `threshold` | number | No | Tagger floor, 0–1 (default `0.35`; the model's own per-category calibrated threshold is the floor underneath it). |
 | `categories` | string \| array | No | Tagger categories to score (default `general`). A prompt's tags in another category (`character`, `copyright`) count as misses unless it is selected. |
+| `tags` | string \| array | No | **Narrow the scoring to these tags** (normalized the same way a caption's tags are). Every other prompt tag stops counting as a miss and every other label the tagger reports stops counting as an extra, so the scores answer "how well are these tags drawn" instead of "how well does the caption match the prompt". Omitted or empty scores every tag the prompt asks for. `evaluation_prompts` is what a client offers as the picker. |
 | `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`; the checkpoint's own run wins when its path sits under `output_dir`. |
 
 The record is a job with `mode: "evaluate"`:
@@ -365,13 +366,14 @@ The record is a job with `mode: "evaluate"`:
 | Field | Description |
 |---|---|
 | `depth`, `threshold`, `categories` | The request, as accepted. |
+| `tags` | The tags the scoring was narrowed to, normalized; `[]` means every tag a prompt asks for. |
 | `config_source` | The `config.toml` the prompts came from: the one the checkpoint's run saved beside its logs (`{logging_dir}/{run_id}/config.toml`), or today's repo `config.toml` for a run from before those snapshots existed. |
 | `sample_sets` | The resolved prompt sets the top-up renders with. |
 | `plan` | `{needed, depth, passes, per_pass, existing_images, render_total, sets: [{set_index, repeat, existing, render}]}`. `needed` is false when the checkpoint already holds `depth` images — then **nothing is rendered** and the pass goes straight to tagging. Otherwise `passes = ceil((depth - existing_images) / per_pass)` whole copies of the config's sample pass are rendered (`render_total = passes × per_pass` images), each set contributing its own `repeat × passes` and `render` listing the repeat indices that pass writes: the set's numbering continues after the highest index it already uses, so an earlier pass is never written over. The count overshoots `depth` by less than one pass — and the images already there count towards it, whatever produced them (the run's own sample point, an earlier `sets` pass, an earlier evaluation). |
 | `images` | Every image to score: `{name, path, set_index, repeat_idx, source, prompt, tags, error}`. `source` is `run` (the trainer's own sample at the checkpoint's step) or `generated` (a recorded pass; its prompt is the one that pass drew with). `set_index` is `-1` for a `single` ad-hoc image. |
 | `phase` | `rendering` → `tagging` → `scoring` → `done`; `images_done` / `total_images` are that phase's counters (nothing is rescored: a second evaluation re-tags and re-scores). |
 | `files` | The images this job rendered itself (into `{output_dir}/{run_id}/{name}_samples/generated/` as `{job_id}_p{set}_{repeat}.png`), so they show on the checkpoint's card like any other pass. |
-| `scores` | `null` until the pass ends, then `{tp, fp, fn, precision, recall, f1, union_tp, union_fp, union_fn, union_precision, union_recall, union_f1, images_scored, images_failed, images_skipped, groups, top_false_positives, top_false_negatives}`. |
+| `scores` | `null` until the pass ends, then `{tp, fp, fn, precision, recall, f1, union_tp, union_fp, union_fn, union_precision, union_recall, union_f1, images_scored, images_failed, images_skipped, tags, groups, top_false_positives, top_false_negatives}`. |
 
 `f1` is the per-image scoreboard: the prompt is the ground truth of what was asked for, the tagger's
 labels are the positive predictions, and the counts are summed over every image (a requested tag
@@ -380,7 +382,46 @@ prompt's images pooled: a requested tag counts as found when any of them shows i
 both boards down per prompt, and `top_false_positives` / `top_false_negatives` list the tags that
 cost the most, most frequent first — every tag the tagger reports that the prompt did not ask for is
 a false positive. Both are always floats, and every counter is an integer: `0.0` when a denominator
-is empty.
+is empty. `scores.tags` echoes the `tags` the request narrowed to, and an image whose prompt asks for
+none of them is counted in `images_skipped` rather than scored.
+
+### `evaluation_prompts`
+
+Read-only, no GPU: the prompts an evaluation of this checkpoint would be scored against, and the tags
+they ask for with their frequency. This is what the Dashboard's picker offers before a pass is
+started, so the selection and the scoring come from the same config. It resolves the run and the
+config exactly as `evaluate_checkpoint` does (the checkpoint's own run wins; its saved `config.toml`,
+else the hparams it recorded, else today's file).
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checkpoint` | string | Yes | Path to the `.safetensors` whose run's prompts are wanted. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`, for a checkpoint outside `output_dir`. |
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "output_name": "rein",
+  "checkpoint": "/out/rein_20260911_120000/rein_s003050/rein.safetensors",
+  "config_source": "/logs/rein_20260911_120000/config.toml",
+  "sample_sets": [{"name": "set 1", "prompt": "1girl, anal", "repeat": 2}],
+  "tags": [
+    {"tag": "1girl", "count": 6, "frequency": 100.0},
+    {"tag": "anal", "count": 2, "frequency": 33.3333}
+  ],
+  "reason": ""
+}
+```
+
+`tags` holds one row per tag that appears in at least one set's prompt, `count` = the sets asking for
+it and `frequency` = `count / sets × 100`, most frequent first (`count` ties break on the tag name).
+The list is computed over the sets, not the images, so a set that repeats 4 times counts once. A
+config it cannot use is not an error: `tags` comes back empty with `reason` set, and the client scores
+every tag the prompt asks for.
 
 Refused under the same GPU rules as `generate_checkpoint_samples`, plus on a `depth` outside 1–512,
 one whose whole-pass count would exceed 512 images, a `threshold` outside 0–1, and a run config with
@@ -626,6 +667,7 @@ Params:
 | `directory` | string \| null | No | Dataset folder. Defaults to `[environment].train_data_dir`. |
 | `threshold` | number | No | Lowest confidence a tag may keep, `0.0`–`1.0`. Default `0.35`. The model's own per-category calibrated threshold is the floor underneath it (`max(calibrated, threshold)`). |
 | `categories` | list[string] \| string | No | Which of the model's six categories reach the caption: `general` (default), `character`, `copyright`, `style`, `meta`, `rating`. Unknown names are refused by the script. |
+| `only_tags` | list[string] \| string | No | **Partial tagging**: a list of tags to *add* to the captions that show them. The categories are not used (a requested tag is looked up in all six), and `threshold` becomes the absolute confidence floor for these tags instead of a floor under the model's calibrated values. |
 | `batch_size` | integer | No | Images per forward pass, `>= 1`. Omitting it leaves the script's own default (`1`; measured to make no difference on the author's GPU). |
 
 Result:
@@ -634,6 +676,7 @@ Result:
 {
   "directory": "/abs/path",
   "engine": "pixai-tagger-v1.0",
+  "mode": "full",
   "categories": ["general"],
   "threshold": 0.35,
   "thresholds": { "general": 0.35 },
@@ -646,6 +689,37 @@ Result:
   "errors": [{ "file": "0001.png", "error": "…" }]
 }
 ```
+
+With `only_tags` the same call runs a **partial pass** instead, and the result says so:
+
+```json
+{
+  "directory": "/abs/path",
+  "engine": "pixai-tagger-v1.0",
+  "mode": "partial",
+  "only_tags": ["anal", "pussy"],
+  "categories": [],
+  "threshold": 0.6,
+  "thresholds": {},
+  "provider": "pixai-tagger-v1.0 on cuda:0",
+  "device": "cuda:0",
+  "total": 100,
+  "processed": 15,
+  "failed": 0,
+  "seconds": 12.5,
+  "errors": [],
+  "added": { "anal": 12, "pussy": 3 },
+  "unmatched": ["nonexistent tag"]
+}
+```
+
+A partial pass is **add-only**: for each image it looks up the requested tags in the model's output and
+appends the ones above `threshold` that the caption does not already hold (a weighted or underscored
+form counts as already held), leaving every other tag exactly as written. `processed` counts the images
+whose sidecar was actually rewritten, `added` says how many images gained each tag, and `unmatched`
+lists requested tags that matched no image at all (usually a spelling the model does not use). A
+caption that would gain nothing is not touched, and an image with no sidecar gains one only when
+something matched.
 
 Fails if the folder is missing, `threshold` is out of range, a training process is in a GPU-using status (`starting` / `encoding` / `training` / `sampling` / `pausing` / `resuming` / `stopping`), or the model is not in the local Hugging Face cache (the script never reaches the Hub on its own; `--download` is the one-time fetch). Pause (`paused`) is allowed because weights are offloaded. The tagger is a child process so GPU memory is released when it exits.
 
@@ -677,6 +751,36 @@ Result:
 
 Never fails: with the model not cached, `available` is `false`, `categories` is empty and `reason` says how to fetch it. The same shape is returned when the helper itself cannot run.
 
+
+### `dataset_counts`
+
+Read-only, no GPU: how many images each training folder holds, for the Utils → Training section's
+step estimate. Counts the same way the trainer's dataset does — `jpg` / `jpeg` / `png` / `webp` /
+`bmp`, `*.mask.png` excluded, recursively — and applies each folder's `repeat` to the per-epoch
+figure.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `dirs` | array of `{path, repeat}` | No | The folders the form currently holds, so the answer follows unsaved edits. Omitted (or empty), the config's own `[[environment.train_data]]` entries are used. |
+
+Result:
+
+```json
+{
+  "entries": [
+    { "path": "/data/a", "repeat": 3, "images": 100, "error": null },
+    { "path": "/data/gone", "repeat": 1, "images": 0, "error": "not a directory" }
+  ],
+  "images": 100,
+  "samples": 300
+}
+```
+
+`samples` is the per-epoch figure with repeats applied (`Σ images × repeat`); a folder that cannot be
+read carries its reason and counts as zero rather than failing the call. The step arithmetic itself is
+the client's (`model/StepEstimate.kt`), so epoch / batch / GA edits need no round trip.
 
 ### `hardware_status`
 
@@ -740,6 +844,7 @@ After connect Ranko does not open trainer files. Paths in these methods are allo
 - `profile_list` / `profile_get` `{name}` / `profile_save` `{name, text, overwrite}` / `profile_delete` `{name}`.
 - `prompt_matrix` `{}` → `{path, text}` of repo-root `input_matrix.txt` (read-only). `prompt_profile_list` `{}` → `{profiles: [{name, version, modified, size, error}]}` for repo-root `prompt_profiles/*.json`; `version` is `null` when the file has no `version` key and `error` carries the reason an unreadable entry cannot be used. `prompt_profile_get` `{name}` → `{name, text}`; `prompt_profile_save` `{name, text, overwrite}` parse-checks that `text` is a JSON object with a `spec` object, then atomic-writes `<repo>/prompt_profiles/<name>.json`; `prompt_profile_delete` `{name}`. The version upgrades (v1 → v2 → v3) happen in the client, so the store never rewrites a profile.
 - `dataset_list` `{directory}` → `{items: [{stem, image, txt, mask, width, height, tags, has_sidecar_mask, has_alpha}], orphans}`. Non-recursive. Orphan `.txt` names are listed; Statistics aborts when `orphans` is non-empty.
+- `dataset_counts` `{dirs?}` → `{entries: [{path, repeat, images, error}], images, samples}`. Read-only, no GPU; the Utils → Training step estimate's image counts (see the method above).
 - `caption_write` `{directory, stem, text}`.
 - `dataset_drop` `{directory, rate, seed?, stems?}`. Moves image+txt+mask to `/tmp/axlranko/trash`. `stems` limits the pool (the GUI passes the filtered set).
 - `dataset_shuffle` `{directory, seed?}` → `{groups, renamed_files, first_stem, last_stem}`.
@@ -747,6 +852,7 @@ After connect Ranko does not open trainer files. Paths in these methods are allo
 - `blob_stat` / `blob_batch` `{paths, max_edge, quality?, format?}`. `max_edge` is required (32–4096, contain, never upscale). Default `quality=80`, `format=jpeg`. JPEG/WebP flatten transparency onto black before encoding (dropping the alpha channel would leak leftover RGB in transparent pixels). Result items carry `hash` (SHA-256 of the processed bytes), `width`/`height`, `cache` (`hit`/`miss`), and for `blob_batch` `base64`. A bad path is a per-item `error`, not a failed RPC. Encode fans out across `AXL_BLOB_WORKERS` spawn processes (`trainer/blobcodec.py`, torch-free). Hits live under `/tmp/axlranko/blob-cache/` capped at 1/4 of host RAM. The cache key includes a codec version, so a flatten/resize change does not reuse bytes from an older encoder.
 - `tag_lexicon` `{}` → `{text}` of `tagger/selected_tags.csv`.
 - `tagger_info` `{}` → the tagger's `{available, engine, model, model_path, cache_dir, categories, default_categories, reason}` (see the method above). Read-only and never failing.
+- `evaluation_prompts` `{checkpoint, name?, run_id?}` → the prompts and prompt-tag frequencies an evaluation of that checkpoint would score against (see the method above). Read-only and never failing.
 - `checkpoint_export` `{source, dest}` server-local copy. `dest` must end `.safetensors`; refuse `source == dest`.
 - `fs_listdir` `{path}` → `{path, parent, entries: [{name, path, is_dir, size, mtime_ms}]}`. Lists one directory after `Path.resolve()` (so `..` cannot escape). A file path errors. Unreadable children are skipped. No file bytes.
 - `fs_roots` `{}` → `{roots: [{name, path}]}` with Home, Repo, each train-data folder, Output, Logs.

@@ -1,5 +1,6 @@
 package com.acite.axlranko.pages
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,14 +11,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.EvaluationGroup
+import com.acite.axlranko.model.EvaluationPromptsResponse
 import com.acite.axlranko.model.EvaluationScores
 import com.acite.axlranko.model.EvaluationTagCount
+import com.acite.axlranko.model.EvaluationTarget
 import com.acite.axlranko.model.GeneratedSampleJob
+import com.acite.axlranko.model.PromptTagCount
 import com.acite.axlranko.model.SampleItem
+import com.acite.axlranko.pages.components.EvaluationDialog
+import com.acite.axlranko.pages.components.PAGE_PANEL_MARGIN
 import com.acite.axlranko.pages.components.JOB_DONE
 import com.acite.axlranko.pages.components.JOB_ERROR
 import com.acite.axlranko.pages.components.JOB_MODE_BATCH
@@ -62,7 +71,8 @@ class CheckpointsSectionRenderTest {
         val exportResult: CheckpointExport? = null,
         /** The checkpoint whose evaluation is being started, if any. */
         val evaluatingPath: String? = null,
-        val evaluationDetailsFor: String? = null,
+        /** The evaluation job the panel is open on, drawn over the section like the page does. */
+        val evaluationPanelFor: String? = null,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -165,7 +175,14 @@ class CheckpointsSectionRenderTest {
         ) else null,
     )
 
-    private fun render(cases: List<Case>) {
+    private fun render(
+        cases: List<Case>,
+        windowSize: IntSize = IntSize(1280, 900),
+        /** Close to the panel's own scroll state, so a test can measure what it laid out. */
+        scrollState: ScrollState = ScrollState(0),
+        /** Runs while the window is up, so a test can measure what the composition produced. */
+        inspect: (ComposeWindow) -> Unit = {},
+    ) {
         if (GraphicsEnvironment.isHeadless()) return
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { _, error -> failures += error }
@@ -174,10 +191,18 @@ class CheckpointsSectionRenderTest {
             val window = onEdtGetResult {
                 ComposeWindow().apply {
                     setLocation(-3200, -3200)
-                    setSize(1280, 900)
+                    setSize(windowSize.width, windowSize.height)
                     setContent {
                         RankoTheme {
                             val current = state
+                            // The panel is a dialog: the page hands it the room it has, so the test
+                            // does the same with the window it opened.
+                            val panelRoom = with(LocalDensity.current) {
+                                DpSize(
+                                    windowSize.width.toDp() - PAGE_PANEL_MARGIN,
+                                    windowSize.height.toDp() - PAGE_PANEL_MARGIN,
+                                )
+                            }
                             // The page's own structure: the error line, the empty card, else one
                             // lazy item per checkpoint card.
                             LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -218,16 +243,15 @@ class CheckpointsSectionRenderTest {
                                             busyElsewhere = current.generatingPath != null &&
                                                 current.generatingPath != row.checkpoint?.path,
                                             startingEvaluation = current.evaluatingPath == row.checkpoint?.path,
-                                            evaluationDetailsFor = current.evaluationDetailsFor,
                                             pinning = current.pinningPath == row.checkpoint?.path,
                                             pinEnabled = current.pinningPath == null,
                                             exportInFlightPath = current.exportingPath,
                                             exportResult = current.exportResult,
                                             onOpen = {},
                                             onGenerate = {},
-                                            onEvaluate = { _, _ -> },
+                                            onEvaluate = { _, _, _ -> },
                                             onCancelEvaluation = { _ -> },
-                                            onToggleEvaluationDetails = {},
+                                            onOpenEvaluation = {},
                                             onTogglePin = {},
                                             onSaveAs = {},
                                         )
@@ -244,6 +268,50 @@ class CheckpointsSectionRenderTest {
                                     items(restCards, key = { checkpointRowKey(it) }) { row -> card(row) }
                                 }
                             }
+
+                            // The evaluation panel is a dialog over the whole page: the case that
+                            // names a job draws it with real prompt tags, the running phase and a
+                            // scored result, so the picker and the recall headline are measured too.
+                            val panelJob = current.evaluationPanelFor?.let { id ->
+                                current.jobs.firstOrNull { it.id == id }
+                            }
+                            if (panelJob != null) {
+                                EvaluationDialog(
+                                    target = EvaluationTarget(
+                                        checkpoint = current.checkpoints.first(),
+                                        existingImages = 4,
+                                        jobId = panelJob.id,
+                                    ),
+                                    job = panelJob,
+                                    tagger = null,
+                                    prompts = EvaluationPromptsResponse(
+                                        runId = "rein_20260911_120000",
+                                        outputName = "rein",
+                                        configSource = "/logs/rein_20260911_120000/config.toml",
+                                        tags = listOf(
+                                            PromptTagCount(tag = "1girl", count = 6, frequency = 100f),
+                                            PromptTagCount(tag = "long hair", count = 4, frequency = 66f),
+                                            PromptTagCount(tag = "anal", count = 2, frequency = 33f),
+                                        ),
+                                    ),
+                                    promptsLoading = false,
+                                    promptsError = null,
+                                    selectedTags = setOf("anal"),
+                                    starting = false,
+                                    error = null,
+                                    // The room the page's `BoxWithConstraints` hands the dialog.
+                                    maxWidth = panelRoom.width,
+                                    maxHeight = panelRoom.height,
+                                    scrollState = scrollState,
+                                    detailsOpen = true,
+                                    onToggleTag = {},
+                                    onClearTags = {},
+                                    onToggleDetails = {},
+                                    onCancel = {},
+                                    onStart = { _, _, _, _ -> },
+                                    onDismiss = {},
+                                )
+                            }
                         }
                     }
                 }
@@ -253,6 +321,7 @@ class CheckpointsSectionRenderTest {
                 onEdtGet { state = next }
                 pumpFor(400)
             }
+            onEdtGet { inspect(window) }
             onEdtGet { window.dispose() }
             assertTrue(
                 failures.isEmpty(),
@@ -387,7 +456,7 @@ class CheckpointsSectionRenderTest {
                     checkpoints = listOf(checkpoint(3050)),
                     samples = mapOf("3050" to listOf(sample(3050, 0))),
                     jobs = listOf(evaluationJob("done_evaluate_gen_4", 3050, JOB_DONE, scored = true)),
-                    evaluationDetailsFor = "done_evaluate_gen_4",
+                    evaluationPanelFor = "done_evaluate_gen_4",
                 ),
                 Case(
                     checkpoints = listOf(checkpoint(3050)),
@@ -402,6 +471,49 @@ class CheckpointsSectionRenderTest {
                     evaluatingPath = checkpoint(3050).path,
                 ),
             ),
+        )
+    }
+
+    /**
+     * The panel on a window that cannot hold it. The panel's height is capped to the room the page
+     * hands it and its content scrolls inside that, so a short window keeps the fields and the
+     * buttons reachable instead of drawing them past the bottom edge. Measured on the scroll
+     * viewport the composition produced, not asserted from the code path.
+     */
+    @Test
+    fun thePanelScrollsInsideAShortWindow() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val windowSize = IntSize(760, 420)
+        val scroll = ScrollState(0)
+        var viewportPx = 0
+        var maxScrollPx = 0
+        var density = 1f
+        render(
+            cases = listOf(
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    jobs = listOf(evaluationJob("short_evaluate_gen_1", 3050, JOB_DONE, scored = true)),
+                    evaluationPanelFor = "short_evaluate_gen_1",
+                ),
+            ),
+            windowSize = windowSize,
+            scrollState = scroll,
+            inspect = {
+                viewportPx = scroll.viewportSize
+                maxScrollPx = scroll.maxValue
+                density = it.graphicsConfiguration.defaultTransform.scaleX.toFloat()
+            },
+        )
+        val windowHeightPx = (windowSize.height * density).toInt()
+        assertTrue(viewportPx > 0, "the panel was not laid out (viewport ${viewportPx}px)")
+        assertTrue(
+            viewportPx <= windowHeightPx,
+            "the panel's viewport is taller than the window: ${viewportPx}px in ${windowHeightPx}px",
+        )
+        assertTrue(
+            maxScrollPx > viewportPx,
+            "the panel does not scroll: content ${maxScrollPx}px in a ${viewportPx}px viewport",
         )
     }
 }

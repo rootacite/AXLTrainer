@@ -65,6 +65,8 @@ internal val PANEL_MAX_WIDTH = 1440.dp
 internal val PANEL_MAX_HEIGHT = 1120.dp
 internal val PANEL_MIN_WIDTH = 360.dp
 internal val PANEL_MIN_HEIGHT = 260.dp
+/** Left between a page-sized overlay (or a dialog) and the window edge, on every side. */
+internal val PAGE_PANEL_MARGIN = 24.dp
 internal val SAMPLE_SLOT_SPACING = 20.dp
 internal val SAMPLE_THUMB_TARGET_WIDTH = 400.dp
 internal val SAMPLE_THUMB_MIN_WIDTH = 144.dp

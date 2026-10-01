@@ -60,20 +60,35 @@ internal fun evaluationProgressLabel(job: GeneratedSampleJob): String {
     return if (detail.isEmpty()) "Evaluating" else "Evaluating · $detail"
 }
 
-/** `F1 0.66 · P 0.71 · R 0.62 · 21 images`, the per-image board the card leads with. */
-internal fun evaluationScoreLabel(scores: EvaluationScores?): String? {
-    if (scores == null) return null
-    if (scores.imagesScored <= 0) return null
-    val images = if (scores.imagesScored == 1) "1 image" else "${scores.imagesScored} images"
-    return "F1 ${formatFixed(scores.f1, 2)} · P ${formatFixed(scores.precision, 2)} · " +
-        "R ${formatFixed(scores.recall, 2)} · $images"
+/**
+ * `Recall 0.62`, the headline the panel leads with. Recall is the metric that answers the question
+ * an evaluation is for — "did the prompt's tags actually get drawn" — so it is the one shown large;
+ * precision and F1 ride the line under it ([evaluationSecondaryLabel]).
+ */
+internal fun evaluationRecallHeadline(scores: EvaluationScores?): String? {
+    if (scores == null || scores.imagesScored <= 0) return null
+    return "Recall ${formatFixed(scores.recall, 2)}"
 }
 
-/** `union F1 0.74 · P 0.78 · R 0.71`, the pooled board, on its own line under the score. */
+/** `P 0.71 · F1 0.66 · 21 images`, the supporting numbers, deliberately quiet. */
+internal fun evaluationSecondaryLabel(scores: EvaluationScores?): String? {
+    if (scores == null || scores.imagesScored <= 0) return null
+    val images = if (scores.imagesScored == 1) "1 image" else "${scores.imagesScored} images"
+    return "P ${formatFixed(scores.precision, 2)} · F1 ${formatFixed(scores.f1, 2)} · $images"
+}
+
+/** `scored tags: anal, pussy`, or null when the pass scored every tag the prompts ask for. */
+internal fun evaluationTagsLabel(scores: EvaluationScores?): String? {
+    val tags = scores?.tags.orEmpty().filter { it.isNotBlank() }
+    if (tags.isEmpty()) return null
+    return "scored tags: ${tags.joinToString(", ")}"
+}
+
+/** `union recall 0.71 · P 0.78`, the pooled board, on its own line under the score. */
 internal fun evaluationUnionLabel(scores: EvaluationScores?): String? {
     if (scores == null || scores.imagesScored <= 0) return null
-    return "union F1 ${formatFixed(scores.unionF1, 2)} · P ${formatFixed(scores.unionPrecision, 2)} · " +
-        "R ${formatFixed(scores.unionRecall, 2)}"
+    return "union recall ${formatFixed(scores.unionRecall, 2)} · " +
+        "P ${formatFixed(scores.unionPrecision, 2)}"
 }
 
 /** `21 scored · 2 failed · 1 skipped`, or null when every image was scored. */
@@ -89,8 +104,8 @@ internal fun evaluationCoverageLabel(scores: EvaluationScores?): String? {
 internal data class EvaluationDetailRow(
     val prompt: String,
     val images: Int,
-    val perImageF1: Float,
-    val unionF1: Float,
+    val perImageRecall: Float,
+    val unionRecall: Float,
 )
 
 /** The per-prompt breakdown, the way the record orders it: most images first. */
@@ -99,8 +114,8 @@ internal fun evaluationDetailRows(scores: EvaluationScores?): List<EvaluationDet
         EvaluationDetailRow(
             prompt = group.prompt,
             images = group.images,
-            perImageF1 = group.f1,
-            unionF1 = group.unionF1,
+            perImageRecall = group.recall,
+            unionRecall = group.unionRecall,
         )
     }
 

@@ -56,10 +56,10 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 ![Utils tab](screenshots/utils-tab.png)
 
 - A validated, structured editor for `config.toml` (repo root) — no hand-editing TOML.
-- Environment section lists the **Train data directories**: one row per `[[environment.train_data]]` entry — a folder path with **Browse** and its per-epoch **Repeat** (1–512), `+ Add folder`, and a delete button per row (the last row stays). `train_data_dir` is written as the first row's path. Then **Auto-tag dataset**: a row of **category switches** (`general` / `character` / `copyright` / `style` / `meta` / `rating`, asked from the model itself through IPC `tagger_info`; only `general` is on at first, and the last one cannot be switched off), a confidence slider / threshold (default `0.35`) and a **Tag dataset** button that tags the selected folder (the chip row above it when there is more than one). Under the slider sit the model's **calibrated thresholds** — one tick per selected category, drawn at its own value, and spelled out as `general 0.17` or `general 0.17 → 0.35` when the slider is above it, because the slider is a floor over them. That calls IPC `dataset_tag`, which runs `tagger2/main.py` (Pixai tagger v1, PyTorch/ROCm) on that folder and overwrites sidecar `.txt` captions. When it finishes, Images and Statistics reload from disk. A tag holds that folder and the GPU until it ends, so anything else that would write into the same folder — a caption save, a mask save, a drop, a second tag — is refused **at once** with a line naming the tag and how long it has been running, instead of queueing behind it; the rest of the app (charts, other folders, other pages) keeps working while it runs. With the model not downloaded yet, the card shows the one line that says how to fetch it and still runs the tagger's own default category.
+- Environment section lists the **Train data directories**: one row per `[[environment.train_data]]` entry — a folder path with **Browse** and its per-epoch **Repeat** (1–512), `+ Add folder`, and a delete button per row (the last row stays). `train_data_dir` is written as the first row's path. Then **Auto-tag dataset**: a row of **category switches** (`general` / `character` / `copyright` / `style` / `meta` / `rating`, asked from the model itself through IPC `tagger_info`; only `general` is on at first, and the last one cannot be switched off), a confidence slider / threshold (default `0.35`) and a **Tag dataset** button that tags the selected folder (the chip row above it when there is more than one). Under the slider sit the model's **calibrated thresholds** — one tick per selected category, drawn at its own value, and spelled out as `general 0.17` or `general 0.17 → 0.35` when the slider is above it, because the slider is a floor over them. That calls IPC `dataset_tag`, which runs `tagger2/main.py` (Pixai tagger v1, PyTorch/ROCm) on that folder and overwrites sidecar `.txt` captions. The **Partial tagging** switch turns that into a pass that *adds* instead of replacing: a **Tags to add** field takes a comma-separated list, and only those tags are looked for — each one the model reports above the threshold is appended to the captions that lack it, everything else in every caption is left exactly as it was, and a caption that would gain nothing is not rewritten (the button becomes **Add tags**, the category pills step aside since a requested tag is looked up in all six, and the threshold reads "the absolute floor for the tags above"). The status line then reports what happened per tag (`Added anal ×12 · pussy ×3 · 15/100 images · never matched: …`). When it finishes, Images and Statistics reload from disk. A tag holds that folder and the GPU until it ends, so anything else that would write into the same folder — a caption save, a mask save, a drop, a second tag — is refused **at once** with a line naming the tag and how long it has been running, instead of queueing behind it; the rest of the app (charts, other folders, other pages) keeps working while it runs. With the model not downloaded yet, the card shows the one line that says how to fetch it and still runs the tagger's own default category.
 - Training section holds **Save every N steps** and the **Sampling** switch (`[training].sampling_enabled`) — what the next run starts with; a run in progress is retuned from the Dashboard — and ends with **Resume from LoRA checkpoint**: a path field with **Browse** (OS file dialog filtered to `.safetensors` — type or paste a directory holding a single checkpoint to use that form), **Pick from run checkpoints** (a dialog listing `list_checkpoints` results for the current output name: run id, step, `r/α`, size, newest first), and **Clear**. Saving writes `[training].resume_lora_path`; the summary line then shows `· resume`. Selecting from the dialog only fills the field — save to apply.
 - Left: the config sections (Environment, ROCm, Model Spec, Training, Network, Bucketing, Optimization, UNet Optimizer, Text Encoder, Infrastructure, Validation, Appearance, WM), with a warning badge on sections containing invalid fields. **ROCm** picks `[environment].amdfq` (`none` / `tail` / `vmm`) for the next Train start. Appearance is UI-only (not written to `config.toml`): Solid / Glow / Image backdrop, independent card/background blur, font scale, icon scale, thumbnail JPEG quality. **WM** is offered by the desktop build only and is UI-only as well: **Maximize** sizes the window to its screen — the size is applied, not requested, because a compositor that hosts no window manager has nothing that acts on a maximize request — and reads **Restore** once it has, which puts the size the window had before back. **Exit** quits through the same path as closing the window. Both exist for a cage or other single-window session, whose compositor draws no title bar to maximize or close from.
-- Right: fields per section — path fields with a **Browse** button (OS file dialog), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio).
+- Right: fields per section — path fields with a **Browse** button (OS file dialog), switches for booleans, segmented buttons for `mixed_precision`, chips for `lr_scheduler`, and numeric fields with inline validation and helper hints (effective batch size, LoRA scale α/dim, bucket-step divisibility, sample aspect ratio). The **Training** section also shows the run's expected size under the Epochs / Batch size / Grad accumulation row, recomputed as you type: `≈ 6,200 steps · 310/epoch × 20 epochs · 3,100 samples/epoch`, with the folder count under it (`100 images × repeats`). The image counts come from `dataset_counts` once per folder edit (and once when the section is opened), while the `ceil(samples / batch)` → `ceil(batches / GA)` arithmetic is local, so a keystroke costs nothing; a **Recount** button re-reads the folders, and a folder that cannot be read says so in red in its place. It is an estimate: the trainer rounds each aspect-ratio bucket up separately, which can only add batches (`enable_bucket = false` makes the two agree exactly).
 - **Validation** is a tabbed editor over `[[validation.samples]]`: a horizontal strip of set chips (label, warning icon while the set has an invalid field), a `+` that clones the open set, and a small `×` that deletes a set after a confirmation dialog (never the last one). The open tab shows Label, Positive/Negative prompt, Width/Height/Steps, Guidance scale/Seed/Repeat. Saving writes the `[validation]` scalars from the first tab plus one explicit block per tab.
 - Header shows the config path, a summary line (`name · resolution · epochs · batch`), and an **Unsaved** indicator. **Save** validates the whole form (auto-jumping to the first invalid section), then patches the TOML in place, preserving comments and formatting. **Reload** is blocked while the form is dirty.
 - **Profiles** saves and applies named `config.toml` presets. A name in the **Profile name** field writes the editor's values to `configs/<name>.toml` next to `config.toml` — the folder is tracked by git, the presets in it are ignored — and a name already taken asks before it overwrites. Clicking a saved profile applies it: `config.toml` is patched in place (comments, blank lines, unknown tables and every key the profile does not carry stay as they are) and the editor reloads from the result, with a confirmation first when the editor has unsaved changes. A profile written here holds the whole config, so applying it replaces the environment paths too; a hand-trimmed file changes only the keys it lists, and a section `config.toml` has no table for is named in the status line instead of being dropped silently. **Delete** removes the preset file and leaves `config.toml` alone. A run already in flight keeps the settings it started with.
@@ -116,19 +116,35 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
     another generation. **Stop** asks the generator to finish the step it is in and stop: the cards
     keep what was already rendered, the batch closes as cancelled (not as a failure), and the
     checkpoint it was in the middle of shows the images it had written.
-  - **Evaluate**: every checkpoint card can be *scored* against the prompt it was drawn from. Press
-    **Evaluate** and the dialog asks for a **Depth** (prefilled with the images the card already
-    shows, since the depth is a floor: a checkpoint that already has that many images renders
-    nothing and goes straight to tagging), a tagger **Threshold** (default 0.35, the model's own
-    calibrated value stays the floor underneath it) and which of the tagger's **categories** count —
+  - **Evaluate**: every checkpoint card can be *scored* against the prompt it was drawn from. The
+    card carries the entry point — **Evaluate** for a checkpoint that has never been scored, else a
+    capsule reading `Evaluation · Recall 0.62` (or `running…` / `failed`) — and the evaluation panel
+    itself is where everything happens, so the same surface starts a pass and shows its result long
+    after the pass ended. The panel is capped to the window it is opened in and **scrolls inside
+    that**: its result block, the prompt list and the fields below them stay reachable on a short
+    window instead of running off the bottom of the screen, and a narrow window narrows the panel
+    rather than clipping its right edge. The panel asks for a **Depth** (prefilled with the images
+    the card already shows, since the depth is a floor: a checkpoint that already has that many
+    images renders nothing and goes straight to tagging), a tagger **Threshold** (default 0.35, the
+    model's own calibrated value stays the floor underneath it), which of the tagger's **categories**
+    count —
     the same category pills the Utils Auto-tag card uses, `general` on its own by default (a prompt
     tag the tagger would file under `character` or `copyright` cannot be found unless that category
-    is ticked, and counts against the score).
+    is ticked, and counts against the score) — and **Prompt tags to score**: the tags the run's
+    prompts ask for, drawn as a frequency list like Statistics' (the bar behind each row is the share
+    of prompt sets asking for it, `anal 2 (33%)`), one click each, with **Clear** to go back to all
+    of them. Selecting tags narrows the whole comparison to them — a prompt tag outside the selection
+    is not a miss and a label outside it is not an extra — so recall answers "were the tags I care
+    about actually drawn" rather than "how close is the caption to the prompt". Nothing selected
+    (the default) scores every tag the prompt asks for, exactly as before. Press **Evaluate again**
+    to run another pass on the same checkpoint.
     The pass runs detached and uses **the config that run saved**, not today's `config.toml`:
     `trainer/main.py` keeps a copy of the file beside each run's logs, so an old checkpoint's images
     are topped up with the prompts, size, steps, CFG and seeds it was trained with. A run from
     before those snapshots existed (or one whose copy is gone) falls back to the current file, and
-    the card says which one was used (`run config · <run id>` / `current config.toml`).
+    the panel says which one was used (`run config · <run id>` / `current config.toml`). The picker
+    is read from the same file (`evaluation_prompts`), so what it offers is what the pass will score
+    against; a config it cannot read says so and leaves the pass on every prompt tag.
     What it reports, and what it means:
     - **Depth is a floor, counted in images.** The program counts the checkpoint's existing sample
       images — the run's own at that step plus every recorded pass for it — and renders more only if
@@ -141,21 +157,24 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
       the new images are further samples of the same prompts. A second press with the same or a
       smaller Depth therefore renders nothing and only tags and scores again.
     - **It tags every image** with the Pixai tagger (the same model the Auto-tag card runs) and
-      compares the labels with the prompt that image was rendered from. The card's headline is the
-      **per-image** scoreboard: a requested tag found on an image is a hit, one the tagger did not
-      report is a miss, and a tag the tagger reported that was not requested is an extra —
-      `F1 0.69 · P 0.77 · R 0.62 · 21 images`. The line under it is the same over each prompt's
-      images pooled (`union F1 …`): a requested tag counts as found when any of that prompt's images
-      shows it. **No threshold or lexicon is applied beyond the tagger's own:** every tag it reports
-      that the prompt did not ask for costs precision, which is why `Details` lists the tags that
-      cost the most (`most drawn but not asked: solo ×5`, `most asked but not drawn: long hair ×7`)
-      along with each prompt's own numbers and how many images were scored, failed or skipped
-      (an image whose tagging failed, or whose prompt holds no tag, is counted but not scored).
-    - **While it runs** the card shows its phase — `rendering 3/4` (the top-up), then `tagging 8/21`
+      compares the labels with the prompt that image was rendered from. The panel leads with
+      **recall** — `Recall 0.62`, big and in the accent colour, because "were the prompt's tags
+      drawn" is the question an evaluation exists to answer — and the supporting numbers are a quiet
+      line under it: `P 0.77 · F1 0.69 · 21 images`, then the pooled board over each prompt's images
+      (`union recall 0.71 · P 0.79`). When the pass was narrowed to a tag selection, the line
+      `scored tags: anal, pussy` says so. **No threshold or lexicon is applied beyond the tagger's
+      own:** every tag it reports that the prompt did not ask for costs precision, which is why
+      `Details` lists the tags that cost the most (`most drawn but not asked: solo ×5`,
+      `most asked but not drawn: long hair ×7`) along with each prompt's own recall and how many
+      images were scored, failed or skipped (an image whose tagging failed, or whose prompt holds
+      none of the selected tags, is counted but not scored).
+    - **While it runs** the panel shows its phase — `rendering 3/4` (the top-up), then `tagging 8/21`
       (the whole set) and `scoring` — with a progress bar and a **Cancel**; a cancel stops between
       images and keeps whatever has been written. It needs the GPU to itself, so the button is off
       while a live trainer is using the card or another generation is running (a **paused** run is
-      fine), and the job is cancelled with the same helper call as any generation.
+      fine), and the job is cancelled with the same helper call as any generation. The panel stays
+      open on the pass it started, so the progress and then the result appear where they were asked
+      for; closing it changes nothing about the job.
   - A checkpoint with **no** images yet is listed too — that is what a run with `sampling_enabled = false`, or an early checkpoint, looks like — with a **Generate samples** button instead. Pressing it renders the config's whole `[[validation.samples]]` list for that checkpoint (one image per set and repeat, the prompt/size/steps/CFG/seed/repeat from `config.toml`, the network settings from the checkpoint's own metadata) as a detached job, writing `{...}_p{set}_{repeat}.png` into the run's `{output_name}_samples/generated/`. The card shows `set s/S · image i/N · denoising k/K` while it runs, and the images appear under that checkpoint when it finishes. Nothing is overwritten: the run's own samples stay the record of what training produced.
   - The button is enabled only while no live trainer is using the GPU — the run is **paused** (pause offloaded every module, so the card is free), **stopped** or **over**. While a run is training the card says so instead; while another generation is running the button is off, because the GPU is single-tenant. `train_resume` refuses while a generation is running, so resuming cannot put a second SDXL on the card.
   - A step whose images outlived its weights (`clean.py` removed the checkpoint dirs, or they were deleted by hand) keeps a **samples only** card, so those pictures never become unreachable.

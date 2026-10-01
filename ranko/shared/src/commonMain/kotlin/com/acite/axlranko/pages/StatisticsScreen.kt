@@ -46,7 +46,6 @@ import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
 import com.acite.axlranko.ui.components.rankoFieldColors
-import com.acite.axlranko.ui.theme.RankoPalette
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
@@ -57,24 +56,10 @@ import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.graphics.lerp
 import com.acite.axlranko.Screen
 import com.acite.axlranko.StageViewModel
 import com.acite.axlranko.model.StatisticsUiState
-
-private fun frequencyColor(frequency: Float, colors: RankoPalette): Color {
-    val t = (frequency / 100f).coerceIn(0f, 1f)
-    val stops = listOf(
-        colors.accentBlue,
-        colors.qualityMint,
-        colors.qualityYellow,
-        colors.qualityOrange,
-        colors.qualityRed,
-    )
-    val scaled = t * (stops.lastIndex)
-    val index = scaled.toInt().coerceIn(0, stops.lastIndex - 1)
-    return lerp(stops[index], stops[index + 1], scaled - index)
-}
+import com.acite.axlranko.pages.components.frequencyColor
 
 @Composable
 fun StatisticsScreen(

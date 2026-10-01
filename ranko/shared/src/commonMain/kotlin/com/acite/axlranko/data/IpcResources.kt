@@ -237,6 +237,8 @@ internal object IpcResources {
         "generate_checkpoint_samples_batch" to { _ -> listOf(gpu()) },
         // An evaluation renders its missing images and then tags them, so it holds the GPU itself.
         "evaluate_checkpoint" to { _ -> listOf(gpu()) },
+        // Read-only: the prompts (and their tag frequencies) the evaluation panel's picker draws.
+        "evaluation_prompts" to { _ -> emptyList() },
         "dataset_tag" to { params -> listOf(dataset(params.text("directory")), gpu()) },
         "automation_job_start" to { _ -> listOf(gpu()) },
         "automation_job_retry_failed" to { params -> listOf(job(params.text("id")), gpu()) },
@@ -306,6 +308,9 @@ internal object IpcResources {
         "automation_job_list" to { _ -> emptyList() },
         "automation_job_get" to { _ -> emptyList() },
         "dataset_list" to { _ -> emptyList() },
+        // A directory walk for the Training section's step estimate: read-only, and it must not
+        // queue behind a ten-minute tag on the same folder.
+        "dataset_counts" to { _ -> emptyList() },
         "mask_get" to { _ -> emptyList() },
         "blob_stat" to { _ -> emptyList() },
         "blob_batch" to { _ -> emptyList() },

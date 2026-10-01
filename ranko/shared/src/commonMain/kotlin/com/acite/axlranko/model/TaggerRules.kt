@@ -23,3 +23,17 @@ fun taggerThresholdMarks(
 ): List<TaggerMark> = categories
     .filter { it.key in selected }
     .map { TaggerMark(it.key, it.calibrated, slider > it.calibrated) }
+
+/**
+ * The tags a partial pass should add. One per `,`, `;` or line break — a tag may hold spaces
+ * (`hair between eyes`), so those are kept; surrounding whitespace is dropped and duplicates are
+ * folded, first spelling winning.
+ */
+fun parseOnlyTags(text: String): List<String> {
+    val tags = mutableListOf<String>()
+    for (part in text.split(',', ';', '\n')) {
+        val tag = part.trim()
+        if (tag.isNotEmpty() && tags.none { it.equals(tag, ignoreCase = true) }) tags += tag
+    }
+    return tags
+}

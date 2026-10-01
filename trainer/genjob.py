@@ -362,6 +362,7 @@ def new_evaluation_job(
     plan: Mapping[str, Any],
     images: list[Mapping[str, Any]],
     sample_sets: list[Mapping[str, Any]],
+    tags: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """The record api.py writes before spawning an evaluation.
 
@@ -374,7 +375,7 @@ def new_evaluation_job(
     runner resolves again for the model side. The
     record starts in the phase the plan implies — `rendering` when there is something to draw,
     `tagging` when there is not, which is what keeps a re-evaluation from loading the diffusion
-    model at all.
+    model at all. `tags` narrows the scoring to the tags the caller picked (empty = all of them).
     """
     needed = bool(plan.get("needed"))
     phase = PHASE_RENDERING if needed else PHASE_TAGGING
@@ -391,6 +392,8 @@ def new_evaluation_job(
             "depth": int(depth),
             "threshold": float(threshold),
             "categories": [str(category) for category in categories],
+            # The tags the scoring is narrowed to; empty means every tag a prompt asks for.
+            "tags": [str(tag) for tag in (tags or [])],
             "config_source": str(config_source),
             "config_log_dir": str(config_log_dir),
             "plan": dict(plan),

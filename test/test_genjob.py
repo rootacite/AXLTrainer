@@ -175,6 +175,13 @@ class EvaluationJobTest(unittest.TestCase):
         self.assertEqual((job["images_done"], job["total_images"]), (0, 9))
         self.assertEqual(len(job["images"]), 9)
 
+    def test_the_scored_tag_selection_is_recorded(self):
+        plan = {"k": 0, "needed": False, "render_total": 0, "sets": []}
+        job = self._job(plan=plan, tags=["anal", "pussy"])
+        self.assertEqual(job["tags"], ["anal", "pussy"])
+        # No selection at all is still a list: the reply's shape must not change with the request.
+        self.assertEqual(self._job(plan=plan)["tags"], [])
+
     def test_no_counter_is_ever_null(self):
         job = self._job(plan={"k": 1, "needed": True, "render_total": 2, "sets": []})
         for key in ("current_step", "total_steps", "images_done", "total_images"):

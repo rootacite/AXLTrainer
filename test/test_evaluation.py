@@ -36,10 +36,12 @@ from trainer.evaluation import (
     normalize_depth,
     normalize_tag,
     normalize_threshold,
+    prompt_tag_counts,
     prompt_tags,
     render_slots,
     sample_name_parts,
     score_images,
+    selected_tags,
 )
 
 SOURCE = """\
@@ -256,9 +258,24 @@ def table(prompt: str, repeat: int) -> dict:
     return {"prompt": prompt, "repeat": repeat}
 
 
+class SelectedTagsTest(unittest.TestCase):
+    """`selected_tags`: what an evaluation was asked to score, in the comparable form."""
+
+    def test_a_comma_string_and_a_list_are_the_same_request(self):
+        self.assertEqual(selected_tags("anal, pussy"), {"anal", "pussy"})
+        self.assertEqual(selected_tags([" anal ", "Anal", "", "pussy"]), {"anal", "pussy"})
+
+    def test_nothing_asked_for_is_the_empty_set(self):
+        self.assertEqual(selected_tags(None), set())
+        self.assertEqual(selected_tags([]), set())
+        self.assertEqual(selected_tags(" , "), set())
+
+    def test_weights_and_underscores_come_off(self):
+        self.assertEqual(selected_tags("(Anal:1.2), long_hair"), {"anal", "long hair"})
+
+
 class PromptTagsTest(unittest.TestCase):
-    def test_a_comma_list_loses_its_noise(self):
-        self.assertEqual(
+    def test_a_comma_list_loses_its_noise(self):        self.assertEqual(
             prompt_tags("1girl, solo, , Long_Hair , 1girl"),
             ["1girl", "solo", "long hair"],
         )
@@ -656,6 +673,83 @@ class ScoreImagesTest(unittest.TestCase):
         self.assertEqual(scores["images_scored"], 0)
         self.assertEqual(scores["f1"], 0.0)
         self.assertEqual(scores["groups"], [])
+        self.assertEqual(scores["tags"], [])
+
+    def test_a_selection_ignores_every_other_prompt_tag_and_label(self):
+        images = [self.image("1girl, solo, anal", ["1girl", "anal", "outdoor"])]
+        scores = score_images(images, tags=["anal"])
+        # `1girl` is not a miss (not selected), `outdoor` is not an extra (not selected).
+        self.assertEqual((scores["tp"], scores["fp"], scores["fn"]), (1, 0, 0))
+        self.assertEqual(scores["recall"], 1.0)
+        self.assertEqual(scores["precision"], 1.0)
+        self.assertEqual(scores["tags"], ["anal"])
+        # The per-prompt group is narrowed the same way.
+        self.assertEqual(scores["groups"][0]["fn"], 0)
+        self.assertEqual(scores["groups"][0]["fp"], 0)
+
+    def test_a_selection_turns_a_miss_into_a_real_recall(self):
+        images = [self.image("1girl, anal", ["1girl"]), self.image("1girl, anal", ["anal"])]
+        unfiltered = score_images(images)
+        filtered = score_images(images, tags=["anal"])
+        # Without a selection the unasked-for `1girl` is a miss on the second image too.
+        self.assertEqual(unfiltered["recall"], 0.5)
+        self.assertEqual(filtered["recall"], 0.5)
+        self.assertEqual(filtered["fn"], 1)
+        self.assertEqual(filtered["tp"], 1)
+        self.assertEqual(filtered["fp"], 0)
+
+    def test_a_selection_a_prompt_does_not_ask_for_skips_the_image(self):
+        images = [
+            self.image("1girl, solo", ["1girl"]),
+            self.image("1girl, anal", ["anal"]),
+        ]
+        scores = score_images(images, tags=["anal"])
+        self.assertEqual(scores["images_skipped"], 1)
+        self.assertEqual(scores["images_scored"], 1)
+        self.assertEqual((scores["tp"], scores["fn"]), (1, 0))
+
+    def test_a_selection_of_nothing_is_the_unfiltered_board(self):
+        images = [self.image("1girl, solo", ["1girl", "outdoor"])]
+        self.assertEqual(score_images(images, tags=[]), score_images(images))
+        self.assertEqual(score_images(images, tags=None), score_images(images))
+
+    def test_a_selection_accepts_one_comma_string_and_normalizes_it(self):
+        images = [self.image("(anal:1.2), 1girl", ["anal", "1girl"])]
+        scores = score_images(images, tags=" (Anal:1.2) , 1girl ")
+        self.assertEqual(scores["tags"], ["1girl", "anal"])
+        self.assertEqual((scores["tp"], scores["fn"]), (2, 0))
+
+
+class PromptTagCountsTest(unittest.TestCase):
+    """`prompt_tag_counts`: the frequency list the evaluation panel's picker draws."""
+
+    def test_counts_sets_and_orders_by_frequency(self):
+        sets = [
+            {"prompt": "1girl, solo, anal"},
+            {"prompt": "1girl, anal"},
+            {"prompt": "1girl, (anal:1.2)"},
+            {"prompt": "outdoors"},
+        ]
+        rows = prompt_tag_counts(sets)
+        self.assertEqual([row["tag"] for row in rows], ["1girl", "anal", "outdoors", "solo"])
+        self.assertEqual(rows[0]["count"], 3)
+        self.assertEqual(rows[0]["frequency"], 75.0)
+        self.assertEqual(rows[-1]["count"], 1)
+        self.assertEqual(rows[-1]["frequency"], 25.0)
+
+    def test_a_tag_counted_once_per_set_however_often_it_is_repeated(self):
+        rows = prompt_tag_counts([{"prompt": "anal, anal, anal"}])
+        self.assertEqual(rows, [{"tag": "anal", "count": 1, "frequency": 100.0}])
+
+    def test_no_sets_asks_nothing(self):
+        self.assertEqual(prompt_tag_counts([]), [])
+
+    def test_a_sample_set_object_is_read_like_a_recorded_one(self):
+        rows = prompt_tag_counts([SampleSet(prompt="anal", repeat=2)])
+        self.assertEqual(rows, [{"tag": "anal", "count": 1, "frequency": 100.0}])
+
+    def test_missing_prompts_are_skipped(self):
+        self.assertEqual(prompt_tag_counts([{}, {"prompt": ""}]), [])
 
 
 class ImageRefRecordTest(unittest.TestCase):

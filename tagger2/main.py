@@ -21,6 +21,12 @@ assumed:
 
 The model is used exactly as published: fp32, its own per-category calibrated thresholds, and
 `min_threshold` for the caller's floor.
+
+`--only-tags` is the other half of the job: a *partial* pass that adds the named tags to the
+captions already on disk and leaves every other tag alone, so an existing sidecar is corrected
+rather than replaced. It hands the caller's threshold to the pipeline as `threshold` (an override,
+not a floor under the calibrated values) because a tag the caller asked for must not be hidden by a
+calibrated value that sits above the request.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -197,6 +204,50 @@ def tag_text(tag: str) -> str:
     return tag.replace("_", " ")
 
 
+# `(anal:1.2)` after its parentheses are stripped: a weight, not part of the tag. Mirrors
+# `evaluation.normalize_tag` (trainer/evaluation.py), which compares the same two sides in the
+# Dashboard's checkpoint evaluation; kept local because this script is standalone.
+_WEIGHT_SUFFIX = re.compile(r"^(.*?)\s*:\s*[-+]?(?:\d+\.?\d*|\.\d+)$")
+_WRAPPERS = {"(": ")", "[": "]", "{": "}"}
+
+
+def normalize_tag(raw: str) -> str:
+    """One caption tag in the comparable form: no wrapper, no weight, spaces, lowercase.
+
+    `(anal:1.2)` -> `anal`, `[long hair]` -> `long hair`, `Masking_Tape_(Medium)` ->
+    `masking tape (medium)`. Partial tagging uses it both to look a requested tag up in the model's
+    own output (whose keys carry underscores) and to tell whether a caption already holds it.
+    """
+    text = str(raw or "").strip()
+    while len(text) >= 2 and _WRAPPERS.get(text[0]) == text[-1]:
+        text = text[1:-1].strip()
+    match = _WEIGHT_SUFFIX.match(text)
+    if match:
+        text = match.group(1).strip()
+    return " ".join(text.replace("_", " ").lower().split())
+
+
+def requested_only_tags(raw: Iterable[str] | str | None) -> list[str]:
+    """The `--only-tags` list as clean, ordered, de-duplicated display tags.
+
+    Accepts a comma string (which is what the CLI hands over) or a sequence; the first spelling of
+    a tag wins, and the comparison key is `normalize_tag`, so `anal` and `Anal` are one request.
+    """
+    if raw is None:
+        return []
+    items = raw.split(",") if isinstance(raw, str) else list(raw)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        key = normalize_tag(text)
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(text)
+    return ordered
+
+
 def tag_list(result: dict[str, Any], categories: Sequence[str]) -> list[str]:
     """The tags of the selected categories as a list, most confident first."""
     scored: list[tuple[str, float]] = []
@@ -225,11 +276,24 @@ def _run_batch(
     *,
     batch_size: int,
     threshold: float,
+    override_threshold: bool = False,
 ) -> list[dict[str, Any]]:
+    """One forward pass over `paths`.
+
+    `override_threshold` hands the model's own `threshold` instead of `min_threshold`: the pipeline
+    treats the first as the whole floor (the calibrated per-category value is replaced) and the
+    second as a floor *under* it. Partial tagging needs the first, because the tags it looks for are
+    the user's choice and must not be hidden by a calibrated value that sits above the request.
+    """
     from PIL import Image
 
     images = [Image.open(path).convert("RGB") for path in paths]
-    outputs = tagger(images, batch_size=max(1, int(batch_size)), min_threshold=float(threshold))
+    kwargs: dict[str, Any] = {"batch_size": max(1, int(batch_size))}
+    if override_threshold:
+        kwargs["threshold"] = float(threshold)
+    else:
+        kwargs["min_threshold"] = float(threshold)
+    outputs = tagger(images, **kwargs)
     if not isinstance(outputs, list):
         outputs = [outputs]
     return [_results_of(item) for item in outputs]
@@ -292,6 +356,8 @@ def _tag_all(
     batch_size: int,
     threshold: float,
     on_entry: Optional[Callable[[dict[str, Any]], None]] = None,
+    override_threshold: bool = False,
+    build: Optional[Callable[[Path, dict[str, Any]], dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Tag every path, in order, one entry each: tags or the error that stopped it.
 
@@ -299,6 +365,10 @@ def _tag_all(
     file costs one entry instead of the whole chunk. Progress goes to stderr as it goes. `on_entry`
     sees every entry right after it is built — a caller that persists them one by one (an
     evaluation's job record) can also raise from it to end the pass at that image.
+
+    `build` turns one image's raw result into its entry; the default is the whole caption of
+    `categories`, and partial tagging hands over a matcher that picks the requested tags out of the
+    model's own output instead.
     """
     entries: list[dict[str, Any]] = []
     current_batch = max(1, int(batch_size))
@@ -311,7 +381,8 @@ def _tag_all(
             _log(f"[Error] {entry['name']}: {entry['error']}")
         else:
             processed += 1
-            _log(f"[{processed}/{len(paths)}] {entry['name']} -> {len(entry['tags'])} tags")
+            detail = entry.get("summary") or f"{len(entry.get('tags') or [])} tags"
+            _log(f"[{processed}/{len(paths)}] {entry['name']} -> {detail}")
         if on_entry is not None:
             on_entry(entry)
 
@@ -319,7 +390,13 @@ def _tag_all(
     while index < len(paths):
         chunk = list(paths[index : index + current_batch])
         try:
-            results = _run_batch(tagger, chunk, batch_size=current_batch, threshold=float(threshold))
+            results = _run_batch(
+                tagger,
+                chunk,
+                batch_size=current_batch,
+                threshold=float(threshold),
+                override_threshold=override_threshold,
+            )
         except Exception as exc:  # noqa: BLE001 - one bad image must not end the folder
             if len(chunk) > 1:
                 _log(f"Batch of {len(chunk)} failed ({exc}); retrying one at a time")
@@ -337,7 +414,13 @@ def _tag_all(
             continue
 
         for path, result in zip(chunk, results):
-            record(_tagged_entry(path, result, categories))
+            if build is None:
+                record(_tagged_entry(path, result, categories))
+            else:
+                try:
+                    record(build(path, result))
+                except Exception as exc:  # noqa: BLE001 - same rule as a caption that would not build
+                    record(_failed_entry(path, exc))
         index += len(chunk)
     return entries
 
@@ -455,6 +538,7 @@ def tag_directory(
     return {
         "directory": str(directory),
         "engine": ENGINE,
+        "mode": "full",
         "categories": chosen,
         "threshold": float(threshold),
         "thresholds": floors,
@@ -465,6 +549,169 @@ def tag_directory(
         "failed": len(errors),
         "seconds": round(elapsed, 3),
         "errors": errors[:32],
+    }
+
+
+def matched_only_tags(result: dict[str, Any], wanted: Sequence[tuple[str, str]]) -> list[str]:
+    """The requested tags the model reported for one image, in the request's own order.
+
+    `wanted` is `(normalized key, the form a caption uses)` pairs. The lookup runs over every
+    category the model returned, which is why partial tagging ignores `--categories`: a tag is
+    found wherever the model files it.
+    """
+    observed: set[str] = set()
+    for value in (result or {}).values():
+        if isinstance(value, dict):
+            observed.update(normalize_tag(tag) for tag in value)
+    return [display for key, display in wanted if key in observed]
+
+
+def _read_caption(path: Path) -> str:
+    """An existing sidecar caption, or `""` when there is none (or it cannot be read)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def merge_only_tags(text: str, matched: Sequence[str]) -> tuple[str, list[str]]:
+    """Add the tags `text` does not already hold; answer `(new caption, added tags)`.
+
+    Add-only on purpose: a caption the tagger or the user already wrote keeps every tag it has, its
+    spelling included, and only gains the requested ones the model found. A tag already there in any
+    comparable form (underscored, weighted, bracketed) counts as present, so it is never duplicated.
+    """
+    existing = str(text or "")
+    present = {key for key in (normalize_tag(part) for part in existing.split(",")) if key}
+    added = [tag for tag in matched if normalize_tag(tag) not in present]
+    if not added:
+        return existing, []
+    base = existing.strip()
+    joined = ", ".join(added)
+    return (f"{base}, {joined}" if base else joined), added
+
+
+def add_only_tags(
+    directory: str | Path,
+    tags: Iterable[str] | str,
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+    tagger: Any = None,
+    settings: dict[str, Any] | None = None,
+    model: str = MODEL_ID,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    cpu: bool = False,
+    download: bool = False,
+) -> dict[str, Any]:
+    """Add the requested tags to the captions that show them, and change nothing else.
+
+    The counterweight to `tag_directory`: instead of overwriting a sidecar with the whole caption,
+    this looks only for the tags the caller named, and appends the ones the model reports above
+    `threshold`. `threshold` is authoritative here — it goes to the pipeline as `threshold`, so the
+    model's own calibrated per-category value does not sit underneath it and hide a tag the caller
+    asked for. Every other tag in an existing caption is left exactly as it is, and a caption that
+    would gain nothing is not written at all (so an image with no sidecar and no match gains none).
+
+    Returns the same summary shape `tag_directory` does, with `mode: "partial"`, `only_tags`,
+    `added` (how many images gained each requested tag) and `unmatched` (tags that matched no image
+    at all — usually a spelling the model does not use).
+    """
+    directory = Path(directory).expanduser().resolve()
+    if not directory.is_dir():
+        raise NotADirectoryError(f"not a directory: {directory}")
+
+    wanted_list = requested_only_tags(tags)
+    if not wanted_list:
+        raise ValueError("only_tags must name at least one tag")
+    _check_threshold(threshold)
+
+    current_batch = max(1, int(batch_size))
+    tagger, _chosen, _floors, device = _resolve_tagger(
+        tagger,
+        settings,
+        model=model,
+        categories=DEFAULT_CATEGORIES,
+        threshold=threshold,
+        cpu=cpu,
+        download=download,
+    )
+    wanted = [(normalize_tag(tag), tag_text(tag)) for tag in wanted_list]
+    image_files = list_images(directory)
+    errors: list[dict[str, str]] = []
+    added_by_tag: dict[str, int] = {display: 0 for _key, display in wanted}
+    changed = 0
+    start = time.time()
+    _log(
+        f"Partial tagging {len(image_files)} images in {directory} "
+        f"(threshold={float(threshold):g}, batch={current_batch}, device={device}, "
+        f"tags={', '.join(display for _key, display in wanted)})"
+    )
+
+    def build(path: Path, result: dict[str, Any]) -> dict[str, Any]:
+        matched = matched_only_tags(result, wanted)
+        return {
+            "path": str(path),
+            "name": path.name,
+            "tags": matched,
+            "error": None,
+            "summary": ", ".join(matched) or "no requested tag",
+        }
+
+    for entry in _tag_all(
+        tagger,
+        image_files,
+        categories=DEFAULT_CATEGORIES,
+        batch_size=current_batch,
+        threshold=threshold,
+        override_threshold=True,
+        build=build,
+    ):
+        if entry["error"]:
+            errors.append({"file": entry["name"], "error": entry["error"]})
+            continue
+        matched = [str(tag) for tag in entry.get("tags") or []]
+        if not matched:
+            continue
+        caption_path = Path(entry["path"]).with_suffix(".txt")
+        try:
+            text, added = merge_only_tags(_read_caption(caption_path), matched)
+            if added:
+                caption_path.write_text(text, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - an unwritable sidecar is this file's failure
+            errors.append({"file": entry["name"], "error": str(exc)})
+            _log(f"[Error] {entry['name']}: {exc}")
+            continue
+        if added:
+            changed += 1
+            for tag in added:
+                added_by_tag[tag] = added_by_tag.get(tag, 0) + 1
+
+    elapsed = time.time() - start
+    _log(
+        f"Completed {changed}/{len(image_files)} in {elapsed:.2f}s ({len(errors)} failed); "
+        f"added {', '.join(f'{tag} x{count}' for tag, count in added_by_tag.items() if count) or 'nothing'}"
+    )
+    unmatched = [tag for tag, count in added_by_tag.items() if count == 0]
+    for tag in unmatched:
+        _log(f"[Warn] no image showed '{tag}'; it was not added anywhere")
+
+    return {
+        "directory": str(directory),
+        "engine": ENGINE,
+        "mode": "partial",
+        "only_tags": [display for _key, display in wanted],
+        "categories": [],
+        "threshold": float(threshold),
+        "thresholds": {},
+        "provider": f"{ENGINE} on {device}",
+        "device": device,
+        "total": len(image_files),
+        "processed": changed,
+        "failed": len(errors),
+        "seconds": round(elapsed, 3),
+        "errors": errors[:32],
+        "added": {tag: count for tag, count in added_by_tag.items() if count},
+        "unmatched": unmatched,
     }
 
 
@@ -553,6 +800,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"Comma-separated categories to write (default {','.join(DEFAULT_CATEGORIES)})",
     )
     parser.add_argument(
+        "--only-tags",
+        default="",
+        help=(
+            "Partial tagging: a comma-separated list of tags to add to the captions that show them, "
+            "leaving every other tag alone. The categories are ignored (the tag is looked up in all "
+            "of them) and --threshold becomes the absolute confidence floor for these tags."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print a single JSON result object to stdout (progress stays on stderr).",
@@ -588,6 +844,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False), flush=True)
         return 0
     if args.directory is None:
+        if args.only_tags:
+            # Partial tagging is a batch mode only: the interactive loop has no third question.
+            _log("error: --only-tags requires a directory argument")
+            return 2
         if args.json:
             _log("error: --json requires a directory argument")
             return 2
@@ -598,15 +858,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return 0
     try:
-        result = tag_directory(
-            args.directory,
-            threshold=args.threshold,
-            categories=args.categories,
-            model=args.model,
-            batch_size=args.batch_size,
-            cpu=args.cpu,
-            download=download,
-        )
+        if args.only_tags:
+            result = add_only_tags(
+                args.directory,
+                args.only_tags,
+                threshold=args.threshold,
+                model=args.model,
+                batch_size=args.batch_size,
+                cpu=args.cpu,
+                download=download,
+            )
+        else:
+            result = tag_directory(
+                args.directory,
+                threshold=args.threshold,
+                categories=args.categories,
+                model=args.model,
+                batch_size=args.batch_size,
+                cpu=args.cpu,
+                download=download,
+            )
     except Exception as exc:  # noqa: BLE001
         if args.json:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), flush=True)

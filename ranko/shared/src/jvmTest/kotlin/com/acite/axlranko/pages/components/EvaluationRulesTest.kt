@@ -138,22 +138,36 @@ class EvaluationRulesTest {
     }
 
     @Test
-    fun theScoreLineReadsLikeTheCards() {
+    fun recallIsTheHeadlineAndTheRestIsSecondary() {
+        assertEquals("Recall 0.62", evaluationRecallHeadline(scores()))
+        assertEquals("P 0.77 · F1 0.69 · 21 images", evaluationSecondaryLabel(scores()))
         assertEquals(
-            "F1 0.69 · P 0.77 · R 0.62 · 21 images",
-            evaluationScoreLabel(scores()),
+            "Recall 1.00",
+            evaluationRecallHeadline(scores(f1 = 1f, precision = 1f, recall = 1f, scored = 1)),
         )
-        assertEquals("F1 1.00 · P 1.00 · R 1.00 · 1 image", evaluationScoreLabel(scores(f1 = 1f, precision = 1f, recall = 1f, scored = 1)))
         assertEquals(
-            "union F1 0.75 · P 0.79 · R 0.71",
+            "P 1.00 · F1 1.00 · 1 image",
+            evaluationSecondaryLabel(scores(f1 = 1f, precision = 1f, recall = 1f, scored = 1)),
+        )
+        assertEquals(
+            "union recall 0.71 · P 0.79",
             evaluationUnionLabel(scores(unionF1 = 0.75f).copy(unionPrecision = 0.789f, unionRecall = 0.714f)),
         )
     }
 
     @Test
+    fun theScoredTagsAreSpeltOutOnlyWhenThereIsASelection() {
+        assertNull(evaluationTagsLabel(scores()))
+        assertNull(evaluationTagsLabel(null))
+        assertEquals("scored tags: anal, pussy", evaluationTagsLabel(scores().copy(tags = listOf("anal", "pussy"))))
+    }
+
+    @Test
     fun anEvaluationThatScoredNothingHasNoScoreLine() {
-        assertNull(evaluationScoreLabel(null))
-        assertNull(evaluationScoreLabel(scores(scored = 0)))
+        assertNull(evaluationRecallHeadline(null))
+        assertNull(evaluationRecallHeadline(scores(scored = 0)))
+        assertNull(evaluationSecondaryLabel(null))
+        assertNull(evaluationSecondaryLabel(scores(scored = 0)))
         assertNull(evaluationUnionLabel(null))
         assertNull(evaluationUnionLabel(scores(scored = 0)))
     }
@@ -167,20 +181,20 @@ class EvaluationRulesTest {
     }
 
     @Test
-    fun theDetailsFollowTheRecord() {
+    fun theDetailsFollowTheRecordWithRecallInFront() {
         val rows = evaluationDetailRows(
             scores(
                 groups = listOf(
-                    EvaluationGroup(prompt = "1girl, solo", images = 4, f1 = 0.7f, unionF1 = 0.8f),
-                    EvaluationGroup(prompt = "a castle", images = 1, f1 = 0f, unionF1 = 0f),
+                    EvaluationGroup(prompt = "1girl, solo", images = 4, recall = 0.7f, unionRecall = 0.8f),
+                    EvaluationGroup(prompt = "a castle", images = 1, recall = 0f, unionRecall = 0f),
                 )
             )
         )
         assertEquals(2, rows.size)
         assertEquals("1girl, solo", rows[0].prompt)
         assertEquals(4, rows[0].images)
-        assertEquals(0.7f, rows[0].perImageF1)
-        assertEquals(0.8f, rows[0].unionF1)
+        assertEquals(0.7f, rows[0].perImageRecall)
+        assertEquals(0.8f, rows[0].unionRecall)
         assertEquals("a castle", rows[1].prompt)
         assertTrue(evaluationDetailRows(null).isEmpty())
     }

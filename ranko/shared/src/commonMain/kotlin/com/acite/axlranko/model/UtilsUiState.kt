@@ -183,9 +183,16 @@ data class UtilsUiState(
     val tagThreshold: String = "0.35",
     /** The tagger categories the next run writes; empty means the tagger's own default. */
     val tagCategories: Set<String> = setOf(DEFAULT_TAGGER_CATEGORY),
+    /** Partial tagging: add only [partialTags] to the captions that show them, changing nothing else. */
+    val partialTagging: Boolean = false,
+    val partialTags: String = "",
     /** What the tagger declares about itself, read once per session (`tagger_info`). */
     val taggerInfo: TaggerInfoResult? = null,
     val taggerInfoLoaded: Boolean = false,
+    /** The training folders' image counts, for the Training section's step estimate. */
+    val datasetCounts: DatasetCountsResponse? = null,
+    val datasetCountsLoading: Boolean = false,
+    val datasetCountsError: String? = null,
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val configPath: String = "",

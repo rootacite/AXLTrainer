@@ -8,7 +8,8 @@ unit-testable and api.py can prepare an evaluation before spawning anything:
   the generations already recorded for it, each with the prompt it was rendered from.
 * `expansion_plan` — what to render so the count reaches `depth`, as a whole number of the config's
   sample passes, listing only the `(set, repeat)` slots that are missing.
-* `score_images` — two scoreboards over tagged images: per image (micro) and per prompt (union).
+* `score_images` — two scoreboards over tagged images: per image (micro) and per prompt (union),
+  optionally narrowed to the tags the caller picked out of `prompt_tag_counts`.
 """
 
 from __future__ import annotations
@@ -110,6 +111,47 @@ def prompt_tags(prompt: Any) -> list[str]:
         seen.add(tag)
         tags.append(tag)
     return tags
+
+
+def selected_tags(tags: Any) -> set[str]:
+    """The tags an evaluation was asked to score, normalized; empty means "every tag asked for".
+
+    A string is accepted as a comma-separated list, the way the CLI and a hand-written request
+    write it. Anything that normalizes to nothing is dropped.
+    """
+    if tags is None:
+        return set()
+    items = str(tags).split(",") if isinstance(tags, str) else list(tags)
+    chosen: set[str] = set()
+    for item in items:
+        tag = normalize_tag(item)
+        if tag:
+            chosen.add(tag)
+    return chosen
+
+
+def prompt_tag_counts(sets: Sequence[Any]) -> list[dict[str, Any]]:
+    """How often each tag appears across the config's prompt sets, most frequent first.
+
+    The picker the Dashboard shows before an evaluation is started: one row per tag that appears in
+    at least one set's prompt, with `count` = the number of sets asking for it and `frequency` =
+    `count / sets × 100` (`0.0` when there are no sets). Ties break on the tag name, so the list is
+    stable between polls.
+    """
+    total = len(sets)
+    counts: Counter[str] = Counter()
+    for entry in sets:
+        for tag in set(prompt_tags(sample_set_prompt(entry))):
+            counts[tag] += 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        {
+            "tag": tag,
+            "count": int(count),
+            "frequency": round(count / total * 100, 4) if total else 0.0,
+        }
+        for tag, count in ordered
+    ]
 
 
 def sample_name_parts(name: str) -> Optional[tuple[int, int, int]]:
@@ -413,7 +455,7 @@ def _top_tags(counter: Counter[str]) -> list[dict[str, Any]]:
     return [{"tag": tag, "count": int(count)} for tag, count in ordered[:TOP_TAGS]]
 
 
-def score_images(images: Sequence[ImageRef]) -> dict[str, Any]:
+def score_images(images: Sequence[ImageRef], tags: Any = None) -> dict[str, Any]:
     """Both scoreboards over already-tagged images.
 
     The prompt an image was rendered from is the ground truth of what was asked for, and the
@@ -426,9 +468,17 @@ def score_images(images: Sequence[ImageRef]) -> dict[str, Any]:
     * **per prompt (union)** — the images of one prompt are pooled: a requested tag counts as found
       when any of them shows it, and an unrequested tag that appeared in any of them is one FP.
 
-    An image whose tagging failed, or whose prompt asks for no tag at all, is counted
-    (`images_failed` / `images_skipped`) but contributes nothing.
+    `tags` narrows the whole comparison to the tags the caller cares about: a prompt tag outside that
+    set is not a miss and a label outside it is not an extra, so the scores answer "how well are
+    *these* tags drawn" instead of "how well does the caption match the prompt". Empty or None scores
+    every tag the prompt asks for, which is the behaviour without a selection.
+
+    An image whose tagging failed, or whose prompt asks for no tag at all (none of the selected ones,
+    when a selection is given), is counted (`images_failed` / `images_skipped`) but contributes
+    nothing.
     """
+    chosen = selected_tags(tags) if tags else set()
+    restricted = bool(chosen)
     tp = fp = fn = 0
     union_tp = union_fp = union_fn = 0
     false_positives: Counter[str] = Counter()
@@ -438,6 +488,8 @@ def score_images(images: Sequence[ImageRef]) -> dict[str, Any]:
 
     for image in images:
         expected = set(prompt_tags(image.prompt))
+        if restricted:
+            expected &= chosen
         if image.error:
             failed += 1
             continue
@@ -446,6 +498,8 @@ def score_images(images: Sequence[ImageRef]) -> dict[str, Any]:
             continue
         observed = {normalize_tag(tag) for tag in image.tags}
         observed.discard("")
+        if restricted:
+            observed &= chosen
         scored += 1
 
         hits = expected & observed
@@ -524,6 +578,7 @@ def score_images(images: Sequence[ImageRef]) -> dict[str, Any]:
         "images_scored": int(scored),
         "images_failed": int(failed),
         "images_skipped": int(skipped),
+        "tags": sorted(chosen),
         "groups": group_rows,
         "top_false_positives": _top_tags(false_positives),
         "top_false_negatives": _top_tags(false_negatives),

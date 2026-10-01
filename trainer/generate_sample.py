@@ -839,6 +839,9 @@ def run_evaluation(spec: dict, generated: Path) -> None:
     raw_threshold = spec.get("threshold")
     threshold = float(raw_threshold) if raw_threshold is not None else 0.35
     categories = [str(item) for item in spec.get("categories") or ["general"]]
+    # The tags the scoring is narrowed to; empty means every tag a prompt asks for.
+    tags = evaluation.selected_tags(spec.get("tags"))
+    chosen_tags = sorted(tags)
 
     genjob.update_job(
         generated,
@@ -850,7 +853,8 @@ def run_evaluation(spec: dict, generated: Path) -> None:
     )
     _log(
         f"checkpoint={checkpoint} depth={spec.get('depth')} images={len(images)} "
-        f"to render={len(slots)} threshold={threshold:g} categories={','.join(categories)}"
+        f"to render={len(slots)} threshold={threshold:g} categories={','.join(categories)} "
+        f"tags={','.join(chosen_tags) if chosen_tags else 'all'}"
     )
 
     if slots:
@@ -929,7 +933,7 @@ def run_evaluation(spec: dict, generated: Path) -> None:
     )
 
     genjob.update_job(generated, job_id, phase=genjob.PHASE_SCORING)
-    scores = evaluation.score_images(images)
+    scores = evaluation.score_images(images, tags=chosen_tags or None)
     genjob.update_job(
         generated,
         job_id,

@@ -3,13 +3,16 @@ package com.acite.axlranko.data
 import com.acite.axlranko.model.CheckpointPinsResponse
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
+import com.acite.axlranko.model.DatasetCountsResponse
 import com.acite.axlranko.model.DatasetTagResult
+import com.acite.axlranko.model.EvaluationPromptsResponse
 import com.acite.axlranko.model.GenerateSampleResponse
 import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TaggerInfoResult
+import com.acite.axlranko.model.TrainDataCountRequest
 import com.acite.axlranko.model.TrainStatus
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
@@ -259,6 +262,7 @@ class TrainerIpcClient {
         threshold: Float,
         batchSize: Int? = null,
         categories: List<String>? = null,
+        onlyTags: List<String>? = null,
     ): DatasetTagResult {
         val result = call(
             "dataset_tag",
@@ -269,6 +273,9 @@ class TrainerIpcClient {
                 categories?.takeIf { it.isNotEmpty() }?.let { selected ->
                     putJsonArray("categories") { selected.forEach { add(JsonPrimitive(it)) } }
                 }
+                onlyTags?.takeIf { it.isNotEmpty() }?.let { selected ->
+                    putJsonArray("only_tags") { selected.forEach { add(JsonPrimitive(it)) } }
+                }
             },
         )
         return json.decodeFromJsonElement(result)
@@ -276,6 +283,32 @@ class TrainerIpcClient {
 
     suspend fun taggerInfo(): TaggerInfoResult {
         val result = call("tagger_info", JsonObject(emptyMap()))
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * How many images each training folder holds, for the Training section's step estimate.
+     * [dirs] is the form's own `[[environment.train_data]]` state, so the answer follows unsaved
+     * edits; an empty list leaves the folders to the helper (the config's own entries).
+     */
+    suspend fun datasetCounts(dirs: List<TrainDataCountRequest> = emptyList()): DatasetCountsResponse {
+        val result = call(
+            "dataset_counts",
+            buildJsonObject {
+                if (dirs.isNotEmpty()) {
+                    putJsonArray("dirs") {
+                        dirs.forEach { entry ->
+                            add(
+                                buildJsonObject {
+                                    put("path", entry.path)
+                                    put("repeat", entry.repeat)
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+        )
         return json.decodeFromJsonElement(result)
     }
 
@@ -389,6 +422,7 @@ class TrainerIpcClient {
         depth: Int,
         threshold: Float,
         categories: List<String> = emptyList(),
+        tags: List<String> = emptyList(),
         name: String? = null,
         runId: String? = null,
     ): GenerateSampleResponse {
@@ -401,6 +435,30 @@ class TrainerIpcClient {
                 if (categories.isNotEmpty()) {
                     putJsonArray("categories") { categories.forEach { add(JsonPrimitive(it)) } }
                 }
+                if (tags.isNotEmpty()) {
+                    putJsonArray("tags") { tags.forEach { add(JsonPrimitive(it)) } }
+                }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * The prompts — and the tags they ask for, with their frequency — an evaluation of this
+     * checkpoint would score against, resolved from the config that checkpoint's run saved. Read
+     * only and never failing: `tags` comes back empty with `reason` set when the config is unusable.
+     */
+    suspend fun evaluationPrompts(
+        checkpoint: String,
+        name: String? = null,
+        runId: String? = null,
+    ): EvaluationPromptsResponse {
+        val result = call(
+            "evaluation_prompts",
+            buildJsonObject {
+                put("checkpoint", checkpoint)
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

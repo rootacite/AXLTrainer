@@ -66,6 +66,10 @@ import com.acite.axlranko.model.TaggerMark
 import com.acite.axlranko.model.TRAIN_DATA_ERROR_PREFIX
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.model.DatasetCountsResponse
+import com.acite.axlranko.model.estimatedSteps
+import com.acite.axlranko.model.formatStepCount
+import com.acite.axlranko.model.parseOnlyTags
 import com.acite.axlranko.model.taggerThresholdMarks
 import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
@@ -442,7 +446,7 @@ private fun SectionFields(
             ConfigSection.Environment -> EnvironmentFields(uiState, viewModel)
             ConfigSection.Rocm -> RocmFields(uiState, viewModel)
             ConfigSection.ModelSpec -> ModelSpecFields(form, errors, viewModel)
-            ConfigSection.Training -> TrainingFields(form, errors, viewModel)
+            ConfigSection.Training -> TrainingFields(uiState, form, errors, viewModel)
             ConfigSection.Network -> NetworkFields(form, errors, viewModel)
             ConfigSection.Bucketing -> BucketingFields(form, errors, viewModel)
             ConfigSection.Optimization -> OptimizationFields(form, errors, viewModel)
@@ -795,8 +799,15 @@ private fun AutoTagCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Runs the Pixai tagger v1 (PyTorch, ROCm GPU) over the selected dataset folder " +
-                    "and overwrites every sidecar .txt. Images and Statistics reload when it finishes.",
+                text = if (uiState.partialTagging) {
+                    "Runs the Pixai tagger v1 (PyTorch, ROCm GPU) over the selected dataset folder and " +
+                        "adds the tags you name to the captions that show them. No other tag is touched, " +
+                        "and a caption that would gain nothing is not rewritten. Images and Statistics " +
+                        "reload when it finishes."
+                } else {
+                    "Runs the Pixai tagger v1 (PyTorch, ROCm GPU) over the selected dataset folder " +
+                        "and overwrites every sidecar .txt. Images and Statistics reload when it finishes."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = rankoColors.textDim
             )
@@ -805,29 +816,47 @@ private fun AutoTagCard(
                 selected = selectedDir,
                 onSelect = viewModel::selectDatasetDir,
             )
-            Text(
-                text = "Categories",
-                style = MaterialTheme.typography.labelLarge
-            )
             val taggerInfo = uiState.taggerInfo
             val taggerCategories = taggerInfo?.categories.orEmpty().filter { it.key.isNotBlank() }
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                maxItemsInEachRow = 3,
-            ) {
-                if (taggerCategories.isEmpty()) {
-                    // Without the model's own list the card still has to be runnable: the tagger
-                    // writes `general` by itself, and the reason line below says why that is all.
-                    CapsuleChoice(text = DEFAULT_TAGGER_CATEGORY, selected = true, onClick = {})
-                } else {
-                    taggerCategories.forEach { category ->
-                        CapsuleChoice(
-                            text = category.key,
-                            selected = category.key in uiState.tagCategories,
-                            onClick = { viewModel.toggleTagCategory(category.key) },
-                        )
+            ConfigSwitch(
+                label = "Partial tagging",
+                checked = uiState.partialTagging,
+                onChecked = viewModel::updatePartialTagging,
+                description = "Add only the tags below to the captions that show them; every other " +
+                    "tag already written stays exactly as it is.",
+            )
+            if (uiState.partialTagging) {
+                ConfigTextField(
+                    label = "Tags to add",
+                    value = uiState.partialTags,
+                    error = null,
+                    supporting = "Comma-separated · a tag may hold spaces (hair between eyes) · looked " +
+                        "up in every category, so the categories below do not take part",
+                    onValueChange = viewModel::updatePartialTags,
+                )
+            } else {
+                Text(
+                    text = "Categories",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    maxItemsInEachRow = 3,
+                ) {
+                    if (taggerCategories.isEmpty()) {
+                        // Without the model's own list the card still has to be runnable: the tagger
+                        // writes `general` by itself, and the reason line below says why that is all.
+                        CapsuleChoice(text = DEFAULT_TAGGER_CATEGORY, selected = true, onClick = {})
+                    } else {
+                        taggerCategories.forEach { category ->
+                            CapsuleChoice(
+                                text = category.key,
+                                selected = category.key in uiState.tagCategories,
+                                onClick = { viewModel.toggleTagCategory(category.key) },
+                            )
+                        }
                     }
                 }
             }
@@ -848,10 +877,12 @@ private fun AutoTagCard(
                 steps = 19,
                 enabled = !uiState.isTagging
             )
-            TaggerCalibrationRow(
-                marks = taggerThresholdMarks(uiState.tagCategories, taggerCategories, thresholdValue),
-                slider = thresholdValue,
-            )
+            if (!uiState.partialTagging) {
+                TaggerCalibrationRow(
+                    marks = taggerThresholdMarks(uiState.tagCategories, taggerCategories, thresholdValue),
+                    slider = thresholdValue,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -861,14 +892,26 @@ private fun AutoTagCard(
                     label = "Threshold",
                     value = uiState.tagThreshold,
                     error = null,
-                    supporting = "0.0 – 1.0  (default 0.35)",
+                    supporting = if (uiState.partialTagging) {
+                        "0.0 – 1.0  ·  the absolute floor for the tags above (the model's calibrated " +
+                            "values do not sit underneath it)"
+                    } else {
+                        "0.0 – 1.0  (default 0.35)"
+                    },
                     onValueChange = viewModel::updateTagThreshold,
                     modifier = Modifier.weight(1f)
                 )
+                val tagLabel = when {
+                    uiState.isTagging && uiState.partialTagging -> "Adding…"
+                    uiState.isTagging -> "Tagging…"
+                    uiState.partialTagging -> "Add tags"
+                    else -> "Tag dataset"
+                }
+                val tagsReady = !uiState.partialTagging || parseOnlyTags(uiState.partialTags).isNotEmpty()
                 CapsuleButton(
-                    text = if (uiState.isTagging) "Tagging…" else "Tag dataset",
+                    text = tagLabel,
                     onClick = { viewModel.runAutoTag() },
-                    enabled = !uiState.isTagging && !uiState.isSaving && targetPath.isNotBlank(),
+                    enabled = !uiState.isTagging && !uiState.isSaving && targetPath.isNotBlank() && tagsReady,
                     compact = true,
                     emphasized = true,
                 ) {
@@ -881,10 +924,7 @@ private fun AutoTagCard(
                         Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (uiState.isTagging) "Tagging…" else "Tag dataset",
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Text(tagLabel, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -975,6 +1015,7 @@ private fun ModelSpecFields(
 
 @Composable
 private fun TrainingFields(
+    uiState: UtilsUiState,
     form: TrainingConfigForm,
     errors: Map<String, String>,
     viewModel: UtilsScreenViewModel
@@ -1003,6 +1044,7 @@ private fun TrainingFields(
             modifier = Modifier.weight(1f)
         )
     }
+    StepEstimateLine(uiState = uiState, form = form, onRetry = { viewModel.refreshStepEstimate() })
     Text("Mixed precision", style = MaterialTheme.typography.labelLarge, color = rankoColors.text)
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1976,6 +2018,79 @@ private fun effectiveBatchHint(form: TrainingConfigForm): String? {
     val ga = form.gradientAccumulationSteps.toIntOrNull() ?: return null
     return "Effective batch = ${bs * ga}"
 }
+
+/**
+ * What the run in this form would take, under the Epochs / Batch / GA row it follows.
+ *
+ * The image counts come from the helper once per folder edit; the step arithmetic is local, so the
+ * line follows a keystroke in Epochs or Batch immediately. It is an estimate by construction: the
+ * trainer turns `ceil(samples / batch)` into one `ceil` per aspect-ratio bucket, which can only add
+ * batches (`enable_bucket = false` makes the two agree exactly).
+ */
+@Composable
+internal fun StepEstimateLine(
+    uiState: UtilsUiState,
+    form: TrainingConfigForm,
+    onRetry: () -> Unit,
+) {
+    val colors = rankoColors
+    val counts = uiState.datasetCounts
+    val estimate = counts?.let {
+        estimatedSteps(it.samples, form.trainBatchSize, form.gradientAccumulationSteps, form.epoch)
+    }
+    val missing = counts?.let { missingFoldersLabel(it) }
+    val problem: String? = when {
+        uiState.datasetCountsError != null -> "Could not count the dataset: ${uiState.datasetCountsError}"
+        missing != null -> missing
+        counts != null && counts.samples <= 0 -> "The training folders hold no images."
+        counts != null && estimate == null ->
+            "Fill in Epochs, Batch size and Grad accumulation to see the estimated steps."
+        counts == null && !uiState.datasetCountsLoading -> "The dataset's image count is not known yet."
+        else -> null
+    }
+    if (problem != null || counts == null) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = problem ?: "Counting the dataset…",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (problem != null && (uiState.datasetCountsError != null || missing != null)) {
+                    colors.qualityRed
+                } else {
+                    colors.textDim
+                },
+                modifier = Modifier.weight(1f),
+            )
+            CapsuleButton(text = "Recount", onClick = onRetry, compact = true)
+        }
+        return
+    }
+    val ready = estimate ?: return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = "≈ ${formatStepCount(ready.totalSteps)} steps · " +
+                "${formatStepCount(ready.stepsPerEpoch)}/epoch × ${form.epoch.trim()} epochs · " +
+                "${formatStepCount(ready.samplesPerEpoch)} samples/epoch",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.text,
+        )
+        Text(
+            text = "${formatStepCount(counts.images)} images × repeats · estimated: bucketing rounds " +
+                "each bucket up, so the run's own count can be higher",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.textDim,
+        )
+    }
+}
+
+/** The first folder the count could not read, or null when every folder answered. */
+private fun missingFoldersLabel(counts: DatasetCountsResponse): String? =
+    counts.entries.firstOrNull { it.error != null }
+        ?.let { "Cannot count ${it.path.ifBlank { "a training folder" }}: ${it.error}" }
 
 private fun loraScaleHint(form: TrainingConfigForm): String? {
     val dim = form.networkDim.toIntOrNull() ?: return null

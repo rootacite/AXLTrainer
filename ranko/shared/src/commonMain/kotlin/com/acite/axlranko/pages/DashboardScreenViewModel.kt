@@ -24,6 +24,7 @@ import com.acite.axlranko.pages.components.checkpointsForRun
 import com.acite.axlranko.pages.components.displayedRun
 import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
+import com.acite.axlranko.pages.components.generatedSampleItems
 import com.acite.axlranko.pages.components.nearestCheckpoint
 import com.acite.axlranko.pages.components.sectionImages
 import com.acite.axlranko.util.PathPicker
@@ -116,7 +117,10 @@ class DashboardScreenViewModel(
                 chartPick = null,
                 previewIndex = null,
                 evaluationTarget = null,
-                evaluationDetailsFor = null,
+                evaluationDetailsOpen = false,
+                evaluationTagSelection = emptySet(),
+                evaluationPrompts = null,
+                evaluationPromptsError = null,
                 evaluationError = null,
                 samples = emptyMap(),
                 checkpointPins = emptyList(),
@@ -400,23 +404,103 @@ class DashboardScreenViewModel(
     }
 
     /**
-     * Opens the evaluation dialog for one checkpoint. [existingImages] is what the card already
+     * Opens the evaluation panel for one checkpoint. [existingImages] is what the card already
      * shows, and it prefills the depth field — the depth is a floor, so that is the "score what is
-     * there" default. The tagger's own categories are fetched once, for the dialog's pills; a
-     * helper that cannot answer leaves the field on the tagger's own default.
+     * there" default. [jobId] is the evaluation the panel should report on (a running one, or the
+     * newest finished one), which is what lets the same panel show a result that was produced in an
+     * earlier session. The tagger's own categories and the run's prompt tags are fetched once per
+     * checkpoint; a helper that cannot answer leaves the pass on its own defaults.
      */
-    fun openEvaluation(checkpoint: CheckpointItem, existingImages: Int) {
+    fun openEvaluation(checkpoint: CheckpointItem, existingImages: Int, jobId: String? = null) {
         _uiState.update {
             it.copy(
-                evaluationTarget = EvaluationTarget(checkpoint, existingImages),
+                evaluationTarget = EvaluationTarget(checkpoint, existingImages, jobId),
                 evaluationError = null,
+                evaluationDetailsOpen = false,
+                evaluationTagSelection = emptySet(),
+                evaluationPrompts = null,
+                evaluationPromptsError = null,
             )
         }
-        if (_uiState.value.taggerInfo != null) return
-        viewModelScope.launch {
-            val info = runCatching { withContext(IoDispatcher) { ipc.taggerInfo() } }.getOrNull()
-            _uiState.update { state -> state.copy(taggerInfo = info) }
+        if (_uiState.value.taggerInfo == null) {
+            viewModelScope.launch {
+                val info = runCatching { withContext(IoDispatcher) { ipc.taggerInfo() } }.getOrNull()
+                _uiState.update { state -> state.copy(taggerInfo = info) }
+            }
         }
+        loadEvaluationPrompts(checkpoint)
+    }
+
+    /** Reopens the panel on one of a card's evaluation jobs (the card's `Evaluation` entry point). */
+    fun showEvaluation(jobId: String) {
+        val job = _uiState.value.generatedJobs.firstOrNull { it.id == jobId } ?: return
+        val checkpoint = checkpointForEvaluation(job) ?: return
+        openEvaluation(checkpoint, generatedSampleItems(job).size, jobId)
+    }
+
+    /**
+     * The checkpoint a job names, as a card: the real one when it is still listed, else a stand-in
+     * built from the job — a Reset can remove the weights while the evaluation's images and scores
+     * stay on their `samples only` row, and its panel must still open.
+     */
+    private fun checkpointForEvaluation(job: GeneratedSampleJob): CheckpointItem? {
+        val state = _uiState.value
+        state.checkpoints.firstOrNull { it.path == job.checkpoint }?.let { return it }
+        if (job.checkpoint.isBlank()) return null
+        val parts = job.checkpoint.trimEnd('/').split('/')
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId) ?: state.selectedRun
+        return CheckpointItem(
+            path = job.checkpoint,
+            dir = if (parts.size >= 2) parts[parts.size - 2] else "",
+            filename = parts.lastOrNull().orEmpty(),
+            step = job.step,
+            outputName = shown?.outputName.orEmpty(),
+        )
+    }
+
+    private fun loadEvaluationPrompts(checkpoint: CheckpointItem) {
+        val state = _uiState.value
+        if (state.evaluationPrompts?.checkpoint == checkpoint.path) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(evaluationPromptsLoading = true) }
+            try {
+                val selected = _uiState.value.selectedRun
+                val prompts = withContext(IoDispatcher) {
+                    ipc.evaluationPrompts(
+                        checkpoint = checkpoint.path,
+                        name = selected?.outputName,
+                        runId = selected?.runId ?: _uiState.value.runId,
+                    )
+                }
+                _uiState.update {
+                    it.copy(evaluationPrompts = prompts, evaluationPromptsLoading = false)
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        evaluationPromptsLoading = false,
+                        evaluationPromptsError = e.message ?: e.toString(),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Adds or removes one prompt tag from the scorable selection. */
+    fun toggleEvaluationTag(tag: String) {
+        _uiState.update { state ->
+            val next = if (tag in state.evaluationTagSelection) {
+                state.evaluationTagSelection - tag
+            } else {
+                state.evaluationTagSelection + tag
+            }
+            state.copy(evaluationTagSelection = next)
+        }
+    }
+
+    /** Back to "score every tag the prompts ask for". */
+    fun clearEvaluationTags() {
+        _uiState.update { it.copy(evaluationTagSelection = emptySet()) }
     }
 
     fun dismissEvaluation() {
@@ -426,8 +510,14 @@ class DashboardScreenViewModel(
     /**
      * Starts the evaluation: api.py tops the checkpoint's sample images up to the depth, tags every
      * one of them and scores the tags against each prompt, in one detached job this page follows.
+     * [tags] narrows the scoring to those prompt tags; empty scores every tag the prompt asks for.
      */
-    fun startEvaluation(depth: Int, threshold: Float, categories: List<String>) {
+    fun startEvaluation(
+        depth: Int,
+        threshold: Float,
+        categories: List<String>,
+        tags: List<String> = emptyList(),
+    ) {
         val target = _uiState.value.evaluationTarget ?: return
         if (_uiState.value.isStartingEvaluation != null) return
         _uiState.update { it.copy(isStartingEvaluation = target.checkpoint.path, evaluationError = null) }
@@ -440,6 +530,7 @@ class DashboardScreenViewModel(
                         depth = depth,
                         threshold = threshold,
                         categories = categories,
+                        tags = tags,
                         name = selected?.outputName,
                         runId = selected?.runId ?: _uiState.value.runId,
                     )
@@ -449,7 +540,10 @@ class DashboardScreenViewModel(
                     state.copy(
                         sessionJobIds = sessionJobIds.toSet(),
                         isStartingEvaluation = null,
-                        evaluationTarget = null,
+                        // The panel stays open on the pass it just started, so its progress and
+                        // result are visible where they were asked for.
+                        evaluationTarget = state.evaluationTarget?.copy(jobId = response.job.id),
+                        evaluationDetailsOpen = false,
                         generatedJobs = (listOf(response.job) + state.generatedJobs).distinctBy { it.id },
                     )
                 }
@@ -465,11 +559,9 @@ class DashboardScreenViewModel(
         }
     }
 
-    /** Expands or collapses one card's evaluation details block. */
-    fun toggleEvaluationDetails(id: String) {
-        _uiState.update { state ->
-            state.copy(evaluationDetailsFor = if (state.evaluationDetailsFor == id) null else id)
-        }
+    /** Expands or collapses the panel's per-prompt details block. */
+    fun toggleEvaluationDetails() {
+        _uiState.update { state -> state.copy(evaluationDetailsOpen = !state.evaluationDetailsOpen) }
     }
 
     /** Ask the running generation (the batch one included) to stop; its images so far stay. */

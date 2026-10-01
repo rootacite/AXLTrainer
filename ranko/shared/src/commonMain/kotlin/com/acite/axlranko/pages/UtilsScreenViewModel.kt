@@ -14,11 +14,14 @@ import com.acite.axlranko.model.AppearanceSettings
 import com.acite.axlranko.model.BackgroundStyle
 import com.acite.axlranko.model.CheckpointItem
 import com.acite.axlranko.model.ConfigSection
+import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.SAMPLE_SET_ERROR_PREFIX
 import com.acite.axlranko.model.SampleSetForm
+import com.acite.axlranko.model.TrainDataCountRequest
 import com.acite.axlranko.model.TrainDataDirForm
 import com.acite.axlranko.model.TrainingConfigForm
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.model.parseOnlyTags
 import com.acite.axlranko.data.showsHelperEndpointSettings
 import com.acite.axlranko.data.wallpaperImagesSupported
 import com.acite.axlranko.pickClientWallpaper
@@ -27,7 +30,10 @@ import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metrox.viewmodel.ViewModelKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +54,9 @@ class UtilsScreenViewModel(
 
     private val _uiState = MutableStateFlow(UtilsUiState())
     val uiState: StateFlow<UtilsUiState> = _uiState.asStateFlow()
+
+    /** The in-flight `dataset_counts` call; a new folder edit cancels the one it supersedes. */
+    private var estimateJob: Job? = null
 
     init {
         _uiState.update {
@@ -198,6 +207,8 @@ class UtilsScreenViewModel(
                             statusMessage = statusMessage
                         )
                     }
+                    // The file may name other folders than the ones that were counted.
+                    invalidateStepEstimate()
                 } catch (e: Exception) {
                     _uiState.update {
                         it.copy(
@@ -211,7 +222,9 @@ class UtilsScreenViewModel(
     }
 
     fun resetForm() {
+        var foldersChanged = false
         _uiState.update { state ->
+            foldersChanged = state.savedForm.trainDataDirs != state.form.trainDataDirs
             state.copy(
                 form = state.savedForm,
                 fieldErrors = emptyMap(),
@@ -219,11 +232,67 @@ class UtilsScreenViewModel(
                 statusMessage = null
             )
         }
+        if (foldersChanged) {
+            _uiState.update { it.copy(datasetCounts = null, datasetCountsError = null) }
+            refreshStepEstimate(debounceMillis = ESTIMATE_DEBOUNCE_MILLIS)
+        }
     }
 
     fun selectSection(section: ConfigSection) {
         _uiState.update { it.copy(selectedSection = section) }
         if (section == ConfigSection.Profiles) refreshProfiles()
+        // The Training section shows the step estimate, which needs the folders' image counts once.
+        if (section == ConfigSection.Training && _uiState.value.datasetCounts == null) refreshStepEstimate()
+    }
+
+    /**
+     * The folder list may have changed under the estimate (a config reload, a reset to the saved
+     * form): drop the counts and re-read them when the line is on screen.
+     */
+    private fun invalidateStepEstimate() {
+        _uiState.update { it.copy(datasetCounts = null, datasetCountsError = null) }
+        if (_uiState.value.selectedSection == ConfigSection.Training) refreshStepEstimate()
+    }
+
+    /**
+     * How many steps the form's own values would take, as an estimate.
+     *
+     * The image counts come from the helper (`dataset_counts`, one directory walk), and everything
+     * after that is local arithmetic — so editing epoch / batch / GA needs no round trip, while a
+     * change to the folders themselves re-counts after [debounceMillis] of quiet.
+     */
+    fun refreshStepEstimate(debounceMillis: Long = 0L) {
+        val dirs = _uiState.value.form.trainDataDirs.map { entry ->
+            TrainDataCountRequest(
+                path = entry.path.trim(),
+                repeat = entry.repeat.trim().toIntOrNull() ?: 1,
+            )
+        }
+        estimateJob?.cancel()
+        estimateJob = viewModelScope.launch {
+            // Counted as in flight before the quiet period, so the line says so while it waits.
+            _uiState.update { it.copy(datasetCountsLoading = true) }
+            if (debounceMillis > 0) delay(debounceMillis)
+            try {
+                val counts = withContext(IoDispatcher) { ipc.datasetCounts(dirs) }
+                _uiState.update {
+                    it.copy(
+                        datasetCounts = counts,
+                        datasetCountsLoading = false,
+                        datasetCountsError = null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        datasetCountsLoading = false,
+                        datasetCountsError = e.message ?: "Failed to count the dataset",
+                    )
+                }
+            }
+        }
     }
 
     fun selectSampleSet(index: Int) {
@@ -282,14 +351,21 @@ class UtilsScreenViewModel(
     }
 
     fun updateForm(transform: TrainingConfigForm.() -> TrainingConfigForm) {
+        var foldersChanged = false
         _uiState.update { state ->
             val newForm = state.form.transform()
+            foldersChanged = newForm.trainDataDirs != state.form.trainDataDirs
             state.copy(
                 form = newForm,
                 fieldErrors = emptyMap(),
                 errorMessage = null,
                 statusMessage = null
             )
+        }
+        // Only the folder list feeds the count; epoch / batch / GA are read from the form as it is.
+        if (foldersChanged) {
+            _uiState.update { it.copy(datasetCounts = null, datasetCountsError = null) }
+            refreshStepEstimate(debounceMillis = ESTIMATE_DEBOUNCE_MILLIS)
         }
     }
 
@@ -364,6 +440,14 @@ class UtilsScreenViewModel(
         _uiState.update { it.copy(tagThreshold = value, errorMessage = null) }
     }
 
+    fun updatePartialTagging(enabled: Boolean) {
+        _uiState.update { it.copy(partialTagging = enabled, errorMessage = null) }
+    }
+
+    fun updatePartialTags(value: String) {
+        _uiState.update { it.copy(partialTags = value, errorMessage = null) }
+    }
+
     /** Category switches: the last selected one cannot be switched off (a caption with none is a no-op). */
     fun toggleTagCategory(key: String) {
         _uiState.update { state ->
@@ -406,20 +490,37 @@ class UtilsScreenViewModel(
             _uiState.update { it.copy(errorMessage = "Tag confidence must be a number between 0.0 and 1.0") }
             return
         }
-        val categories = state.tagCategories.toList()
+        val partial = state.partialTagging
+        val onlyTags = if (partial) parseOnlyTags(state.partialTags) else emptyList()
+        if (partial && onlyTags.isEmpty()) {
+            _uiState.update { it.copy(errorMessage = "Partial tagging needs at least one tag") }
+            return
+        }
+        // Partial tagging looks a tag up in every category, so the selection does not take part.
+        val categories = if (partial) emptyList() else state.tagCategories.toList()
 
         viewModelScope.launch {
             _uiState.update {
-                it.copy(isTagging = true, errorMessage = null, statusMessage = "Tagging dataset…")
+                it.copy(
+                    isTagging = true,
+                    errorMessage = null,
+                    statusMessage = if (partial) "Adding tags…" else "Tagging dataset…",
+                )
             }
             try {
                 val result = withContext(IoDispatcher) {
-                    ipc.datasetTag(directory, threshold, categories = categories)
+                    ipc.datasetTag(
+                        directory,
+                        threshold,
+                        categories = categories,
+                        onlyTags = onlyTags,
+                    )
                 }
                 val engine = listOf(result.engine, result.device).filter { it.isNotBlank() }.joinToString(", ")
                 val provider = engine.ifBlank { result.provider.ifBlank { "tagger" } }
-                val summary =
+                val summary = if (partial) partialSummary(result) else {
                     "Tagged ${result.processed}/${result.total} images in ${result.seconds}s ($provider)"
+                }
                 val suffix = if (result.failed > 0) " · ${result.failed} failed" else ""
                 _uiState.update {
                     it.copy(
@@ -439,6 +540,18 @@ class UtilsScreenViewModel(
                 }
             }
         }
+    }
+
+    /** `Added anal ×12 · pussy ×3 · 15/100 images`, plus what never matched. */
+    private fun partialSummary(result: DatasetTagResult): String {
+        val added = result.added.entries.joinToString(" · ") { (tag, count) -> "$tag ×$count" }
+        val head = if (added.isEmpty()) {
+            "Added nothing"
+        } else {
+            "Added $added"
+        }
+        val unmatched = if (result.unmatched.isEmpty()) "" else " · never matched: ${result.unmatched.joinToString(", ")}"
+        return "$head · ${result.processed}/${result.total} images$unmatched"
     }
 
     fun saveConfig() {
@@ -702,3 +815,6 @@ class UtilsScreenViewModel(
         }
     }
 }
+
+/** Quiet time before a folder edit re-counts the dataset; typing a path should not walk it per key. */
+private const val ESTIMATE_DEBOUNCE_MILLIS = 400L

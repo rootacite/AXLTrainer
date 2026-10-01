@@ -106,8 +106,9 @@ import com.acite.axlranko.pages.components.ChartPickMarkers
 import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
-import com.acite.axlranko.pages.components.EvaluationCardBlock
 import com.acite.axlranko.pages.components.EvaluationDialog
+import com.acite.axlranko.pages.components.PAGE_PANEL_MARGIN
+import com.acite.axlranko.pages.components.evaluationRecallHeadline
 import com.acite.axlranko.pages.components.HardwareSection
 import com.acite.axlranko.pages.components.ImagePreviewOverlay
 import com.acite.axlranko.pages.components.MetricCard
@@ -336,16 +337,17 @@ fun DashboardScreen(
                                 busyElsewhere = uiState.isGeneratingCheckpoint != null &&
                                     uiState.isGeneratingCheckpoint != row.checkpoint?.path,
                                 startingEvaluation = uiState.isStartingEvaluation == row.checkpoint?.path,
-                                evaluationDetailsFor = uiState.evaluationDetailsFor,
                                 pinning = uiState.pinningPath == row.checkpoint?.path,
                                 pinEnabled = uiState.pinningPath == null,
                                 exportInFlightPath = uiState.exportInFlightPath,
                                 exportResult = uiState.exportResult,
                                 onOpen = { viewModel.openPreview(it) },
                                 onGenerate = viewModel::generateCheckpointSamples,
-                                onEvaluate = { checkpoint, images -> viewModel.openEvaluation(checkpoint, images) },
+                                onEvaluate = { checkpoint, images, jobId ->
+                                    viewModel.openEvaluation(checkpoint, images, jobId)
+                                },
                                 onCancelEvaluation = { id -> viewModel.cancelGeneration(id) },
-                                onToggleEvaluationDetails = viewModel::toggleEvaluationDetails,
+                                onOpenEvaluation = viewModel::showEvaluation,
                                 onTogglePin = viewModel::toggleCheckpointPin,
                                 onSaveAs = viewModel::saveCheckpointAs,
                             )
@@ -382,16 +384,32 @@ fun DashboardScreen(
         }
 
         uiState.evaluationTarget?.let { target ->
-            EvaluationDialog(
-                target = target,
-                tagger = uiState.taggerInfo,
-                starting = uiState.isStartingEvaluation == target.checkpoint.path,
-                error = uiState.evaluationError,
-                onStart = { depth, threshold, categories ->
-                    viewModel.startEvaluation(depth, threshold, categories)
-                },
-                onDismiss = viewModel::dismissEvaluation,
-            )
+            // The panel is a dialog, so it cannot inherit this page's constraints: it is told how
+            // much room the window has and scrolls inside that (`PAGE_PANEL_MARGIN` on each side).
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                EvaluationDialog(
+                    target = target,
+                    job = uiState.generatedJobs.firstOrNull { it.id == target.jobId },
+                    tagger = uiState.taggerInfo,
+                    prompts = uiState.evaluationPrompts,
+                    promptsLoading = uiState.evaluationPromptsLoading,
+                    promptsError = uiState.evaluationPromptsError,
+                    selectedTags = uiState.evaluationTagSelection,
+                    starting = uiState.isStartingEvaluation == target.checkpoint.path,
+                    error = uiState.evaluationError,
+                    detailsOpen = uiState.evaluationDetailsOpen,
+                    maxWidth = maxWidth - PAGE_PANEL_MARGIN,
+                    maxHeight = maxHeight - PAGE_PANEL_MARGIN,
+                    onToggleTag = viewModel::toggleEvaluationTag,
+                    onClearTags = viewModel::clearEvaluationTags,
+                    onToggleDetails = viewModel::toggleEvaluationDetails,
+                    onCancel = { id -> viewModel.cancelGeneration(id) },
+                    onStart = { depth, threshold, categories, tags ->
+                        viewModel.startEvaluation(depth, threshold, categories, tags)
+                    },
+                    onDismiss = viewModel::dismissEvaluation,
+                )
+            }
         }
 
         uiState.chartPick?.let { pick ->
@@ -975,16 +993,16 @@ internal fun CheckpointRowCard(
     starting: Boolean,
     busyElsewhere: Boolean,
     startingEvaluation: Boolean,
-    evaluationDetailsFor: String?,
     pinning: Boolean,
     pinEnabled: Boolean,
     exportInFlightPath: String?,
     exportResult: CheckpointExport?,
     onOpen: (SampleItem) -> Unit,
     onGenerate: (CheckpointItem) -> Unit,
-    onEvaluate: (CheckpointItem, Int) -> Unit,
+    onEvaluate: (CheckpointItem, Int, String?) -> Unit,
     onCancelEvaluation: (String) -> Unit,
-    onToggleEvaluationDetails: (String) -> Unit,
+    /** Opens the evaluation panel on one job of this card. */
+    onOpenEvaluation: (String) -> Unit,
     onTogglePin: (CheckpointItem) -> Unit,
     onSaveAs: (CheckpointItem) -> Unit,
 ) {
@@ -1066,7 +1084,7 @@ internal fun CheckpointRowCard(
                     val evaluateLabel = if (startingEvaluation) "Starting…" else "Evaluate"
                     CapsuleButton(
                         text = evaluateLabel,
-                        onClick = { onEvaluate(checkpoint, slots.size) },
+                        onClick = { onEvaluate(checkpoint, slots.size, cardEvaluation(row)?.id) },
                         enabled = gpuFree && !busyElsewhere && !startingEvaluation,
                         compact = true,
                     ) {
@@ -1168,13 +1186,21 @@ internal fun CheckpointRowCard(
             }
 
             // A score is worth showing wherever its images are — the card, or a `samples only` row
-            // for a step whose weights a Reset removed.
+            // for a step whose weights a Reset removed. The card carries the entry point only: the
+            // result itself lives in the evaluation panel, where it stays readable.
             val evaluation = cardEvaluation(row)
             if (evaluation != null) {
-                EvaluationCardBlock(
-                    job = evaluation,
-                    detailsOpen = evaluationDetailsFor == evaluation.id,
-                    onToggleDetails = onToggleEvaluationDetails,
+                val entryLabel = when {
+                    evaluation.state == "running" -> "Evaluation · running…"
+                    evaluation.error != null -> "Evaluation · failed"
+                    evaluation.scores != null -> "Evaluation · " +
+                        (evaluationRecallHeadline(evaluation.scores) ?: "scored")
+                    else -> "Evaluation"
+                }
+                CapsuleButton(
+                    text = entryLabel,
+                    onClick = { onOpenEvaluation(evaluation.id) },
+                    compact = true,
                 )
             }
 

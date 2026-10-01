@@ -1498,6 +1498,57 @@ class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
 
     def test_dispatch_registered(self):
         self.assertIn("evaluate_checkpoint", api._HANDLERS)
+        self.assertIn("evaluation_prompts", api._HANDLERS)
+
+    def test_the_requested_tags_are_cleaned_and_recorded(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._evaluate(tags=[" (Anal:1.2) ", "1girl", "anal"])
+        self.assertEqual(self._stored()["tags"], ["1girl", "anal"])
+
+        self._evaluate()
+        self.assertEqual(self._stored()["tags"], [])
+
+        self._evaluate(tags="anal, pussy")
+        self.assertEqual(self._stored()["tags"], ["anal", "pussy"])
+
+    def test_a_bad_tags_payload_is_refused(self):
+        self._write_snapshot(("1girl", 9, 1))
+        with self.assertRaises(ValueError):
+            self._evaluate(tags={"anal": True})
+
+    def test_the_prompt_picker_reads_the_runs_own_config(self):
+        self._write_snapshot(("1girl, solo, anal", 9, 2), ("1girl, anal", 9, 1))
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(result["output_name"], "rein")
+        self.assertEqual(
+            result["config_source"], str((self.logs / self.RUN_ID / "config.toml").resolve())
+        )
+        self.assertEqual([entry["prompt"] for entry in result["sample_sets"]],
+                         ["1girl, solo, anal", "1girl, anal"])
+        self.assertEqual(
+            result["tags"],
+            [
+                {"tag": "1girl", "count": 2, "frequency": 100.0},
+                {"tag": "anal", "count": 2, "frequency": 100.0},
+                {"tag": "solo", "count": 1, "frequency": 50.0},
+            ],
+        )
+
+    def test_the_prompt_picker_never_fails_over_an_unusable_config(self):
+        # No snapshot and no hparams: the repo's `config.toml` is read instead, and whatever it
+        # holds is offered rather than an error.
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+        self.assertTrue(result["sample_sets"])
+        self.assertTrue(result["tags"])
+        self.assertEqual(result["reason"], "")
+
+    def test_the_prompt_picker_refuses_a_missing_checkpoint_and_writes_nothing(self):
+        with self.assertRaises(ValueError):
+            api.handle_evaluation_prompts({"checkpoint": ""})
+        with self.assertRaises(ValueError):
+            api.handle_evaluation_prompts({"checkpoint": str(self.out / "nope.safetensors")})
 
     def test_a_short_checkpoint_gets_a_plan_to_render(self):
         self._write_snapshot(("first prompt", 9, 1), ("second prompt", 9, 1))
@@ -1853,6 +1904,89 @@ class DatasetTagIpcTest(unittest.TestCase):
                 api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "batch_size": 0})
             with self.assertRaises(ValueError):
                 api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "batch_size": "many"})
+
+    def test_only_tags_is_cleaned_and_passed_through(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag(
+                    {"directory": raw, "threshold": 0.6, "only_tags": [" anal ", "pussy", "anal"]}
+                )
+            self.assertEqual(tagged.call_args.kwargs["only_tags"], ["anal", "pussy"])
+            self.assertEqual(tagged.call_args.args[1], 0.6)
+
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "only_tags": "anal, pussy"})
+            self.assertEqual(tagged.call_args.kwargs["only_tags"], ["anal", "pussy"])
+
+            with mock.patch.object(api, "run_tagger_process", return_value={}) as tagged:
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35})
+            self.assertIsNone(tagged.call_args.kwargs["only_tags"])
+
+    def test_a_bad_only_tags_payload_is_refused(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(ValueError):
+                api.handle_dataset_tag({"directory": raw, "threshold": 0.35, "only_tags": {"anal": True}})
+
+    def test_a_partial_pass_does_not_send_categories(self):
+        """The script looks a requested tag up in every category, so `--categories` stays out."""
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(api.subprocess, "run") as run:
+                run.return_value = mock.Mock(returncode=0, stdout='{"processed": 0}', stderr="")
+                api.run_tagger_process(raw, 0.35, categories="general", only_tags=["anal"])
+            argv = run.call_args.args[0]
+            self.assertIn("--only-tags", argv)
+            self.assertNotIn("--categories", argv)
+
+            with mock.patch.object(api.subprocess, "run") as run:
+                run.return_value = mock.Mock(returncode=0, stdout='{"processed": 0}', stderr="")
+                api.run_tagger_process(raw, 0.35, categories="general")
+            argv = run.call_args.args[0]
+            self.assertIn("--categories", argv)
+            self.assertNotIn("--only-tags", argv)
+
+
+class DatasetCountsIpcTest(unittest.TestCase):
+    """`dataset_counts`: the image counts the Training section's step estimate is built from."""
+
+    def test_registered(self):
+        self.assertIn("dataset_counts", api._HANDLERS)
+
+    def test_explicit_dirs_are_counted(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "1.png").write_bytes(b"x")
+            (root / "2.jpg").write_bytes(b"x")
+            result = api.dispatch(
+                "dataset_counts", {"dirs": [{"path": raw, "repeat": 3}]}
+            )
+        self.assertEqual(result["entries"][0]["images"], 2)
+        self.assertEqual(result["images"], 2)
+        self.assertEqual(result["samples"], 6)
+
+    def test_no_dirs_falls_back_to_the_configured_train_data(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "1.png").write_bytes(b"x")
+            with mock.patch.object(
+                api,
+                "_load_toml_config",
+                return_value={"train_data": [{"path": raw, "repeat": 2}]},
+            ):
+                result = api.handle_dataset_counts({})
+        self.assertEqual(result["entries"][0]["path"], raw)
+        self.assertEqual(result["samples"], 2)
+
+    def test_a_missing_folder_answers_with_its_reason(self):
+        with tempfile.TemporaryDirectory() as raw:
+            result = api.handle_dataset_counts({"dirs": [{"path": str(Path(raw) / "gone")}]})
+        self.assertEqual(result["entries"][0]["error"], "not a directory")
+        self.assertEqual(result["images"], 0)
+
+    def test_a_malformed_dirs_payload_is_refused(self):
+        with self.assertRaises(ValueError):
+            api.handle_dataset_counts({"dirs": "all of them"})
+        with self.assertRaises(ValueError):
+            api.handle_dataset_counts({"dirs": [["/tmp"]]})
 
 
 class TaggerInfoIpcTest(unittest.TestCase):

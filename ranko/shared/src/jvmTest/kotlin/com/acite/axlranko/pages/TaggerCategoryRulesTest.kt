@@ -3,6 +3,7 @@ package com.acite.axlranko.pages
 import com.acite.axlranko.model.DEFAULT_TAGGER_CATEGORY
 import com.acite.axlranko.model.TaggerCategoryInfo
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.model.parseOnlyTags
 import com.acite.axlranko.model.taggerThresholdMarks
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -57,5 +58,25 @@ class TaggerCategoryRulesTest {
     @Test
     fun anEmptySelectionDrawsNothing() {
         assertEquals(emptyList(), taggerThresholdMarks(emptySet(), CATEGORIES, 0.35f))
+    }
+
+    @Test
+    fun partialTaggingIsOffWithNoTagsByDefault() {
+        assertFalse(UtilsUiState().partialTagging)
+        assertEquals("", UtilsUiState().partialTags)
+    }
+
+    @Test
+    fun onlyTagsSplitsOnCommasSemicolonsAndLinesAndKeepsSpaces() {
+        assertEquals(
+            listOf("anal", "hair between eyes", "1girl"),
+            parseOnlyTags(" anal , hair between eyes;\n1girl \n"),
+        )
+        assertEquals(emptyList(), parseOnlyTags("   "))
+    }
+
+    @Test
+    fun onlyTagsFoldsDuplicatesAndKeepsTheFirstSpelling() {
+        assertEquals(listOf("Anal", "PUSSY"), parseOnlyTags("Anal, anal, PUSSY"))
     }
 }
