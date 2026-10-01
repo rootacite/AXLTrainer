@@ -221,160 +221,162 @@ fun DashboardScreen(
             .fillMaxSize()
             .onGloballyPositioned { dashboardOrigin = it.positionInRoot() },
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            DashboardHeader(uiState = uiState, viewModel = viewModel)
-            HorizontalDivider(color = rankoColors.stroke.copy(alpha = 0.55f))
-
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                val listState = rememberLazyListState()
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    item {
-                        DashboardSectionHeader("Training Control")
-                        Spacer(Modifier.height(4.dp))
-                        TrainControlCard(
-                            status = uiState.trainStatus,
-                            commandInFlight = uiState.commandInFlight,
-                            controlsEnabled = trainingControlsEnabled(uiState),
-                            pendingCommand = uiState.pendingCommand,
-                            settingsEnabled = liveSettingsEnabled(uiState),
-                            settingsInFlight = uiState.settingsInFlight,
-                            settingsError = uiState.settingsError,
-                            // With no live run the row describes what Start would use.
-                            configSaveEveryNSteps = uiState.config.int("save_every_n_steps"),
-                            configSamplingEnabled = uiState.config.flag("sampling_enabled"),
-                            onApplySettings = viewModel::applyTrainSettings,
-                            shownRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId),
-                            outputDir = uiState.config.string("output_dir"),
-                            loggingDir = uiState.config.string("logging_dir"),
-                            resumeFrom = uiState.config.string("resume_lora_path"),
-                            onStart = viewModel::startTraining,
-                            onPause = viewModel::pauseTraining,
-                            onResume = viewModel::resumeTraining,
-                            onStop = viewModel::stopTraining,
-                            onReset = viewModel::resetTraining,
-                        )
-                    }
-
-                    item {
-                        DashboardSectionHeader("Hardware")
-                        Spacer(Modifier.height(4.dp))
-                        HardwareSection(uiState)
-                    }
-
-                    item {
-                        PathRow(uiState.config, uiState.runId)
-                    }
-
-                    item {
-                        DashboardSectionHeader("Real-time Metrics")
-                        Spacer(Modifier.height(4.dp))
-                        MetricsSection(uiState)
-                    }
-
-                    item {
-                        DashboardSectionHeader("Training Charts")
-                        Spacer(Modifier.height(4.dp))
-                        ChartsSection(
-                            uiState = uiState,
-                            onPickStep = viewModel::pickCheckpointAt,
-                        )
-                    }
-
-                    item {
-                        DashboardSectionHeader("Checkpoints")
-                        Spacer(Modifier.height(4.dp))
-                    }
-
-                    val pinnedPaths = uiState.checkpointPins.map { it.path }.toSet()
-                    val checkpointCards = checkpointRows(
-                        checkpoints = uiState.checkpoints,
-                        samples = uiState.samples,
-                        jobs = uiState.generatedJobs,
-                        pinned = pinnedPaths,
+        Box(modifier = Modifier.fillMaxSize()) {
+            val listState = rememberLazyListState()
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                item {
+                    // The bar is the list's own first row: scrolling takes it away and brings it
+                    // back with everything else, and the list's scroll position is the only one
+                    // there is.
+                    DashboardHeader(uiState = uiState, viewModel = viewModel)
+                    HorizontalDivider(color = rankoColors.stroke.copy(alpha = 0.55f))
+                }
+                item {
+                    DashboardSectionHeader("Training Control")
+                    Spacer(Modifier.height(4.dp))
+                    TrainControlCard(
+                        status = uiState.trainStatus,
+                        commandInFlight = uiState.commandInFlight,
+                        controlsEnabled = trainingControlsEnabled(uiState),
+                        pendingCommand = uiState.pendingCommand,
+                        settingsEnabled = liveSettingsEnabled(uiState),
+                        settingsInFlight = uiState.settingsInFlight,
+                        settingsError = uiState.settingsError,
+                        // With no live run the row describes what Start would use.
+                        configSaveEveryNSteps = uiState.config.int("save_every_n_steps"),
+                        configSamplingEnabled = uiState.config.flag("sampling_enabled"),
+                        onApplySettings = viewModel::applyTrainSettings,
+                        shownRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId),
+                        outputDir = uiState.config.string("output_dir"),
+                        loggingDir = uiState.config.string("logging_dir"),
+                        resumeFrom = uiState.config.string("resume_lora_path"),
+                        onStart = viewModel::startTraining,
+                        onPause = viewModel::pauseTraining,
+                        onResume = viewModel::resumeTraining,
+                        onStop = viewModel::stopTraining,
+                        onReset = viewModel::resetTraining,
                     )
-                    // A generation of its own keeps the card busy, so the buttons follow both rules.
-                    val runningBatchJob = runningBatch(uiState.generatedJobs)
-                    val gpuFree = generationAllowed(uiState.trainStatus) && runningJob(uiState.generatedJobs) == null
-                    val showSetBadges = showsSampleSetBadges(uiState.samples)
-
-                    item {
-                        SampleRangeRow(
-                            rows = checkpointCards,
-                            batch = runningBatchJob,
-                            starting = uiState.isStartingBatch,
-                            canStart = gpuFree,
-                            note = uiState.batchError ?: uiState.generatedError,
-                            onSampleRange = viewModel::startSampleBatch,
-                            onCancel = { id -> viewModel.cancelGeneration(id) },
-                        )
-                    }
-
-                    if (checkpointCards.any { it.pinned }) {
-                        item { PinnedHintLine(uiState.checkpointPinsFile) }
-                    }
-                    uiState.pinsError?.let { message -> item { PinsErrorLine(message) } }
-
-                    if (checkpointCards.isEmpty()) {
-                        item { CheckpointsEmptyCard() }
-                    } else {
-                        // One lazy item per checkpoint: a finished run can hold dozens, and each
-                        // card asks for its own thumbnails. The pinned cards are the section's
-                        // prefix, so the divider between the two groups is one item too.
-                        val pinnedCards = checkpointCards.filter { it.pinned }
-                        val restCards = checkpointCards.filterNot { it.pinned }
-                        val card: @Composable (CheckpointRow) -> Unit = { row ->
-                            CheckpointRowCard(
-                                row = row,
-                                thumbSize = uiState.sampleThumbSize,
-                                showSetBadges = showSetBadges,
-                                newJobIds = uiState.sessionJobIds,
-                                gpuFree = gpuFree,
-                                starting = uiState.isGeneratingCheckpoint == row.checkpoint?.path,
-                                busyElsewhere = uiState.isGeneratingCheckpoint != null &&
-                                    uiState.isGeneratingCheckpoint != row.checkpoint?.path,
-                                startingEvaluation = uiState.isStartingEvaluation == row.checkpoint?.path,
-                                pinning = uiState.pinningPath == row.checkpoint?.path,
-                                pinEnabled = uiState.pinningPath == null,
-                                exportInFlightPath = uiState.exportInFlightPath,
-                                exportResult = uiState.exportResult,
-                                onOpen = { viewModel.openPreview(it) },
-                                onGenerate = viewModel::generateCheckpointSamples,
-                                onEvaluate = { checkpoint, images, jobId ->
-                                    viewModel.openEvaluation(checkpoint, images, jobId)
-                                },
-                                onCancelEvaluation = { id -> viewModel.cancelGeneration(id) },
-                                onOpenEvaluation = viewModel::showEvaluation,
-                                onTogglePin = viewModel::toggleCheckpointPin,
-                                onSaveAs = viewModel::saveCheckpointAs,
-                            )
-                        }
-                        items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
-                        if (pinnedCards.isNotEmpty() && restCards.isNotEmpty()) {
-                            item {
-                                CheckpointsDivider(
-                                    pinned = pinnedCards.size,
-                                    rest = restCards.size,
-                                )
-                            }
-                        }
-                        items(restCards, key = { checkpointRowKey(it) }) { row -> card(row) }
-                    }
-
-                    item { Spacer(Modifier.height(24.dp)) }
                 }
 
-                VerticalScrollbar(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .padding(vertical = 8.dp),
-                    adapter = rememberScrollbarAdapter(listState)
+                item {
+                    DashboardSectionHeader("Hardware")
+                    Spacer(Modifier.height(4.dp))
+                    HardwareSection(uiState)
+                }
+
+                item {
+                    PathRow(uiState.config, uiState.runId)
+                }
+
+                item {
+                    DashboardSectionHeader("Real-time Metrics")
+                    Spacer(Modifier.height(4.dp))
+                    MetricsSection(uiState)
+                }
+
+                item {
+                    DashboardSectionHeader("Training Charts")
+                    Spacer(Modifier.height(4.dp))
+                    ChartsSection(
+                        uiState = uiState,
+                        onPickStep = viewModel::pickCheckpointAt,
+                    )
+                }
+
+                item {
+                    DashboardSectionHeader("Checkpoints")
+                    Spacer(Modifier.height(4.dp))
+                }
+
+                val pinnedPaths = uiState.checkpointPins.map { it.path }.toSet()
+                val checkpointCards = checkpointRows(
+                    checkpoints = uiState.checkpoints,
+                    samples = uiState.samples,
+                    jobs = uiState.generatedJobs,
+                    pinned = pinnedPaths,
                 )
+                // A generation of its own keeps the card busy, so the buttons follow both rules.
+                val runningBatchJob = runningBatch(uiState.generatedJobs)
+                val gpuFree = generationAllowed(uiState.trainStatus) && runningJob(uiState.generatedJobs) == null
+                val showSetBadges = showsSampleSetBadges(uiState.samples)
+
+                item {
+                    SampleRangeRow(
+                        rows = checkpointCards,
+                        batch = runningBatchJob,
+                        starting = uiState.isStartingBatch,
+                        canStart = gpuFree,
+                        note = uiState.batchError ?: uiState.generatedError,
+                        onSampleRange = viewModel::startSampleBatch,
+                        onCancel = { id -> viewModel.cancelGeneration(id) },
+                    )
+                }
+
+                if (checkpointCards.any { it.pinned }) {
+                    item { PinnedHintLine(uiState.checkpointPinsFile) }
+                }
+                uiState.pinsError?.let { message -> item { PinsErrorLine(message) } }
+
+                if (checkpointCards.isEmpty()) {
+                    item { CheckpointsEmptyCard() }
+                } else {
+                    // One lazy item per checkpoint: a finished run can hold dozens, and each
+                    // card asks for its own thumbnails. The pinned cards are the section's
+                    // prefix, so the divider between the two groups is one item too.
+                    val pinnedCards = checkpointCards.filter { it.pinned }
+                    val restCards = checkpointCards.filterNot { it.pinned }
+                    val card: @Composable (CheckpointRow) -> Unit = { row ->
+                        CheckpointRowCard(
+                            row = row,
+                            thumbSize = uiState.sampleThumbSize,
+                            showSetBadges = showSetBadges,
+                            newJobIds = uiState.sessionJobIds,
+                            gpuFree = gpuFree,
+                            starting = uiState.isGeneratingCheckpoint == row.checkpoint?.path,
+                            busyElsewhere = uiState.isGeneratingCheckpoint != null &&
+                                uiState.isGeneratingCheckpoint != row.checkpoint?.path,
+                            startingEvaluation = uiState.isStartingEvaluation == row.checkpoint?.path,
+                            pinning = uiState.pinningPath == row.checkpoint?.path,
+                            pinEnabled = uiState.pinningPath == null,
+                            exportInFlightPath = uiState.exportInFlightPath,
+                            exportResult = uiState.exportResult,
+                            onOpen = { viewModel.openPreview(it) },
+                            onGenerate = viewModel::generateCheckpointSamples,
+                            onEvaluate = { checkpoint, images, jobId ->
+                                viewModel.openEvaluation(checkpoint, images, jobId)
+                            },
+                            onCancelEvaluation = { id -> viewModel.cancelGeneration(id) },
+                            onOpenEvaluation = viewModel::showEvaluation,
+                            onTogglePin = viewModel::toggleCheckpointPin,
+                            onSaveAs = viewModel::saveCheckpointAs,
+                        )
+                    }
+                    items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
+                    if (pinnedCards.isNotEmpty() && restCards.isNotEmpty()) {
+                        item {
+                            CheckpointsDivider(
+                                pinned = pinnedCards.size,
+                                rest = restCards.size,
+                            )
+                        }
+                    }
+                    items(restCards, key = { checkpointRowKey(it) }) { row -> card(row) }
+                }
+
+                item { Spacer(Modifier.height(24.dp)) }
             }
+
+            VerticalScrollbar(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(vertical = 8.dp),
+                adapter = rememberScrollbarAdapter(listState)
+            )
         }
 
         if (uiState.isLoading) {
@@ -461,9 +463,10 @@ private fun DashboardHeader(
     viewModel: DashboardScreenViewModel,
 ) {
     Column(
+        // The list the bar heads already carries the page's margins.
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
+            .padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
