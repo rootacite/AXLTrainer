@@ -23,7 +23,7 @@ import os
 import signal
 import sys
 import traceback
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -527,19 +527,19 @@ def _render_sets(
 def run_sample_sets(spec: dict, generated: Path) -> None:
     """Render every `[[validation.samples]]` set for this checkpoint.
 
-    The prompt sets, sizes, steps, CFG, seeds and repeats come from `config.toml` — the same
-    logic the trainer's own sample points use — while the model side (network type / dim /
-    alpha, `clip_skip`, `max_token_length`, base model) comes from the checkpoint's metadata,
-    through `_build_config`. Images go to `{name}_samples/generated/`, named
+    The prompt sets, sizes, steps, CFG, seeds and repeats are the ones api.py planned the job with
+    (`sample_sets`, resolved from the run's own saved config or the prompts the Dashboard edited
+    for it) — the same sets the trainer's own sample points use — while the model side (network
+    type / dim / alpha, `clip_skip`, `max_token_length`, base model) comes from the checkpoint's
+    metadata, through `_build_config`. A spec without recorded sets (a hand-written one) resolves
+    them from the run's config directory instead. Images go to `{name}_samples/generated/`, named
     `{job_id}_p{set}_{repeat}.png`; the run's own samples are never touched.
     """
     job_id = str(spec["id"])
     checkpoint = resolve_resume_path(spec["checkpoint"])
     metadata = read_lora_metadata(checkpoint)
-    cfg = _build_config(metadata, checkpoint)
-    sets = resolve_sample_sets(cfg)
-    if not sets:
-        raise RuntimeError("config.toml has no [[validation.samples]] sets to render")
+    cfg = _build_config(metadata, checkpoint, base_cfg=_record_config(spec))
+    sets = _record_sets(spec) or resolve_sample_sets(cfg)
     total_images = sum(sample_set.repeat for sample_set in sets)
 
     dtype = torch.float16 if cfg.mixed_precision == "fp16" else torch.bfloat16
@@ -611,6 +611,10 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _log(f"batch {batch_id}: {len(entries)} checkpoint(s) on {device}")
 
+    # Every checkpoint of a batch belongs to one run, so the run's own prompts (its saved config, or
+    # the sets the Dashboard edited for it) are resolved once for the whole range.
+    prompt_cfg = _record_config(spec)
+
     loaded_key: tuple | None = None
     pipe = None
     modules = None
@@ -660,10 +664,8 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                     checkpoint_index=index,
                 )
                 metadata = read_lora_metadata(checkpoint)
-                cfg = _build_config(metadata, checkpoint)
+                cfg = _build_config(metadata, checkpoint, base_cfg=prompt_cfg)
                 sets = resolve_sample_sets(cfg)
-                if not sets:
-                    raise RuntimeError("config.toml has no [[validation.samples]] sets to render")
 
                 job = genjob.new_job(
                     {"step": entry.get("step")},
@@ -672,7 +674,15 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                     checkpoint=str(checkpoint),
                     mode=genjob.MODE_SETS,
                     total_images=sum(sample_set.repeat for sample_set in sets),
-                    extra={"batch_id": batch_id, "batch_index": index, "batch_total": len(entries)},
+                    extra={
+                        "batch_id": batch_id,
+                        "batch_index": index,
+                        "batch_total": len(entries),
+                        # Recorded so this checkpoint's own spec says what it rendered with, and a
+                        # cancelled batch can be followed up from it (`sample_sets` is the plan).
+                        "sample_sets": [asdict(sample_set) for sample_set in sets],
+                        "config_log_dir": str(spec.get("config_log_dir") or ""),
+                    },
                 )
                 job_id = str(job["id"])
                 # Written before the render, so this checkpoint's card shows it is being done.

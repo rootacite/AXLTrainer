@@ -36,12 +36,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -51,6 +53,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -94,16 +97,20 @@ import androidx.compose.ui.unit.dp
 import com.acite.axlranko.ui.pointerIconHand
 import com.acite.axlranko.ui.pointerIconNwseResize
 import coil3.compose.AsyncImage
+import com.acite.axlranko.model.CLEAR_SAMPLES_CONFIRM_TITLE
 import com.acite.axlranko.model.ChartPickState
 import com.acite.axlranko.model.CheckpointExport
 import com.acite.axlranko.model.CheckpointItem
+import com.acite.axlranko.model.clearSamplesConfirmText
 import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.MetricPoint
+import com.acite.axlranko.model.SampleClearResult
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.ChartCard
 import com.acite.axlranko.pages.components.ChartPickMarkers
 import com.acite.axlranko.pages.components.CheckpointRow
+import com.acite.axlranko.pages.components.ClearedSamplesStatus
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
 import com.acite.axlranko.pages.components.EvaluationDialog
@@ -119,6 +126,8 @@ import com.acite.axlranko.pages.components.PANEL_MAX_WIDTH
 import com.acite.axlranko.pages.components.PANEL_MIN_HEIGHT
 import com.acite.axlranko.pages.components.PathChip
 import com.acite.axlranko.pages.components.RunSelector
+import com.acite.axlranko.pages.components.SamplePromptsEditorDialog
+import com.acite.axlranko.pages.components.SamplingPromptsSection
 import com.acite.axlranko.pages.components.SAMPLES_PER_ROW
 import com.acite.axlranko.pages.components.SAMPLE_SLOT_SPACING
 import com.acite.axlranko.pages.components.SAMPLE_THUMB_ASPECT
@@ -288,6 +297,22 @@ fun DashboardScreen(
                 }
 
                 item {
+                    DashboardSectionHeader("Sampling Prompts")
+                    Spacer(Modifier.height(4.dp))
+                    // Read once per run rather than on every poll: only an edit changes it.
+                    val promptRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId)
+                    LaunchedEffect(promptRun?.runId) { viewModel.loadSamplePrompts() }
+                    SamplingPromptsSection(
+                        prompts = uiState.samplePrompts,
+                        loading = uiState.samplePromptsLoading,
+                        error = uiState.samplePromptsError,
+                        saving = uiState.samplePromptsSaving,
+                        onEdit = viewModel::openSamplePromptsEditor,
+                        onReset = viewModel::resetSamplePrompts,
+                    )
+                }
+
+                item {
                     DashboardSectionHeader("Checkpoints")
                     Spacer(Modifier.height(4.dp))
                 }
@@ -344,6 +369,9 @@ fun DashboardScreen(
                             pinEnabled = uiState.pinningPath == null,
                             exportInFlightPath = uiState.exportInFlightPath,
                             exportResult = uiState.exportResult,
+                            clearingSamples = uiState.clearingSamplesPath != null,
+                            clearSamplesResult = uiState.clearSamplesResult
+                                ?.takeIf { it.path == row.checkpoint?.path },
                             onOpen = { viewModel.openPreview(it) },
                             onGenerate = viewModel::generateCheckpointSamples,
                             onEvaluate = { checkpoint, images, jobId ->
@@ -353,6 +381,7 @@ fun DashboardScreen(
                             onOpenEvaluation = viewModel::showEvaluation,
                             onTogglePin = viewModel::toggleCheckpointPin,
                             onSaveAs = viewModel::saveCheckpointAs,
+                            onClearSamples = viewModel::clearCheckpointSamples,
                         )
                     }
                     items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
@@ -383,6 +412,23 @@ fun DashboardScreen(
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter)
             )
+        }
+
+        if (uiState.samplePromptsEditorOpen) {
+            val prompts = uiState.samplePrompts
+            if (prompts != null && prompts.reason.isBlank() && prompts.sets.isNotEmpty()) {
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    SamplePromptsEditorDialog(
+                        prompts = prompts,
+                        saving = uiState.samplePromptsSaving,
+                        error = uiState.samplePromptsError,
+                        maxWidth = maxWidth - PAGE_PANEL_MARGIN,
+                        maxHeight = maxHeight - PAGE_PANEL_MARGIN,
+                        onSave = viewModel::saveSamplePrompts,
+                        onDismiss = viewModel::closeSamplePromptsEditor,
+                    )
+                }
+            }
         }
 
         uiState.evaluationTarget?.let { target ->
@@ -1000,6 +1046,10 @@ internal fun CheckpointRowCard(
     pinEnabled: Boolean,
     exportInFlightPath: String?,
     exportResult: CheckpointExport?,
+    /** True while any card's clear is on its way to the helper, so the others stay inert. */
+    clearingSamples: Boolean,
+    /** What the last clear removed for this checkpoint, or why it failed. */
+    clearSamplesResult: SampleClearResult?,
     onOpen: (SampleItem) -> Unit,
     onGenerate: (CheckpointItem) -> Unit,
     onEvaluate: (CheckpointItem, Int, String?) -> Unit,
@@ -1008,6 +1058,7 @@ internal fun CheckpointRowCard(
     onOpenEvaluation: (String) -> Unit,
     onTogglePin: (CheckpointItem) -> Unit,
     onSaveAs: (CheckpointItem) -> Unit,
+    onClearSamples: (CheckpointItem) -> Unit,
 ) {
     val colors = rankoColors
     val checkpoint = row.checkpoint
@@ -1016,6 +1067,7 @@ internal fun CheckpointRowCard(
     val thumbHeight = thumbWidth * SAMPLE_THUMB_ASPECT
     val saving = exportInFlightPath != null && exportInFlightPath == checkpoint?.path
     val saveResult = exportResult?.takeIf { it.path == checkpoint?.path }
+    var confirmClear by remember(checkpoint?.path) { mutableStateOf(false) }
 
     PorcelainCard(emphasized = row.pinned) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1112,6 +1164,19 @@ internal fun CheckpointRowCard(
                             contentDescription = pinLabel,
                             modifier = Modifier.size(14.dp),
                         )
+                    }
+                    // Removes this card's pictures and the records that produced them, so the
+                    // button asks first: an image cannot be rendered again, only drawn anew.
+                    val clearLabel = if (clearingSamples) "Clearing…" else "Clear samples"
+                    CapsuleButton(
+                        text = clearLabel,
+                        onClick = { confirmClear = true },
+                        enabled = slots.isNotEmpty() && !clearingSamples && !busyElsewhere && gpuFree,
+                        compact = true,
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(clearLabel, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -1210,6 +1275,9 @@ internal fun CheckpointRowCard(
             if (checkpoint != null) {
                 CheckpointExportStatus(inFlight = saving, result = saveResult)
             }
+            if (checkpoint != null) {
+                ClearedSamplesStatus(result = clearSamplesResult)
+            }
             if (checkpoint != null && slots.isEmpty() && !gpuFree) {
                 Text(
                     text = "Pause or stop the run to render this checkpoint's sample sets.",
@@ -1225,6 +1293,42 @@ internal fun CheckpointRowCard(
                 )
             }
         }
+    }
+
+    if (confirmClear && checkpoint != null) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text(CLEAR_SAMPLES_CONFIRM_TITLE) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        clearSamplesConfirmText(
+                            images = slots.size,
+                            jobs = row.generated.size,
+                            step = row.step,
+                        )
+                    )
+                    Text(
+                        text = checkpoint.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textDim,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClear = false
+                        onClearSamples(checkpoint)
+                    }
+                ) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

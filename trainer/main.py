@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 
 from config import (
     TrainConfig,
-    resolve_sample_sets,
+    active_sample_sets,
     resolve_train_data_entries,
     save_run_config,
     tracker_hparams,
@@ -78,8 +78,9 @@ def main() -> None:
     try:
         # Fail before the model load when a `[[validation.samples]]` entry is unusable or an
         # `[[environment.train_data]]` entry is malformed (the dataset resolves the latter again
-        # when it is built).
-        sample_sets = resolve_sample_sets(cfg)
+        # when it is built). The sets are the ones this run will sample with (`active_sample_sets`),
+        # so a run whose prompts were already edited reports the ones in force.
+        sample_sets = active_sample_sets(cfg)
         resolve_train_data_entries(cfg)
         artifacts = build_train_objects(cfg, settings=live)
         control.set_resume(artifacts.resume)

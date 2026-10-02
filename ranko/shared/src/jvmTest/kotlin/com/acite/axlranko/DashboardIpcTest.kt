@@ -8,6 +8,9 @@ import com.acite.axlranko.model.DashboardResponse
 import com.acite.axlranko.model.DatasetTagResult
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
+import com.acite.axlranko.model.SampleClearResult
+import com.acite.axlranko.model.SamplePromptsResponse
+import com.acite.axlranko.model.SampleSetInfo
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.EvaluationPromptsResponse
 import com.acite.axlranko.model.GeneratedSampleJob
@@ -20,8 +23,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -905,5 +910,130 @@ class DashboardIpcTest {
         val decodedPrompts = json.decodeFromString(IpcRequest.serializer(), prompts)
         assertEquals("evaluation_prompts", decodedPrompts.method)
         assertEquals("rein_20260911_120000", decodedPrompts.params["run_id"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun samplePromptsResponseParsesEverySet() {
+        val raw = """
+            {
+              "run_id": "rein_20260911_120000",
+              "output_name": "rein",
+              "file": "/logs/rein_20260911_120000/sample_sets.json",
+              "edited": true,
+              "config_source": "/logs/rein_20260911_120000/sample_sets.json",
+              "sets": [
+                {
+                  "name": "cowgirl",
+                  "prompt": "1girl, cowgirl position",
+                  "negative": "worst quality",
+                  "width": 1152,
+                  "height": 768,
+                  "steps": 35,
+                  "guidance_scale": 6.0,
+                  "guidance_rescale": 0.6,
+                  "seed": 0,
+                  "repeat": 2
+                }
+              ],
+              "live": true,
+              "reason": ""
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString(SamplePromptsResponse.serializer(), raw)
+        assertEquals("rein_20260911_120000", parsed.runId)
+        assertEquals("rein", parsed.outputName)
+        assertTrue(parsed.edited)
+        assertEquals("/logs/rein_20260911_120000/sample_sets.json", parsed.file)
+        assertEquals(1, parsed.sets.size)
+        val set = parsed.sets.first()
+        assertEquals("cowgirl", set.name)
+        assertEquals(1152, set.width)
+        assertEquals(35, set.steps)
+        assertEquals(6.0f, set.guidanceScale)
+        assertEquals(0.6f, set.guidanceRescale)
+        assertEquals(0L, set.seed)
+        assertEquals(2, set.repeat)
+        assertTrue(parsed.live)
+        assertEquals("", parsed.reason)
+    }
+
+    @Test
+    fun anUnreadableSamplePromptsPayloadParses() {
+        val parsed = json.decodeFromString(
+            SamplePromptsResponse.serializer(),
+            """{"run_id": null, "file": null, "edited": false, "sets": [], "live": false,
+                "reason": "validation.samples[1]: prompt must not be empty"}""",
+        )
+        assertNull(parsed.runId)
+        assertNull(parsed.file)
+        assertFalse(parsed.edited)
+        assertTrue(parsed.sets.isEmpty())
+        assertFalse(parsed.live)
+        assertEquals("validation.samples[1]: prompt must not be empty", parsed.reason)
+    }
+
+    @Test
+    fun samplePromptsRequestsCarryTheirSetsOrANullToReset() {
+        val save = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 30,
+                method = "sample_prompts_set",
+                params = buildJsonObject {
+                    putJsonArray("sets") {
+                        add(
+                            json.encodeToJsonElement(
+                                SampleSetInfo.serializer(),
+                                SampleSetInfo(prompt = "1girl", width = 640, height = 960, repeat = 2),
+                            )
+                        )
+                    }
+                    put("run_id", "rein_20260911_120000")
+                },
+            ),
+        )
+        val decoded = json.decodeFromString(IpcRequest.serializer(), save)
+        assertEquals("sample_prompts_set", decoded.method)
+        val sets = decoded.params["sets"] as JsonArray
+        assertEquals(1, sets.size)
+        val entry = json.decodeFromJsonElement(SampleSetInfo.serializer(), sets.first())
+        assertEquals("1girl", entry.prompt)
+        assertEquals(640, entry.width)
+        assertEquals(2, entry.repeat)
+
+        // Resetting sends an explicit null, which is not the same as sending no `sets` at all.
+        val reset = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(id = 31, method = "sample_prompts_set", params = buildJsonObject { put("sets", JsonNull) }),
+        )
+        val decodedReset = json.decodeFromString(IpcRequest.serializer(), reset)
+        assertTrue(decodedReset.params["sets"] is JsonNull)
+    }
+
+    @Test
+    fun clearCheckpointSamplesRoundTrips() {
+        val request = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 32,
+                method = "clear_checkpoint_samples",
+                params = buildJsonObject {
+                    put("checkpoint", "/out/rein/rein_s000100/rein.safetensors")
+                    put("run_id", "rein_20260911_120000")
+                },
+            ),
+        )
+        assertEquals(
+            "/out/rein/rein_s000100/rein.safetensors",
+            json.decodeFromString(IpcRequest.serializer(), request).params["checkpoint"]?.jsonPrimitive?.content,
+        )
+
+        val reply = json.decodeFromString(
+            SampleClearResult.serializer(),
+            """{"run_id": "rein_20260911_120000", "step": 100, "images": 7, "jobs": ["a_gen_1", "b_gen_2"],
+                "files": ["/out/rein_samples/rein_000100_p0_0.png"]}""",
+        )
+        assertEquals(100, reply.step)
+        assertEquals(7, reply.images)
     }
 }

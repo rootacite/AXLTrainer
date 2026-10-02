@@ -167,6 +167,19 @@ class IpcResourcesTest {
             IpcResources.claimsFor("mask_write", params("directory" to "/data/st", "stem" to "0001")),
         )
         assertEquals(emptyList(), IpcResources.claimsFor("blob_batch", params("paths" to "/x")))
+        // The prompt store is the run's own file; clearing its samples also takes the card, so a
+        // pass rendering into the same directory cannot race the delete.
+        assertEquals(
+            listOf(ResourceClaim("run:rein_1", ResourceMode.Write, 1_000L)),
+            IpcResources.claimsFor("sample_prompts_set", params("run_id" to "rein_1")),
+        )
+        assertEquals(
+            listOf(
+                ResourceClaim("run:rein_1", ResourceMode.Write, 1_000L),
+                ResourceClaim("gpu", ResourceMode.Write, 0L),
+            ),
+            IpcResources.claimsFor("clear_checkpoint_samples", params("run_id" to "rein_1")),
+        )
     }
 
     @Test
@@ -303,6 +316,14 @@ class IpcResourcesTest {
         // Blobs keep to themselves, and a write may be sent as one.
         assertEquals("blob", client.laneKindFor("blob_batch", params("paths" to "/x")))
         assertEquals("blob", client.laneKindFor("ping", JsonObject(emptyMap()), blob = true))
+        // The prompt store is read like any other read, and written on the control lane; clearing
+        // a card's images holds the GPU, so it gets its own connection.
+        assertEquals("poll", client.laneKindFor("sample_prompts", params("run_id" to "rein_1")))
+        assertEquals("control", client.laneKindFor("sample_prompts_set", params("run_id" to "rein_1")))
+        assertEquals(
+            "long",
+            client.laneKindFor("clear_checkpoint_samples", params("checkpoint" to "/out/a.safetensors")),
+        )
     }
 
     private fun params(vararg pairs: Pair<String, String>): JsonObject =

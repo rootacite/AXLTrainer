@@ -60,6 +60,63 @@ data class SampleSetForm(
     val repeat: String = ""
 )
 
+/**
+ * The per-set errors of a list of sample sets, keyed `{prefix}{index}.{field}`.
+ *
+ * Shared by the Utils Validation form and the Dashboard's Sampling Prompts editor: both send the
+ * same fields to api.py's `resolve_sample_sets` ranges, so the two must not drift.
+ */
+internal fun sampleSetFormErrors(
+    sets: List<SampleSetForm>,
+    prefix: String = SAMPLE_SET_ERROR_PREFIX,
+): Map<String, String> {
+    val errors = mutableMapOf<String, String>()
+
+    fun requireText(key: String, value: String) {
+        if (value.isBlank()) errors[key] = "Required"
+    }
+
+    fun requireInt(key: String, value: String, min: Int? = null, max: Int? = null) {
+        val parsed = value.trim().toIntOrNull()
+        if (parsed == null) {
+            errors[key] = "Enter an integer"
+            return
+        }
+        if (min != null && parsed < min) errors[key] = "Min $min"
+        if (max != null && parsed > max) errors[key] = "Max $max"
+    }
+
+    fun requireDouble(key: String, value: String, min: Double? = null, max: Double? = null) {
+        val parsed = value.trim().toDoubleOrNull()
+        if (parsed == null || !parsed.isFinite()) {
+            errors[key] = "Enter a number"
+            return
+        }
+        if (min != null && parsed < min) errors[key] = "Min $min"
+        if (max != null && parsed > max) errors[key] = "Max $max"
+    }
+
+    if (sets.isEmpty()) {
+        errors[prefix + "0.prompt"] = "At least one sample set"
+    }
+    sets.forEachIndexed { index, set ->
+        val key = { field: String -> "$prefix$index.$field" }
+        requireText(key("prompt"), set.prompt)
+        requireInt(key("width"), set.width, min = 64, max = 4096)
+        requireInt(key("height"), set.height, min = 64, max = 4096)
+        requireInt(key("steps"), set.steps, min = 1, max = 150)
+        requireInt(key("repeat"), set.repeat, min = 1, max = 32)
+        requireDouble(key("guidance_scale"), set.guidanceScale, min = 0.0, max = 30.0)
+        requireDouble(key("guidance_rescale"), set.guidanceRescale, min = 0.0, max = 1.0)
+        val seedValue = set.seed.trim().toLongOrNull()
+        when {
+            seedValue == null -> errors[key("seed")] = "Enter an integer"
+            seedValue !in 0..4294967295L -> errors[key("seed")] = "0 – 4294967295"
+        }
+    }
+    return errors
+}
+
 data class TrainingConfigForm(
     val pretrainedModelNameOrPath: String = "",
     val outputDir: String = "",
@@ -314,24 +371,7 @@ data class TrainingConfigForm(
 
         requireInt("max_data_loader_n_workers", maxDataLoaderNWorkers, min = 0)
 
-        if (sampleSets.isEmpty()) {
-            errors[SAMPLE_SET_ERROR_PREFIX + "0.prompt"] = "At least one sample set"
-        }
-        sampleSets.forEachIndexed { index, set ->
-            val key = { field: String -> "$SAMPLE_SET_ERROR_PREFIX$index.$field" }
-            requireText(key("prompt"), set.prompt)
-            requireInt(key("width"), set.width, min = 64, max = 4096)
-            requireInt(key("height"), set.height, min = 64, max = 4096)
-            requireInt(key("steps"), set.steps, min = 1, max = 150)
-            requireInt(key("repeat"), set.repeat, min = 1, max = 32)
-            requireDouble(key("guidance_scale"), set.guidanceScale, min = 0.0, max = 30.0)
-            requireDouble(key("guidance_rescale"), set.guidanceRescale, min = 0.0, max = 1.0)
-            val seedValue = set.seed.trim().toLongOrNull()
-            when {
-                seedValue == null -> errors[key("seed")] = "Enter an integer"
-                seedValue !in 0..4294967295L -> errors[key("seed")] = "0 – 4294967295"
-            }
-        }
+        errors.putAll(sampleSetFormErrors(sampleSets))
 
         val minBucket = minBucketReso.trim().toIntOrNull()
         val maxBucket = maxBucketReso.trim().toIntOrNull()

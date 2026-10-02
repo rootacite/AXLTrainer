@@ -24,6 +24,7 @@ import com.acite.axlranko.model.EvaluationTagCount
 import com.acite.axlranko.model.EvaluationTarget
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.PromptTagCount
+import com.acite.axlranko.model.SampleClearResult
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.EvaluationDialog
 import com.acite.axlranko.pages.components.PAGE_PANEL_MARGIN
@@ -73,6 +74,10 @@ class CheckpointsSectionRenderTest {
         val evaluatingPath: String? = null,
         /** The evaluation job the panel is open on, drawn over the section like the page does. */
         val evaluationPanelFor: String? = null,
+        /** True while a clear is on its way to the helper, which makes every card's button inert. */
+        val clearingSamples: Boolean = false,
+        /** What the last clear removed for one checkpoint, or why it failed. */
+        val clearSamplesResult: SampleClearResult? = null,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -252,8 +257,11 @@ class CheckpointsSectionRenderTest {
                                             onEvaluate = { _, _, _ -> },
                                             onCancelEvaluation = { _ -> },
                                             onOpenEvaluation = {},
+                                            clearingSamples = current.clearingSamples,
+                                            clearSamplesResult = current.clearSamplesResult,
                                             onTogglePin = {},
                                             onSaveAs = {},
+                                            onClearSamples = {},
                                         )
                                     }
                                     items(pinnedCards, key = { checkpointRowKey(it) }) { row -> card(row) }
@@ -469,6 +477,31 @@ class CheckpointsSectionRenderTest {
                 Case(
                     checkpoints = listOf(checkpoint(3050)),
                     evaluatingPath = checkpoint(3050).path,
+                ),
+                // Clearing a card's images: on its way, landed on one card, refused on another,
+                // and a card with nothing left to clear (its button is off).
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    clearingSamples = true,
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050), checkpoint(3000)),
+                    samples = mapOf("3000" to listOf(sample(3000, 0))),
+                    clearSamplesResult = SampleClearResult(
+                        path = checkpoint(3050).path,
+                        step = 3050,
+                        images = 7,
+                        jobs = listOf("rein_s003050_sets_gen_1"),
+                    ),
+                ),
+                Case(
+                    checkpoints = listOf(checkpoint(3050)),
+                    samples = mapOf("3050" to listOf(sample(3050, 0))),
+                    clearSamplesResult = SampleClearResult(
+                        path = checkpoint(3050).path,
+                        error = "training is using the GPU; pause the run (or stop it) before clearing samples",
+                    ),
                 ),
             ),
         )

@@ -308,6 +308,7 @@ def new_batch_job(
     from_step: int,
     to_step: int,
     images_per_checkpoint: int,
+    config_log_dir: str = "",
     now: Optional[Union[datetime, float]] = None,
 ) -> dict[str, Any]:
     """The plan api.py writes before spawning a range batch.
@@ -315,7 +316,9 @@ def new_batch_job(
     `checkpoints` is the ordered work list (`path` + `step`); the runner creates one `sets` job per
     entry, so the images of each checkpoint are named, shown and followed exactly as a manual pass
     from that checkpoint would be. This record is the batch's own bookkeeping: what is left, which
-    checkpoint is being rendered, and what failed.
+    checkpoint is being rendered, and what failed. `config_log_dir` is the run directory the prompts
+    come from (its own saved config, or the sets the Dashboard edited for it), which the runner
+    resolves once for the whole range.
     """
     stem = f"{output_name}_s{from_step}-{to_step}"
     return {
@@ -327,6 +330,7 @@ def new_batch_job(
         "checkpoints": [dict(entry) for entry in checkpoints],
         "from_step": int(from_step),
         "to_step": int(to_step),
+        "config_log_dir": str(config_log_dir or ""),
         "checkpoint_index": 0,
         "total_checkpoints": len(checkpoints),
         "current_checkpoint": None,

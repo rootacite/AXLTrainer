@@ -10,6 +10,9 @@ import com.acite.axlranko.model.GenerateSampleResponse
 import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
+import com.acite.axlranko.model.SampleClearResult
+import com.acite.axlranko.model.SamplePromptsResponse
+import com.acite.axlranko.model.SampleSetInfo
 import com.acite.axlranko.model.SamplesResponse
 import com.acite.axlranko.model.TaggerInfoResult
 import com.acite.axlranko.model.TrainDataCountRequest
@@ -36,6 +39,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -190,6 +194,68 @@ class TrainerIpcClient {
                 put("pinned", pinned)
                 dir?.let { put("dir", it) }
                 step?.let { put("step", it) }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * The prompts one run samples with, and where they were resolved from. Read only and never
+     * failing: an unusable config comes back with `reason` set and no sets.
+     */
+    suspend fun samplePrompts(
+        name: String? = null,
+        runId: String? = null,
+    ): SamplePromptsResponse {
+        val result = call(
+            "sample_prompts",
+            buildJsonObject {
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * Save the prompts this run should sample with, or drop them so it uses its own config again
+     * ([sets] `null`). The reply is the run's whole prompt state, in the shape of [samplePrompts].
+     */
+    suspend fun setSamplePrompts(
+        sets: List<SampleSetInfo>?,
+        name: String? = null,
+        runId: String? = null,
+    ): SamplePromptsResponse {
+        val result = call(
+            "sample_prompts_set",
+            buildJsonObject {
+                if (sets == null) {
+                    put("sets", JsonNull)
+                } else {
+                    putJsonArray("sets") { sets.forEach { add(json.encodeToJsonElement(it)) } }
+                }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * Remove one checkpoint's sample images — the run's own at its step and every pass recorded for
+     * it, with the job records that produced them. The helper refuses while the GPU is busy.
+     */
+    suspend fun clearCheckpointSamples(
+        checkpoint: String,
+        name: String? = null,
+        runId: String? = null,
+    ): SampleClearResult {
+        val result = call(
+            "clear_checkpoint_samples",
+            buildJsonObject {
+                put("checkpoint", checkpoint)
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

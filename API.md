@@ -290,10 +290,11 @@ matter for `generate_checkpoint_samples`, which renders one image per sample set
 
 Renders the checkpoint's `[[validation.samples]]` sets as one detached job — the "sample this
 checkpoint" action the Dashboard offers per checkpoint. Prompts, `width`/`height`, `steps`,
-`guidance_scale`, `seed` and `repeat` come from `config.toml` (the same logic a training sample point
-uses, seed `0` = a fresh random seed per image); network type / dim / alpha, `conv_dim` / `conv_alpha`,
-`clip_skip`, `max_token_length` and the base model come from the checkpoint's own kohya metadata, as
-in `generate_sample`.
+`guidance_scale`, `seed` and `repeat` are the ones that run samples with — the `config.toml` it saved
+beside its logs, or the sets `sample_prompts_set` saved for it — resolved exactly as
+`evaluate_checkpoint` resolves them (seed `0` = a fresh random seed per image); network type / dim /
+alpha, `conv_dim` / `conv_alpha`, `clip_skip`, `max_token_length` and the base model come from the
+checkpoint's own kohya metadata, as in `generate_sample`.
 
 Params:
 
@@ -306,7 +307,8 @@ Images land in `{output_dir}/{run_id}/{output_name}_samples/generated/` as
 `{job_id}_p{set}_{repeat}.png` — sets counting from zero, like the run's own
 `{output_name}_{step:06d}_p{set}_{repeat}.png` samples — so a training-produced sample is never
 overwritten and a `Pn` badge can be shown. The job record is the same shape as `generate_sample`'s
-with `mode: "sets"`, a `sample_sets` copy of what is being rendered, and `total_images` =
+with `mode: "sets"`, a `sample_sets` copy of what is being rendered (the plan the runner renders
+from), `config_log_dir` = the run directory those prompts were resolved in, and `total_images` =
 Σ `repeat`.
 
 The job records the checkpoint's own `step` — its artifact directory name, or `ss_steps` from its
@@ -315,8 +317,8 @@ Checkpoints section. Counters (`current_step`, `total_steps`, `images_done`, `to
 always integers, never `null`: the client declares them as such, and an explicit `null` would fail
 its decode and take the whole generated-samples list down with it.
 
-Refused under the same GPU rules as `generate_sample`, plus when `config.toml` has no usable
-`[[validation.samples]]` set.
+Refused under the same GPU rules as `generate_sample`, plus when the run has no usable
+`[[validation.samples]]` set (`this run has no sample prompts to render: …`).
 
 ### `generate_checkpoint_samples_batch`
 
@@ -337,6 +339,9 @@ named, shown and followed exactly as a manual pass from that card would be. A ch
 is recorded in the batch's `failed` list and on its own job, and the range carries on; the batch is
 `done` if anything rendered and `error` if nothing did. The pipeline is built once for the range and
 rebuilt only when a checkpoint's LoRA shape (base model, kind, rank/alpha, conv dim) differs.
+The prompts are that run's own, resolved once per range: the batch record carries `config_log_dir`
+and each checkpoint's own `sets` job records the `sample_sets` it rendered with, so a child spec
+stands on its own.
 
 Refused under the same GPU rules as `generate_checkpoint_samples`, on a malformed range, and when
 the range covers no checkpoint of the run (`no checkpoints between step X and Y`).
@@ -367,7 +372,7 @@ The record is a job with `mode: "evaluate"`:
 |---|---|
 | `depth`, `threshold`, `categories` | The request, as accepted. |
 | `tags` | The tags the scoring was narrowed to, normalized; `[]` means every tag a prompt asks for. |
-| `config_source` | The `config.toml` the prompts came from: the one the checkpoint's run saved beside its logs (`{logging_dir}/{run_id}/config.toml`), or today's repo `config.toml` for a run from before those snapshots existed. |
+| `config_source` | The file the prompts came from: the sets saved for that run (`{logging_dir}/{run_id}/sample_sets.json`, `sample_prompts_set`), else the `config.toml` it saved beside its logs, else the hparams it recorded at startup, else today's repo `config.toml`. |
 | `sample_sets` | The resolved prompt sets the top-up renders with. |
 | `plan` | `{needed, depth, passes, per_pass, existing_images, render_total, sets: [{set_index, repeat, existing, render}]}`. `needed` is false when the checkpoint already holds `depth` images — then **nothing is rendered** and the pass goes straight to tagging. Otherwise `passes = ceil((depth - existing_images) / per_pass)` whole copies of the config's sample pass are rendered (`render_total = passes × per_pass` images), each set contributing its own `repeat × passes` and `render` listing the repeat indices that pass writes: the set's numbering continues after the highest index it already uses, so an earlier pass is never written over. The count overshoots `depth` by less than one pass — and the images already there count towards it, whatever produced them (the run's own sample point, an earlier `sets` pass, an earlier evaluation). |
 | `images` | Every image to score: `{name, path, set_index, repeat_idx, source, prompt, tags, error}`. `source` is `run` (the trainer's own sample at the checkpoint's step) or `generated` (a recorded pass; its prompt is the one that pass drew with). `set_index` is `-1` for a `single` ad-hoc image. |
@@ -390,8 +395,8 @@ none of them is counted in `images_skipped` rather than scored.
 Read-only, no GPU: the prompts an evaluation of this checkpoint would be scored against, and the tags
 they ask for with their frequency. This is what the Dashboard's picker offers before a pass is
 started, so the selection and the scoring come from the same config. It resolves the run and the
-config exactly as `evaluate_checkpoint` does (the checkpoint's own run wins; its saved `config.toml`,
-else the hparams it recorded, else today's file).
+config exactly as `evaluate_checkpoint` does (the checkpoint's own run wins; the prompts saved for
+it, else its saved `config.toml`, else the hparams it recorded, else today's file).
 
 Params:
 
@@ -656,6 +661,116 @@ When no run directory resolves, `run_id` is `null` and **nothing is deleted** �
 
 Fails if the training PID is still alive. `clean.py` remains the CLI cleaner and uses the same helper — it is the tool that deletes a run's samples, logs and weights.
 
+### `sample_prompts`
+
+Read-only: the prompts one run samples with, where they were resolved from, and whether that run is
+the live one. This is what the Dashboard's Sampling Prompts section shows, and the same resolution
+`evaluate_checkpoint` and the manual sample passes use, so what the section says is what those
+render.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard` (a request that names nothing means the run `state.json` is on). |
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "output_name": "rein",
+  "file": "/logs/rein_20260911_120000/sample_sets.json",
+  "edited": true,
+  "config_source": "/logs/rein_20260911_120000/sample_sets.json",
+  "sets": [
+    {"name": "cowgirl", "prompt": "1girl, cowgirl position", "negative": "worst quality",
+     "width": 1152, "height": 768, "steps": 35, "guidance_scale": 6.0,
+     "guidance_rescale": 0.6, "seed": 0, "repeat": 2}
+  ],
+  "live": false,
+  "reason": ""
+}
+```
+
+`sets` is the whole resolved list — every key present, which is what the editor writes back. `edited`
+is true once sets were saved for this run, and `file` is the JSON they live in (inside the run's own
+log directory, beside the `config.toml` copy, which is never rewritten); otherwise the prompts are the
+run's saved config, named by `config_source`. `live` is true while this run is the one the trainer is
+running — an edit then lands on the run's next sample point. A config it cannot use is not an error:
+`sets` comes back empty with `reason` set, and a request that resolves no run answers with
+`run_id: null` and `reason: no run to read sampling prompts for`.
+
+### `sample_prompts_set`
+
+Saves the prompts a run should sample with, from then on.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sets` | array \| null | Yes | The new `[[validation.samples]]` entries, or `null` to drop this run's own prompts so it uses its saved config again. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`. |
+
+The list is validated and stored whole in `{logging_dir}/{run_id}/sample_sets.json` (a directory that
+does not exist yet is created, like `checkpoint_pin_set`'s). Nothing is written to `config.toml`, and
+the run's `config.toml` snapshot is never rewritten: it stays the record of what the run trained with.
+Every write path layers the file over that snapshot — the trainer's own sample points read it before
+each pass, so an edit made while the run is live applies at its next checkpoint, and an evaluation or
+a manual sample pass resolves it the same way.
+
+An entry that omits a key is filled from **that run's** config, never from the repo file, so a partial
+request cannot mix two runs' settings; the stored entries are complete. Ranges are api.py's
+`resolve_sample_sets` ranges (`width`/`height` 64–4096, `steps` 1–150, `guidance_scale` 0–30,
+`guidance_rescale` 0–1, `seed` 0–4294967295, `repeat` 1–32, a non-blank `prompt`), and the rejection
+names the offending entry (`validation.samples[2]: steps must be between 1 and 150`).
+
+The reply has the shape of `sample_prompts` — the run's whole prompt state after the change — so the
+client refreshes from it without a second call.
+
+Refused when the request names no run (`no run to set sampling prompts on`) or carries no `sets` at
+all (`sets is required (null resets the run to its own config)`).
+
+### `clear_checkpoint_samples`
+
+Removes one checkpoint's sample images: the samples the run wrote at its step, the generated and
+evaluated images of every pass that belongs to that card, and the job records (with their `.log`)
+that produced them. The checkpoint file itself is kept, and nothing else is touched — another step's
+samples, another checkpoint's passes and a range batch's own record stay where they are.
+
+Params:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `checkpoint` | string | Yes | Path to the `.safetensors` whose card is being cleared. |
+| `name` / `run_id` | string \| null | No | Resolve the run like `dashboard`; the checkpoint's own run wins when its path sits under `output_dir` (as in `evaluate_checkpoint`). |
+
+A job belongs to the card when it names that checkpoint path, or — for a record that names none — when
+its `step` is the checkpoint's step. That is the same rule the Checkpoints section groups by, so what
+the card shows is exactly what goes.
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "output_name": "rein",
+  "checkpoint": "/out/rein_20260911_120000/rein_s003050/rein.safetensors",
+  "step": 3050,
+  "images": 7,
+  "jobs": ["rein_s003050_sets_gen_20261002_101500"],
+  "files": ["/out/rein_20260911_120000/rein_samples/rein_003050_p0_0.png"]
+}
+```
+
+`step` is `null` for a checkpoint whose directory name and metadata both carry none (its pass records
+are still cleared, by path). A file already gone is not an error and is not listed — a second press
+answers with `images: 0` — and a file that could not be removed is warned about on the helper's
+stderr.
+
+Refused while a live trainer is using the GPU (`pause` the run, or stop it) and while another
+generation is running, because both write the directory being cleaned.
+
 ### `dataset_tag`
 
 Runs `tagger2/main.py` (the Pixai tagger v1: ViTDet, 30 877 Danbooru tags, PyTorch/ROCm) with the same interpreter as `api.py` (the `axl` env). Writes comma-separated captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call. The legacy WD14 ONNX script (`tagger/main.py`) still runs by hand; its `selected_tags.csv` is what `tag_lexicon` reads for the Chinese tag names.
@@ -853,6 +968,7 @@ After connect Ranko does not open trainer files. Paths in these methods are allo
 - `tag_lexicon` `{}` → `{text}` of `tagger/selected_tags.csv`.
 - `tagger_info` `{}` → the tagger's `{available, engine, model, model_path, cache_dir, categories, default_categories, reason}` (see the method above). Read-only and never failing.
 - `evaluation_prompts` `{checkpoint, name?, run_id?}` → the prompts and prompt-tag frequencies an evaluation of that checkpoint would score against (see the method above). Read-only and never failing.
+- `sample_prompts` `{name?, run_id?}` → one run's effective prompt sets, the file they were resolved from (`edited` / `file` when the Dashboard saved sets for it), and whether it is the live run. Read-only and never failing. `sample_prompts_set` `{sets, name?, run_id?}` saves them for that run (`sets: null` drops them again) and answers with the same shape. `clear_checkpoint_samples` `{checkpoint, name?, run_id?}` removes one card's images and the pass records that produced them (see the three methods above — its params and reply are documented there).
 - `checkpoint_export` `{source, dest}` server-local copy. `dest` must end `.safetensors`; refuse `source == dest`.
 - `fs_listdir` `{path}` → `{path, parent, entries: [{name, path, is_dir, size, mtime_ms}]}`. Lists one directory after `Path.resolve()` (so `..` cannot escape). A file path errors. Unreadable children are skipped. No file bytes.
 - `fs_roots` `{}` → `{roots: [{name, path}]}` with Home, Repo, each train-data folder, Output, Logs.

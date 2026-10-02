@@ -368,7 +368,10 @@ class BatchSpecTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(generator, "resolve_resume_path", lambda raw: Path(str(raw)).with_suffix(".safetensors")))
             stack.enter_context(mock.patch.object(generator, "read_lora_metadata", lambda path: {}))
-            stack.enter_context(mock.patch.object(generator, "_build_config", lambda metadata, checkpoint: cfg))
+            stack.enter_context(mock.patch.object(generator, "_record_config", lambda spec: cfg))
+            stack.enter_context(
+                mock.patch.object(generator, "_build_config", lambda metadata, checkpoint, base_cfg=None: cfg)
+            )
             stack.enter_context(mock.patch.object(generator, "resolve_sample_sets", lambda cfg: sets))
             stack.enter_context(mock.patch.object(generator, "_render_sets", fake_render))
             stack.enter_context(mock.patch.object(generator, "_load_family", lambda cfg, dtype: (None, None)))
@@ -394,6 +397,113 @@ class BatchSpecTest(unittest.TestCase):
             self.assertEqual(len(entry["files"]), 2)
         self.assertEqual(len(calls), 2, "the pass renders once per checkpoint")
         self.assertIn("2/2 checkpoint(s), 4 image(s)", stdout.getvalue())
+        for job_id in stored["job_ids"]:
+            entry = genjob.read_job(genjob.job_path(self.generated, job_id))
+            # The child spec stands on its own: it says which prompts it rendered.
+            self.assertEqual([item["prompt"] for item in entry["sample_sets"]], ["a prompt"])
+
+
+class SetsPassPromptsTest(unittest.TestCase):
+    """A `sets` pass renders the prompts the spec planned, not whatever the repo file says today."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.generated = genjob.generated_dir(Path(self.tmp.name) / "rein_samples")
+        self.generated.mkdir(parents=True)
+        self.cfg = types.SimpleNamespace(
+            pretrained_model_name_or_path="base.safetensors",
+            network_type="standard",
+            network_dim=8,
+            network_alpha=4,
+            conv_dim=0,
+            conv_alpha=0,
+            mixed_precision="bf16",
+        )
+
+    def _spec(self, **extra):
+        request = {"step": 100, "prompt": "", "negative_prompt": "", "cfg": 6.0, "steps": 1, "seed": 1}
+        return genjob.new_job(
+            request,
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoint="/out/rein_s000100/rein.safetensors",
+            mode=genjob.MODE_SETS,
+            total_images=1,
+            extra=extra,
+        )
+
+    def _render_with(self, spec, resolver):
+        """Run one `sets` pass with the family stubbed; return the prompts `_render_sets` got."""
+        seen: dict = {}
+
+        class FakeModule:
+            def to(self, *args, **kwargs):
+                return self
+
+        class FakeModules:
+            denoise = FakeModule()
+            text_encoders = [FakeModule(), FakeModule()]
+
+        def fake_render(**kwargs):
+            seen["prompts"] = [entry.prompt for entry in kwargs["sets"]]
+            return []
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(generator, "resolve_resume_path", lambda raw: Path(str(raw)))
+            )
+            stack.enter_context(mock.patch.object(generator, "read_lora_metadata", lambda path: {}))
+            stack.enter_context(
+                mock.patch.object(generator, "_build_config", lambda metadata, checkpoint, base_cfg=None: self.cfg)
+            )
+            stack.enter_context(mock.patch.object(generator, "_record_config", lambda spec: self.cfg))
+            stack.enter_context(mock.patch.object(generator, "resolve_sample_sets", resolver))
+            stack.enter_context(mock.patch.object(generator, "_load_family", lambda cfg, dtype: (None, FakeModules())))
+            stack.enter_context(mock.patch.object(generator, "_render_sets", fake_render))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            generator.run_sample_sets(spec, self.generated)
+        return seen
+
+    def test_the_recorded_sets_are_what_renders(self):
+        def refuse(cfg):
+            raise AssertionError("the recorded sets must be used, not re-resolved from a config")
+
+        recorded = SampleSet(
+            name="planned",
+            prompt="the planned prompt",
+            negative="n",
+            width=64,
+            height=64,
+            steps=1,
+            guidance_scale=4.0,
+            guidance_rescale=0.5,
+            seed=7,
+            repeat=1,
+        )
+        from dataclasses import asdict
+
+        spec = self._spec(
+            sample_sets=[asdict(recorded)],
+            config_log_dir="/logs/rein_20260101_000000",
+        )
+        self.assertEqual(self._render_with(spec, refuse)["prompts"], ["the planned prompt"])
+
+    def test_a_spec_without_recorded_sets_falls_back_to_the_run_config(self):
+        fallback = SampleSet(
+            name="from-config",
+            prompt="the run's config",
+            negative="",
+            width=64,
+            height=64,
+            steps=1,
+            guidance_scale=1.0,
+            guidance_rescale=0.0,
+            seed=1,
+            repeat=1,
+        )
+        spec = self._spec(config_log_dir="/logs/rein_20260101_000000")
+        self.assertEqual(self._render_with(spec, lambda cfg: [fallback])["prompts"], ["the run's config"])
 
 
 if __name__ == "__main__":

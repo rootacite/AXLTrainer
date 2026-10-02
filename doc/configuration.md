@@ -224,6 +224,12 @@ repeat = 3
 - **File names**: `{output_name}_{step:06d}_p{set}_{repeat}.png`, with `set` counting from 0. The
   two-number form of older runs (`…_{step}_{repeat}.png`) is still parsed, as set 0.
 - Sampling time scales with `Σ repeat`; each set's images are rendered sequentially.
+- **Editing the sets for one run**: the Dashboard's Dashboard → Sampling Prompts section saves a run's
+  sets to `{logging_dir}/{run_id}/sample_sets.json`, which overrides `samples` wherever that run's
+  prompts are resolved — its own sample points (a live run reads the file before every pass, so the
+  next checkpoint uses it), a card's manual sample pass, and an evaluation. Absent, nothing changes:
+  the file is written only by that section, never by a run, and this `config.toml` and the run's own
+  copy of it are never rewritten. It is not a config key, so the Utils editor does not show it.
 - The run's configuration is recorded in TensorBoard's **HParams** tab. `add_hparams` only
   accepts int/float/str/bool/tensor values, so a list-valued key such as `samples` is written
   as a JSON string (`tracker_hparams()` in `trainer/config.py`) rather than passed through raw.

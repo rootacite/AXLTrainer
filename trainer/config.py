@@ -1,10 +1,12 @@
 import json
+import os
 import shutil
 import sys
+import tempfile
 import tomllib
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, Sequence, Union
 
 from safetensors import safe_open
 
@@ -195,15 +197,27 @@ def run_config_mapping(log_dir: Union[str, Path]) -> tuple[dict[str, Any], str]:
     those copies has), else the repo's current `config.toml` — whose prompts may well differ from
     the ones that run drew with, which is why the source travels with the mapping and is recorded in
     anything derived from it.
+
+    On top of all three sits the prompt sets the Dashboard saved for this run
+    (`sample_sets.json`, `read_sample_override`): when it exists, its entries replace `samples` and
+    the file itself is the reported source, so every reader of a run's prompts — an evaluation, the
+    prompt picker, a manual sample pass — answers with the prompts in force for that run. The
+    snapshot and the hparams record are never rewritten: they stay the record of what training used.
     """
     snapshot = Path(log_dir) / RUN_CONFIG_FILENAME
     if snapshot.is_file():
-        return _load_toml_config(str(snapshot)), str(snapshot.resolve())
-    recorded, recorded_source = run_hparams_mapping(log_dir)
-    if recorded:
-        return recorded, recorded_source
-    repo = Path(REPO_CONFIG_FILENAME)
-    return _load_toml_config(str(repo)), str(repo.resolve())
+        mapping, source = _load_toml_config(str(snapshot)), str(snapshot.resolve())
+    else:
+        recorded, recorded_source = run_hparams_mapping(log_dir)
+        if recorded:
+            mapping, source = recorded, recorded_source
+        else:
+            repo = Path(REPO_CONFIG_FILENAME)
+            mapping, source = _load_toml_config(str(repo)), str(repo.resolve())
+    override = read_sample_override(log_dir)
+    if override is not None:
+        return {**mapping, "samples": override}, str(sample_override_path(log_dir).resolve())
+    return mapping, source
 
 
 # Ranges shared with the Ranko Validation form; a value outside them is rejected
@@ -374,6 +388,124 @@ def resolve_sample_sets(cfg) -> list[SampleSet]:
             repeat=int(_scalar(cfg, "sample_repeat", 3)),
         )
     ]
+
+
+# The prompts a run actually samples with, when they have been changed from the ones it started
+# with: a JSON array of complete `[[validation.samples]]` tables, written by api.py for the
+# Dashboard's Sampling Prompts editor. It sits beside the run's own config snapshot, so a run's log
+# directory stays one self-contained record and `cleanup.py` removes it with the rest. Absent means
+# "the config this run started with" - every read path treats the two identically.
+SAMPLE_OVERRIDE_FILENAME = "sample_sets.json"
+
+# Every key a stored entry must carry. A reader of this file that has no other config has only the
+# repo's scalars to fall back on, so a hand-edited partial entry would silently mix two runs'
+# settings; `_validate_override_entries` passes blanks for these, which makes an omitted key fail
+# instead. The file api.py writes is always complete.
+_SAMPLE_SCALAR_KEYS = (
+    "sample_prompts",
+    "sample_negative",
+    "sample_width",
+    "sample_height",
+    "sample_steps",
+    "guidance_scale",
+    "guidance_rescale",
+    "sample_seed",
+    "sample_repeat",
+)
+
+
+def sample_override_path(log_dir: Union[str, Path]) -> Path:
+    """Where one run's edited prompt sets live: inside its log directory, beside the snapshot."""
+    return Path(log_dir) / SAMPLE_OVERRIDE_FILENAME
+
+
+def _validate_override_entries(raw: list) -> None:
+    """Raise `ValueError` unless every entry is a complete, in-range sample set."""
+    resolve_sample_sets({**{key: "" for key in _SAMPLE_SCALAR_KEYS}, "samples": raw})
+
+
+def read_sample_override(log_dir: Union[str, Path]) -> Optional[list[dict]]:
+    """The prompt sets saved for this run, as written, or None when it has none.
+
+    Read leniently: no file, unreadable JSON, anything that is not a non-empty list of tables, or a
+    list whose entries do not resolve, is warned about on stderr and read as "no override". A
+    broken or hand-edited file must never take a sample pass or an evaluation down with it.
+    """
+    path = sample_override_path(log_dir)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[Warn] {path} could not be read ({exc}); using the run's config", file=sys.stderr)
+        return None
+    if not isinstance(raw, list) or not raw:
+        print(f"[Warn] {path} is not a non-empty list; using the run's config", file=sys.stderr)
+        return None
+    try:
+        _validate_override_entries(raw)
+    except ValueError as exc:
+        print(f"[Warn] {path} is unusable ({exc}); using the run's config", file=sys.stderr)
+        return None
+    return [dict(entry) for entry in raw]
+
+
+def write_sample_override(log_dir: Union[str, Path], sets: Sequence[SampleSet]) -> Path:
+    """Store `sets` as this run's prompt sets (written whole, then renamed into place)."""
+    path = sample_override_path(log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps([asdict(entry) for entry in sets], ensure_ascii=False, indent=2)
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def clear_sample_override(log_dir: Union[str, Path]) -> None:
+    """Drop the run's edited prompts, so it samples with the config it started from again."""
+    try:
+        sample_override_path(log_dir).unlink()
+    except OSError:
+        pass
+
+
+def run_log_dir(cfg: Any) -> Optional[Path]:
+    """The log directory of the run `cfg` is on (`{logging_dir}/{run_id}`), if it names one.
+
+    `run_dir` is `{output_dir}/{run_id}`, and a run's id is the same token in both roots, so its
+    basename is the log directory's name.
+    """
+    run_id = Path(str(getattr(cfg, "run_dir", "") or "")).name
+    logging_dir = str(getattr(cfg, "logging_dir", "") or "")
+    if not run_id or not logging_dir:
+        return None
+    return Path(logging_dir) / run_id
+
+
+def active_sample_sets(cfg: Any) -> list[SampleSet]:
+    """The sets this run samples with: its own saved prompts when it has them, else `cfg`'s.
+
+    What the trainer's own sample points use, so an edit made while a run is live lands on the next
+    checkpoint it writes. The trainer reads the file in its own run's log directory — the directory
+    it wrote its config snapshot beside — which is why no runtime channel and no run-id guard are
+    needed here.
+    """
+    log_dir = run_log_dir(cfg)
+    if log_dir is not None:
+        raw = read_sample_override(log_dir)
+        if raw is not None:
+            return resolve_sample_sets({"samples": raw})
+    return resolve_sample_sets(cfg)
 
 
 def resolve_train_data_entries(cfg) -> list[TrainDataEntry]:

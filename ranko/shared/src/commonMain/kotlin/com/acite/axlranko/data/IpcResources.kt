@@ -266,6 +266,13 @@ internal object IpcResources {
         "list_generated_samples" to { params -> listOf(run(params, ResourceMode.Read)) },
         "checkpoint_pins" to { params -> listOf(run(params, ResourceMode.Read)) },
         "checkpoint_pin_set" to { params -> listOf(run(params, ResourceMode.Write)) },
+        // Read-only: the prompts the displayed run samples with (its own saved config, or the sets
+        // the editor wrote for it) — resolved the same way `evaluation_prompts` is.
+        "sample_prompts" to { _ -> emptyList() },
+        // A write, and one that also switches the GPU: a sample pass in flight renders into the
+        // very directory being cleaned, so the two must not overlap.
+        "sample_prompts_set" to { params -> listOf(run(params, ResourceMode.Write)) },
+        "clear_checkpoint_samples" to { params -> listOf(run(params, ResourceMode.Write), gpu()) },
 
         // --- config.toml and the preset stores are small files rewritten in place ---
         "config_get" to { _ -> listOf(config(read = true)) },

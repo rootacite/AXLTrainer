@@ -232,6 +232,60 @@ data class PromptTagCount(
     val frequency: Float = 0f,
 )
 
+/**
+ * One `[[validation.samples]]` set a run samples with, as `sample_prompts` reports it. Every key is
+ * present — the helper stores them complete — so the editor can write back exactly what it read.
+ */
+@Serializable
+data class SampleSetInfo(
+    val name: String = "",
+    val prompt: String = "",
+    val negative: String = "",
+    val width: Int = 0,
+    val height: Int = 0,
+    val steps: Int = 0,
+    @SerialName("guidance_scale") val guidanceScale: Float = 0f,
+    @SerialName("guidance_rescale") val guidanceRescale: Float = 0f,
+    val seed: Long = 0,
+    val repeat: Int = 1,
+)
+
+/**
+ * `sample_prompts`: the prompts one run samples with, and where they come from. [edited] is true
+ * once the Dashboard saved sets for this run ([file] is then the JSON they live in, beside the
+ * run's config snapshot, which is never rewritten); otherwise they are the run's own saved config,
+ * named by [configSource]. [live] is true while that run is the one the trainer is running.
+ */
+@Serializable
+data class SamplePromptsResponse(
+    @SerialName("run_id") val runId: String? = null,
+    @SerialName("output_name") val outputName: String = "",
+    val file: String? = null,
+    val edited: Boolean = false,
+    @SerialName("config_source") val configSource: String = "",
+    val sets: List<SampleSetInfo> = emptyList(),
+    val live: Boolean = false,
+    /** Why the prompts could not be read; empty when they were. */
+    val reason: String = "",
+)
+
+/**
+ * `clear_checkpoint_samples`: how many images went, and the pass records removed with them.
+ * [path] is the checkpoint whose card asked — the reply itself does not carry it — so both the
+ * Ctrl+click panel and the section's card report only on their own checkpoint.
+ */
+@Serializable
+data class SampleClearResult(
+    val path: String = "",
+    val step: Int? = null,
+    val images: Int = 0,
+    /** The job ids whose images (and records) were removed. */
+    val jobs: List<String> = emptyList(),
+    /** Every path that was removed, images and records alike. */
+    val files: List<String> = emptyList(),
+    val error: String? = null,
+)
+
 /** `evaluation_prompts`: what an evaluation of this checkpoint would score against. */
 @Serializable
 data class EvaluationPromptsResponse(
@@ -571,6 +625,18 @@ data class DashboardUiState(
     val evaluationPromptsError: String? = null,
     /** The picker's selection; empty scores every tag the prompts ask for. */
     val evaluationTagSelection: Set<String> = emptySet(),
+    /** The prompts the displayed run samples with (`sample_prompts`), while its section is shown. */
+    val samplePrompts: SamplePromptsResponse? = null,
+    val samplePromptsLoading: Boolean = false,
+    val samplePromptsError: String? = null,
+    /** True while an edited set list is on its way to the helper. */
+    val samplePromptsSaving: Boolean = false,
+    /** True while the prompt editor panel is open. */
+    val samplePromptsEditorOpen: Boolean = false,
+    /** Checkpoint whose sample images are being cleared, if any. */
+    val clearingSamplesPath: String? = null,
+    /** Where the last clear landed, or why it failed; shown on the card it belongs to. */
+    val clearSamplesResult: SampleClearResult? = null,
     /** The tagger's own categories, for the dialog; fetched once when one opens. */
     val taggerInfo: TaggerInfoResult? = null,
     val hardware: HardwareStatus = HardwareStatus(),

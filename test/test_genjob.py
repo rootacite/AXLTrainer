@@ -131,6 +131,30 @@ class SetsJobTest(unittest.TestCase):
         )
 
 
+class BatchJobTest(unittest.TestCase):
+    """The plan a step-range pass is started from."""
+
+    def _job(self, **fields):
+        return genjob.new_batch_job(
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoints=[{"path": "/out/rein_s00100/rein.safetensors", "step": 100, "dir": "rein_s00100"}],
+            from_step=100,
+            to_step=200,
+            images_per_checkpoint=3,
+            **fields,
+        )
+
+    def test_it_names_the_run_config_its_prompts_come_from(self):
+        job = self._job(config_log_dir="/logs/rein_20260101_000000")
+        self.assertEqual(job["config_log_dir"], "/logs/rein_20260101_000000")
+
+    def test_a_batch_without_one_reads_as_empty(self):
+        # An older record (or a hand-written spec) must still load: the runner then falls back to
+        # today's config.toml rather than failing.
+        self.assertEqual(self._job()["config_log_dir"], "")
+
+
 class EvaluationJobTest(unittest.TestCase):
     """The record api.py writes before an evaluation: a plan plus the set of images to score."""
 

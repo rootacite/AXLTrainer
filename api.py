@@ -35,9 +35,12 @@ from trainer.checkpoints import (
 from trainer.config import (
     TrainConfig,
     _load_toml_config,
+    clear_sample_override,
     resolve_sample_sets,
     resolve_train_data_entries,
     run_config_mapping,
+    sample_override_path,
+    write_sample_override,
 )
 from trainer.family import require_trainable, resolve_family
 from trainer import estimate
@@ -272,8 +275,9 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
             latest_stats["current_step"] = data[-1]["step"]
 
     # The flat `sample_*` keys mirror the first `[[validation.samples]]` entry, so the
-    # "generate a sample" form keeps a single place to read its defaults from.
-    sample_sets = _sample_sets_payload()
+    # "generate a sample" form keeps a single place to read its defaults from. The sets are the
+    # shown run's own (its saved config, or the prompts the Dashboard edited for it).
+    sample_sets = _sample_sets_payload(_log_dir(cfg, run_id) if run_id else None)
     if sample_sets:
         first = sample_sets[0]
         cfg = {
@@ -380,14 +384,19 @@ def scan_samples(sample_dir: Path) -> dict[str, list]:
     return {str(k): grouped[k] for k in sorted(grouped.keys(), reverse=True)}
 
 
-def _sample_sets_payload() -> list[dict[str, Any]]:
-    """The resolved `[[validation.samples]]` sets, for the dashboard's sample defaults.
+def _sample_sets_payload(log_dir: Optional[str] = None) -> list[dict[str, Any]]:
+    """The resolved prompt sets of one run, for the dashboard's sample defaults.
+
+    `log_dir` names the run being shown, so the defaults are the prompts that run samples with —
+    its own saved config, or the sets edited for it. Without one (no run resolves) it is today's
+    repo `config.toml`, which is also what a run from before the snapshots falls back to.
 
     A broken entry must not take the dashboard down with it: the charts and the run
     status keep working, and the trainer reports the config error when it starts.
     """
     try:
-        return [asdict(sample_set) for sample_set in resolve_sample_sets(_train_config_dict())]
+        mapping = run_config_mapping(log_dir)[0] if log_dir else _train_config_dict()
+        return [asdict(sample_set) for sample_set in resolve_sample_sets(mapping)]
     except Exception as exc:
         print(f"[Warn] validation.samples ignored: {exc}", file=sys.stderr)
         return []
@@ -616,6 +625,174 @@ def handle_train_reset(params: dict[str, Any]) -> dict[str, Any]:
     payload["run_id"] = run_id
     payload["cleanup"] = cleanup
     return payload
+
+
+def _sample_prompts_payload(params: dict[str, Any]) -> dict[str, Any]:
+    """One run's effective prompt sets, where they were resolved from, and whether it is live.
+
+    The sets are the same ones `evaluate_checkpoint` and the manual sample passes render with
+    (`run_config_mapping`), so the panel, the pass and the scoring all answer with one set of
+    prompts. Never fails for a config it cannot use: `sets` comes back empty with `reason` set.
+    """
+    cfg = _train_config_dict()
+    run_id, output_name = _resolve_run(params, cfg)
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "output_name": output_name,
+        "file": None,
+        "edited": False,
+        "config_source": "",
+        "sets": [],
+        "live": False,
+        "reason": "",
+    }
+    if not run_id:
+        payload["reason"] = "no run to read sampling prompts for"
+        return payload
+
+    log_dir = _log_dir(cfg, run_id)
+    override = sample_override_path(log_dir)
+    mapping, source = run_config_mapping(log_dir)
+    if override.is_file():
+        payload["edited"] = True
+        payload["file"] = str(override)
+    payload["config_source"] = source
+    current = reconcile()
+    payload["live"] = str(current.get("run_id") or "") == str(run_id) and is_pid_alive(current.get("pid"))
+    try:
+        sets = resolve_sample_sets(mapping)
+    except ValueError as exc:
+        payload["reason"] = str(exc)[-500:]
+        return payload
+    payload["sets"] = [_json_safe(asdict(sample_set)) for sample_set in sets]
+    return payload
+
+
+def handle_sample_prompts(params: dict[str, Any]) -> dict[str, Any]:
+    """Read-only: the prompts one run samples with. See `handle_sample_prompts_set`."""
+    return _sample_prompts_payload(params)
+
+
+def handle_sample_prompts_set(params: dict[str, Any]) -> dict[str, Any]:
+    """Save the prompt sets a run should sample with, or drop them so it uses its config again.
+
+    A non-empty `sets` list is validated and stored whole in the run's own log directory
+    (`sample_sets.json`), which every read path layers over the run's config snapshot — the
+    trainer's own sample points included, so an edit made while the run is live lands on the next
+    checkpoint it writes. `sets: null` deletes that file. Nothing is written to `config.toml`, and
+    the snapshot itself is never rewritten: it stays the record of what the run trained with.
+
+    An entry that omits a key is filled from the run's own config, not from the repo file, so a
+    partial request can never mix two runs' settings.
+    """
+    cfg = _train_config_dict()
+    run_id, output_name = _resolve_run(params, cfg)
+    if not run_id:
+        raise ValueError("no run to set sampling prompts on")
+    if "sets" not in params:
+        raise ValueError("sets is required (null resets the run to its own config)")
+
+    raw = params.get("sets")
+    log_dir = _log_dir(cfg, run_id)
+    if raw is None:
+        clear_sample_override(log_dir)
+    else:
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("sets must be a non-empty array of tables")
+        mapping, _source = run_config_mapping(log_dir)
+        try:
+            resolved = resolve_sample_sets({**mapping, "samples": raw})
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        write_sample_override(log_dir, resolved)
+    return _sample_prompts_payload({"name": output_name, "run_id": run_id})
+
+
+def handle_clear_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]:
+    """Remove one checkpoint's sample images: the run's own at its step, and the passes on its card.
+
+    Detached generations and evaluations live under `{name}_samples/generated/`, each as a job
+    record plus its PNGs, so a card is cleared by removing the images of every job that belongs to
+    it (the checkpoint path it names, or its step for a record that names none — the same rule the
+    section groups by) together with those records and their logs. The run's own samples of that
+    step go too, and nothing else: another step's samples, another checkpoint's passes and the
+    job records of a range batch stay where they are.
+
+    Refused while a live trainer is using the GPU (a paused one is free) or another generation is
+    running, because both write the directory being cleaned.
+    """
+    current = reconcile()
+    if _gpu_busy(current):
+        raise ValueError(
+            "training is using the GPU; pause the run (or stop it) before clearing samples"
+        )
+
+    cfg = _train_config_dict()
+    checkpoint = Path(str(params.get("checkpoint") or "")).expanduser()
+    if not checkpoint.is_file():
+        raise ValueError(f"not a checkpoint file: {checkpoint}")
+    running = _running_generation(_output_dir(cfg))
+    if running is not None:
+        raise ValueError(f"a generation is still using this card ({running.get('id')})")
+
+    run_id, output_name, samples_dir = _checkpoint_run(params, cfg, checkpoint)
+    if not run_id:
+        raise ValueError("no run to clear samples for")
+    step = _checkpoint_step(checkpoint, output_name)
+
+    removed: list[str] = []
+    images = 0
+    jobs: list[str] = []
+
+    def drop(path: Path, *, image: bool) -> None:
+        nonlocal images
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            print(f"[Warn] could not remove {path}: {exc}", file=sys.stderr)
+            return
+        removed.append(str(path))
+        if image:
+            images += 1
+
+    if step is not None:
+        for entry in scan_samples(samples_dir).get(str(step), []):
+            drop(Path(str(entry["path"])), image=True)
+
+    generated = genjob.generated_dir(samples_dir)
+    for job in genjob.list_jobs(generated):
+        if not _job_belongs_to(job, checkpoint, step):
+            continue
+        job_id = str(job.get("id"))
+        names = [str(path) for path in (job.get("files") or [])]
+        single = str(job.get("image_path") or "")
+        if single:
+            names.append(single)
+        for name in names:
+            drop(Path(name), image=True)
+        drop(genjob.job_path(generated, job_id), image=False)
+        drop(genjob.log_path(generated, job_id), image=False)
+        jobs.append(job_id)
+
+    return {
+        "run_id": run_id,
+        "output_name": output_name,
+        "checkpoint": str(checkpoint),
+        "step": step,
+        "files": removed,
+        "images": images,
+        "jobs": jobs,
+    }
+
+
+def _job_belongs_to(job: dict[str, Any], checkpoint: Path, step: Optional[int]) -> bool:
+    """The card rule of `checkpointRows`: the checkpoint a record names, else its step."""
+    recorded = str(job.get("checkpoint") or "")
+    if recorded:
+        return recorded == str(checkpoint)
+    return step is not None and job.get("step") == step
 
 
 def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
@@ -921,11 +1098,12 @@ def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
     """Start one "sample with this checkpoint" job. Returns immediately; Ranko follows the job file.
 
     The image keeps its own prompt/CFG/seed and lands in the run's `_samples/generated/`; the
-    config's `[[validation.samples]]` sets are what `generate_checkpoint_samples` renders.
+    form's defaults come from the run's own prompts, and `generate_checkpoint_samples` renders the
+    run's whole set list.
     """
     cfg, run_id, output_name, generated, checkpoint = _claim_generation(params)
 
-    first_set = _sample_sets_payload()
+    first_set = _sample_sets_payload(_log_dir(cfg, run_id))
     defaults = first_set[0] if first_set else {"prompt": None}
     request = genjob.normalize_request(
         params,
@@ -958,16 +1136,20 @@ def handle_generate_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]
     """Render this checkpoint's `[[validation.samples]]` sets as one detached job.
 
     This is the "one checkpoint, one full sample pass" the Dashboard offers for any checkpoint
-    once the GPU is free. Prompts, size, steps, CFG, seed and repeat come from `config.toml`;
-    network type/dim/alpha, `clip_skip`, `max_token_length` and the base model come from the
-    checkpoint's own metadata. Images land in `_samples/generated/` next to the run's own
-    samples, so a training-produced sample is never overwritten.
+    once the GPU is free. The prompts, size, steps, CFG, seed and repeat are the ones the run
+    samples with — its own saved config, or the sets the Dashboard edited for it — recorded on the
+    job so the pass renders what it was planned with; network type/dim/alpha, `clip_skip`,
+    `max_token_length` and the base model come from the checkpoint's own metadata. Images land in
+    `_samples/generated/` next to the run's own samples, so a training-produced sample is never
+    overwritten.
     """
     cfg, run_id, output_name, generated, checkpoint = _claim_generation(params)
 
-    sets = resolve_sample_sets(_train_config_dict())
-    if not sets:
-        raise ValueError("config.toml has no [[validation.samples]] sets to render")
+    log_dir = _log_dir(cfg, run_id)
+    try:
+        sets = resolve_sample_sets(run_config_mapping(log_dir)[0])
+    except ValueError as exc:
+        raise ValueError(f"this run has no sample prompts to render: {exc}") from exc
 
     generated.mkdir(parents=True, exist_ok=True)
     job = genjob.new_job(
@@ -977,7 +1159,10 @@ def handle_generate_checkpoint_samples(params: dict[str, Any]) -> dict[str, Any]
         checkpoint=str(checkpoint),
         mode=genjob.MODE_SETS,
         total_images=sum(sample_set.repeat for sample_set in sets),
-        extra={"sample_sets": [asdict(sample_set) for sample_set in sets]},
+        extra={
+            "sample_sets": [asdict(sample_set) for sample_set in sets],
+            "config_log_dir": str(log_dir),
+        },
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
@@ -1093,11 +1278,13 @@ def _range_bounds(params: dict[str, Any]) -> tuple[int, int]:
 
 
 def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str, Any]:
-    """Render the config's sample sets for every checkpoint of one step range, in one job.
+    """Render the run's sample sets for every checkpoint of one step range, in one job.
 
     The run's own checkpoints whose step falls inside `from_step..to_step` are rendered oldest
     first by a single detached process, which gives each of them its own `generate_checkpoint_samples`
     job (so the images land beside the run's samples and are shown under that checkpoint's card).
+    The prompts are the run's own, recorded on the batch as `config_log_dir` so the runner resolves
+    them once for the whole range.
     """
     cfg, run_id, output_name, generated = _claim_generation_run(params)
     from_step, to_step = _range_bounds(params)
@@ -1115,9 +1302,11 @@ def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str
         )
     candidates.sort(key=lambda item: (int(item["step"]), str(item["dir"])))
 
-    sets = resolve_sample_sets(_train_config_dict())
-    if not sets:
-        raise ValueError("config.toml has no [[validation.samples]] sets to render")
+    log_dir = _log_dir(cfg, run_id)
+    try:
+        sets = resolve_sample_sets(run_config_mapping(log_dir)[0])
+    except ValueError as exc:
+        raise ValueError(f"this run has no sample prompts to render: {exc}") from exc
     images_per_checkpoint = sum(sample_set.repeat for sample_set in sets)
 
     generated.mkdir(parents=True, exist_ok=True)
@@ -1131,6 +1320,7 @@ def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str
         from_step=from_step,
         to_step=to_step,
         images_per_checkpoint=images_per_checkpoint,
+        config_log_dir=str(log_dir),
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
@@ -2108,6 +2298,8 @@ _HANDLERS = {
     "train_stop": handle_train_stop,
     "train_settings": handle_train_settings,
     "train_reset": handle_train_reset,
+    "sample_prompts": handle_sample_prompts,
+    "sample_prompts_set": handle_sample_prompts_set,
     "dataset_tag": handle_dataset_tag,
     "dataset_counts": handle_dataset_counts,
     "tagger_info": handle_tagger_info,
@@ -2115,6 +2307,7 @@ _HANDLERS = {
     "generate_sample": handle_generate_sample,
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
     "generate_checkpoint_samples_batch": handle_generate_checkpoint_samples_batch,
+    "clear_checkpoint_samples": handle_clear_checkpoint_samples,
     "evaluate_checkpoint": handle_evaluate_checkpoint,
     "evaluation_prompts": handle_evaluation_prompts,
     "cancel_generation": handle_cancel_generation,

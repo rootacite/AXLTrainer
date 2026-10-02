@@ -22,6 +22,7 @@ REAL_POPEN = subprocess.Popen
 import api
 from trainer import config as trainer_config
 from trainer import genjob
+from trainer.config import sample_override_path
 from trainer.loss_log import LossRecorder, synthesize_avg_loss
 
 
@@ -73,7 +74,19 @@ class ScanSampleSetsTest(unittest.TestCase):
 
 
 class DashboardSampleSetsTest(unittest.TestCase):
+    """The dashboard's sample defaults: a run that resolves uses that run's own prompts, so these
+    cases keep no run recorded and read the config mapping instead."""
+
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        from trainer import control
+
+        control._state = {}
+        control._last_write_mono = 0.0
+        control.reset_to_idle()
+
         self._orig_config = api._train_config_dict
         api._train_config_dict = lambda: {
             "sample_prompts": "flat prompt",
@@ -92,6 +105,7 @@ class DashboardSampleSetsTest(unittest.TestCase):
 
     def tearDown(self):
         api._train_config_dict = self._orig_config
+        os.environ.pop("AXL_RUNTIME_DIR", None)
 
     def test_dashboard_reports_every_set(self):
         result = api.dispatch("dashboard", {"name": "__missing_run__"})
@@ -801,6 +815,9 @@ class GeneratedFixture:
         self.samples = self.run_dir / "rein_samples"
         self.samples.mkdir(parents=True)
         (self.logs / self.RUN_ID).mkdir(parents=True)
+        # What `main.py` leaves beside a run's logs, and what its prompts resolve from: the run's
+        # own copy of the config, not today's `config.toml`.
+        self._write_run_config()
         self.checkpoint_dir = self.run_dir / "rein_s003050"
         self.checkpoint_dir.mkdir()
         self.checkpoint = self.checkpoint_dir / "rein.safetensors"
@@ -824,6 +841,35 @@ class GeneratedFixture:
     @property
     def generated(self) -> Path:
         return self.samples / "generated"
+
+    def _write_run_config(self) -> Path:
+        """Write the run's own `config.toml` copy from `self.cfg` (`[validation]` + its sets)."""
+        lines = ["[validation]"]
+        for key in (
+            "sample_prompts",
+            "sample_negative",
+            "sample_width",
+            "sample_height",
+            "sample_steps",
+            "sample_seed",
+            "sample_repeat",
+            "guidance_scale",
+            "guidance_rescale",
+        ):
+            if key in self.cfg:
+                lines.append(f"{key} = {json.dumps(self.cfg[key])}")
+        for entry in self.cfg.get("samples") or []:
+            lines.append("")
+            lines.append("[[validation.samples]]")
+            lines.extend(f"{key} = {json.dumps(value)}" for key, value in entry.items())
+        target = self.logs / self.RUN_ID / "config.toml"
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return target
+
+    def _set_run_samples(self, entries: list[dict]) -> None:
+        """Pin this run's prompt sets (and the snapshot they resolve from)."""
+        self.cfg["samples"] = list(entries)
+        self._write_run_config()
 
     def _write_job(self, job_id: str, **fields) -> dict:
         from trainer import genjob
@@ -935,7 +981,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         for key in ("sample_prompts", "sample_negative", "guidance_scale", "sample_steps",
                     "sample_width", "sample_height"):
             self.cfg.pop(key)
-        self.cfg["samples"] = [
+        self._set_run_samples([
             {
                 "prompt": "set one",
                 "negative": "set one negative",
@@ -946,7 +992,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
                 "seed": 11,
             },
             {"prompt": "set two", "steps": 40},
-        ]
+        ])
         self._spawn({"prompt": None, "cfg": None, "steps": None, "seed": None})
         stored = self._spec_written_by_last_spawn()
         self.assertEqual(stored["prompt"], "set one")
@@ -1012,10 +1058,10 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
             self.assertIn("no run", str(ctx.exception))
 
     def test_checkpoint_samples_spawn_a_sets_job(self):
-        self.cfg["samples"] = [
+        self._set_run_samples([
             {"prompt": "set one", "steps": 9, "repeat": 2},
             {"prompt": "set two", "steps": 40, "repeat": 3},
-        ]
+        ])
         result = api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
 
         stored = self._spec_written_by_last_spawn()
@@ -1027,6 +1073,8 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         self.assertEqual(stored["checkpoint"], str(self.checkpoint))
         # The sets are recorded so the panel can show what the pass renders.
         self.assertEqual([entry["steps"] for entry in stored["sample_sets"]], [9, 40])
+        # ...and they are this run's own, with the directory they were resolved in.
+        self.assertEqual(stored["config_log_dir"], str(self.logs / self.RUN_ID))
         self.assertIn("_sets_gen_", stored["id"])
         self.assertEqual(result["job"]["id"], stored["id"])
         self.popen.assert_called_once()
@@ -1034,7 +1082,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
     def test_a_sets_job_carries_its_step_and_no_null_counters(self):
         """Both halves of one bug: a null counter fails the client's decode, and a null step
         leaves the rendered images on no checkpoint card at all."""
-        self.cfg["samples"] = [{"prompt": "set one", "steps": 9, "repeat": 2}]
+        self._set_run_samples([{"prompt": "set one", "steps": 9, "repeat": 2}])
         api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
         stored = self._spec_written_by_last_spawn()
         self.assertEqual(stored["step"], 3050)
@@ -1061,7 +1109,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
             str(target),
             metadata={"ss_steps": "4242"},
         )
-        self.cfg["samples"] = [{"prompt": "set one", "steps": 9, "repeat": 1}]
+        self._set_run_samples([{"prompt": "set one", "steps": 9, "repeat": 1}])
         api.handle_generate_checkpoint_samples({"checkpoint": str(target)})
         self.assertEqual(self._spec_written_by_last_spawn()["step"], 4242)
 
@@ -1084,7 +1132,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
             api.handle_generate_checkpoint_samples({"checkpoint": str(self.run_dir / "nope.safetensors")})
         self.assertIn("not a checkpoint file", str(ctx.exception))
 
-        self.cfg["samples"] = [{"prompt": ""}]
+        self._set_run_samples([{"prompt": ""}])
         with self.assertRaises(ValueError):
             api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
 
@@ -1106,10 +1154,10 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
     def test_a_batch_covers_the_checkpoints_inside_the_range(self):
         for step in (100, 200):
             self._checkpoint_dir(step)
-        self.cfg["samples"] = [
+        self._set_run_samples([
             {"prompt": "a", "steps": 9, "repeat": 2},
             {"prompt": "b", "steps": 9, "repeat": 1},
-        ]
+        ])
 
         result = api.handle_generate_checkpoint_samples_batch({"from_step": 150, "to_step": 250})
         stored = self._spec_written_by_last_spawn()
@@ -1125,14 +1173,38 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         self.assertEqual(stored["checkpoint_index"], 0)
         self.assertEqual(stored["job_ids"], [])
         self.assertEqual(stored["failed"], [])
+        self.assertEqual(stored["config_log_dir"], str(self.logs / self.RUN_ID))
         self.assertIn("_batch_gen_", stored["id"])
         self.assertEqual(result["job"]["id"], stored["id"])
         self.popen.assert_called_once()
 
+    def test_a_batch_hints_where_its_prompts_came_from(self):
+        """The runner resolves the range's prompts once, from the run the batch names."""
+        self._checkpoint_dir(100)
+        self._set_run_samples([{"prompt": "a", "steps": 9, "repeat": 1}])
+        api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 200})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual(stored["config_log_dir"], str(self.logs / self.RUN_ID))
+
+    def test_a_sets_job_records_the_runs_own_prompts_not_todays_file(self):
+        """The prompts are the ones that run samples with, which is what the panel shows too."""
+        self._set_run_samples([{"prompt": "this run's prompt", "steps": 9, "repeat": 1}])
+        api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+        stored = self._spec_written_by_last_spawn()
+        self.assertEqual([entry["prompt"] for entry in stored["sample_sets"]], ["this run's prompt"])
+        self.assertEqual(stored["total_images"], 1)
+
+    def test_a_run_without_prompts_is_refused_before_spawning(self):
+        self._set_run_samples([{"prompt": "", "steps": 9}])
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_generate_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+        self.assertIn("no sample prompts", str(ctx.exception))
+        self.popen.assert_not_called()
+
     def test_a_batch_runs_oldest_step_first(self):
         for step in (300, 100, 200):
             self._checkpoint_dir(step)
-        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        self._set_run_samples([{"prompt": "a", "steps": 9, "repeat": 1}])
         api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 500})
         stored = self._spec_written_by_last_spawn()
         # Oldest step first, and the fixture's own step-3050 checkpoint is outside the range.
@@ -1143,7 +1215,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         other = self.out / "elsewhere_20260910_120000" / "rein_s00200"
         other.mkdir(parents=True)
         (other / "rein.safetensors").write_bytes(b"not a checkpoint")
-        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        self._set_run_samples([{"prompt": "a", "steps": 9, "repeat": 1}])
 
         api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 150})
         stored = self._spec_written_by_last_spawn()
@@ -1151,7 +1223,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
 
     def test_a_batch_validates_its_range_before_spawning(self):
         self._checkpoint_dir(100)
-        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        self._set_run_samples([{"prompt": "a", "steps": 9, "repeat": 1}])
         cases = [
             ({"from_step": "x", "to_step": 10}, "from_step must be an integer"),
             ({"from_step": -1, "to_step": 10}, "from_step must be >= 0"),
@@ -1174,7 +1246,7 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         from trainer import control
 
         self._checkpoint_dir(100)
-        self.cfg["samples"] = [{"prompt": "a", "steps": 9, "repeat": 1}]
+        self._set_run_samples([{"prompt": "a", "steps": 9, "repeat": 1}])
         control.write_state({"status": "training", "pid": os.getpid()}, force=True)
         with self.assertRaises(ValueError) as ctx:
             api.handle_generate_checkpoint_samples_batch({"from_step": 0, "to_step": 200})
@@ -1720,6 +1792,7 @@ class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
 
         from trainer.config import tracker_hparams
 
+        (self.logs / self.RUN_ID / "config.toml").unlink()  # a run from before those copies
         writer = SummaryWriter(log_dir=str(self.logs / self.RUN_ID))
         try:
             writer.add_hparams(
@@ -2284,6 +2357,251 @@ class HardwareStatusTest(unittest.TestCase):
         self.assertIn("gpus", result)
         self.assertIn("cpu", result)
         json.dumps(result)
+
+
+class SamplePromptsIpcTest(GeneratedFixture, unittest.TestCase):
+    """`sample_prompts` / `sample_prompts_set`: one run's prompts, and editing them.
+
+    The fixture's run has its own `config.toml` copy (`_write_run_config`), which is what its
+    prompts resolve from; `sample_sets.json` is the layer the editor writes on top of it.
+    """
+
+    def _read(self, **params):
+        return api.handle_sample_prompts({"name": "rein", "run_id": self.RUN_ID, **params})
+
+    def _set(self, sets, **params):
+        return api.handle_sample_prompts_set(
+            {"name": "rein", "run_id": self.RUN_ID, "sets": sets, **params}
+        )
+
+    def test_dispatch_registered(self):
+        self.assertIn("sample_prompts", api._HANDLERS)
+        self.assertIn("sample_prompts_set", api._HANDLERS)
+
+    def test_the_runs_own_config_is_the_source_when_nothing_was_edited(self):
+        result = self._read()
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(result["output_name"], "rein")
+        self.assertFalse(result["edited"])
+        self.assertIsNone(result["file"])
+        self.assertEqual(
+            result["config_source"], str((self.logs / self.RUN_ID / "config.toml").resolve())
+        )
+        self.assertEqual(result["sets"][0]["prompt"], "config prompt")
+        self.assertEqual(result["reason"], "")
+        json.dumps(result)
+
+    def test_an_edit_replaces_the_prompt_sets_and_is_reported_as_the_source(self):
+        # This run's own config says 640 / x2; the repo's file says something else. An omitted key
+        # has to come from the run, or a partial edit would mix two runs' settings.
+        self.cfg["sample_width"] = 640
+        self.cfg["sample_repeat"] = 2
+        before = self._write_run_config().read_text(encoding="utf-8")
+
+        result = self._set([{"prompt": "a new prompt", "steps": 12}])
+
+        self.assertTrue(result["edited"])
+        self.assertEqual(result["file"], str(sample_override_path(self.logs / self.RUN_ID)))
+        self.assertEqual(result["config_source"], result["file"])
+        self.assertEqual([set_["prompt"] for set_ in result["sets"]], ["a new prompt"])
+        self.assertEqual(result["sets"][0]["width"], 640)
+        self.assertEqual(result["sets"][0]["repeat"], 2)
+        # Nothing was written to the snapshot itself: it stays what the run trained with.
+        self.assertEqual(
+            (self.logs / self.RUN_ID / "config.toml").read_text(encoding="utf-8"), before
+        )
+
+    def test_the_edit_is_what_a_reader_of_the_run_resolves(self):
+        from trainer.config import resolve_sample_sets, run_config_mapping
+
+        self._set([{"prompt": "edited prompt", "steps": 12, "repeat": 1}])
+        mapping, source = run_config_mapping(self.logs / self.RUN_ID)
+        self.assertEqual(source, str(sample_override_path(self.logs / self.RUN_ID)))
+        self.assertEqual([set_.prompt for set_ in resolve_sample_sets(mapping)], ["edited prompt"])
+
+    def test_null_sets_drop_the_edit(self):
+        self._set([{"prompt": "edited prompt", "steps": 12}])
+        result = self._set(None)
+        self.assertFalse(result["edited"])
+        self.assertIsNone(result["file"])
+        self.assertEqual(result["sets"][0]["prompt"], "config prompt")
+        self.assertFalse(sample_override_path(self.logs / self.RUN_ID).exists())
+
+    def test_a_live_run_is_flagged_but_a_stopped_one_is_not(self):
+        from trainer import control
+
+        self.assertFalse(self._read()["live"])
+        control.write_state({"status": "training", "pid": os.getpid()}, force=True)
+        self.assertTrue(self._read()["live"])
+        # Another run being live does not make this one live.
+        control.write_state({"status": "training", "pid": os.getpid(), "run_id": "other_20260101_000000"}, force=True)
+        self.assertFalse(self._read()["live"])
+
+    def test_an_unusable_config_answers_with_a_reason(self):
+        self._set_run_samples([{"prompt": "", "steps": 9}])
+        result = self._read()
+        self.assertEqual(result["sets"], [])
+        self.assertIn("prompt", result["reason"])
+
+    def test_no_run_answers_empty(self):
+        from trainer import control
+
+        control.reset_to_idle()
+        result = api.handle_sample_prompts({"name": "nothing_here"})
+        self.assertIsNone(result["run_id"])
+        self.assertEqual(result["sets"], [])
+        self.assertIn("no run", result["reason"])
+
+    def test_a_bad_edit_is_refused(self):
+        cases = [
+            ([{"prompt": ""}], "prompt"),
+            ([{"prompt": "p", "steps": 0}], "steps"),
+            ([{"prompt": "p", "width": 8}], "width"),
+            ("not a list", "non-empty array"),
+            ([], "non-empty array"),
+        ]
+        for sets, expected in cases:
+            with self.subTest(sets=sets):
+                with self.assertRaises(ValueError) as ctx:
+                    self._set(sets)
+                self.assertIn(expected, str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_sample_prompts_set({"run_id": self.RUN_ID})
+        self.assertIn("sets is required", str(ctx.exception))
+        # Nothing was written by any of them.
+        self.assertFalse(sample_override_path(self.logs / self.RUN_ID).exists())
+
+    def test_editing_a_past_run_creates_its_log_directory(self):
+        run_id = "gone_20260101_000000"
+        result = api.handle_sample_prompts_set(
+            {"run_id": run_id, "name": "gone", "sets": [{"prompt": "for a past run", "steps": 9}]}
+        )
+        self.assertEqual(result["run_id"], run_id)
+        self.assertTrue((self.logs / run_id / "sample_sets.json").is_file())
+
+    def test_no_run_to_edit_is_refused(self):
+        from trainer import control
+
+        control.reset_to_idle()
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_sample_prompts_set({"name": "nothing_here", "sets": [{"prompt": "p"}]})
+        self.assertIn("no run", str(ctx.exception))
+
+
+class ClearCheckpointSamplesIpcTest(GeneratedFixture, unittest.TestCase):
+    """`clear_checkpoint_samples`: one card's images and the records that produced them."""
+
+    def setUp(self):
+        super().setUp()
+        self.generated.mkdir(parents=True, exist_ok=True)
+
+    def _own_sample(self, step: int, set_index: int = 0, repeat: int = 0) -> Path:
+        path = self.samples / f"rein_{step:06d}_p{set_index}_{repeat}.png"
+        path.write_bytes(b"png")
+        return path
+
+    def _job_with_images(self, job_id: str, step: int, checkpoint: str, count: int = 2) -> tuple[dict, list[Path]]:
+        files = []
+        for index in range(count):
+            path = self.generated / f"{job_id}_p0_{index}.png"
+            path.write_bytes(b"png")
+            files.append(path)
+        job = self._write_job(job_id, step=step, checkpoint=checkpoint, state="done", pid=None)
+        job = api.genjob.update_job(self.generated, job_id, files=[str(path) for path in files])
+        return job, files
+
+    def test_the_steps_own_samples_and_their_passes_go(self):
+        own = self._own_sample(3050, 0, 0)
+        other_step = self._own_sample(3000, 0, 0)
+        job, files = self._job_with_images("rein_s003050_sets_gen_1", 3050, str(self.checkpoint))
+
+        result = api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(result["step"], 3050)
+        self.assertEqual(result["images"], 3)
+        self.assertEqual(result["jobs"], ["rein_s003050_sets_gen_1"])
+        self.assertFalse(own.exists())
+        for path in files:
+            self.assertFalse(path.exists())
+        self.assertFalse(api.genjob.job_path(self.generated, job["id"]).exists())
+        self.assertIn(str(own), result["files"])
+        json.dumps(result)
+
+        # Another step's samples are untouched.
+        self.assertTrue(other_step.exists())
+
+    def test_another_checkpoints_pass_stays(self):
+        other = self._checkpoint_file("rein_s003000")
+        kept_job, kept_files = self._job_with_images("rein_s003000_sets_gen_1", 3000, str(other))
+        mine = self._job_with_images("rein_s003050_sets_gen_1", 3050, str(self.checkpoint))
+
+        result = api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+
+        self.assertEqual(result["jobs"], [mine[0]["id"]])
+        for path in kept_files:
+            self.assertTrue(path.exists())
+        self.assertTrue(api.genjob.job_path(self.generated, kept_job["id"]).exists())
+
+    def test_a_record_that_names_no_checkpoint_is_matched_by_its_step(self):
+        # A pass recorded without a checkpoint path (an older record) still belongs to the card of
+        # the step it was written at — the rule the section itself groups by.
+        job = self._write_job("rein_s003050_gen_old", step=3050, checkpoint="", state="done", pid=None)
+        api.genjob.update_job(self.generated, "rein_s003050_gen_old", files=[])
+
+        result = api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+
+        self.assertEqual(result["jobs"], [job["id"]])
+        self.assertFalse(api.genjob.job_path(self.generated, job["id"]).exists())
+
+    def test_the_log_of_a_cleared_pass_goes_too(self):
+        job, _files = self._job_with_images("rein_s003050_sets_gen_1", 3050, str(self.checkpoint), count=1)
+        log = api.genjob.log_path(self.generated, job["id"])
+        log.write_text("noise", encoding="utf-8")
+
+        api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+
+        self.assertFalse(log.exists())
+
+    def test_a_checkpoint_without_images_is_a_no_op(self):
+        result = api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+        self.assertEqual((result["images"], result["jobs"], result["files"]), (0, [], []))
+
+    def test_a_live_trainer_on_the_gpu_is_refused(self):
+        from trainer import control
+
+        for status in ("starting", "encoding", "training", "sampling", "pausing", "resuming", "stopping"):
+            with self.subTest(status=status):
+                control.write_state({"status": status, "pid": os.getpid()}, force=True)
+                with self.assertRaises(ValueError) as ctx:
+                    api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint)})
+                self.assertIn("GPU", str(ctx.exception))
+
+    def test_a_paused_run_may_clear(self):
+        from trainer import control
+
+        own = self._own_sample(3050)
+        control.write_state({"status": "paused", "pid": os.getpid()}, force=True)
+        result = api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+        self.assertEqual(result["images"], 1)
+        self.assertFalse(own.exists())
+
+    def test_a_running_generation_is_refused(self):
+        self._write_job("live_gen_1", pid=os.getpid(), state="running")
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_clear_checkpoint_samples({"checkpoint": str(self.checkpoint), "run_id": self.RUN_ID})
+        self.assertIn("still using this card", str(ctx.exception))
+
+    def test_a_file_that_is_not_a_checkpoint_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            api.handle_clear_checkpoint_samples({"checkpoint": str(self.run_dir / "nope.safetensors")})
+        self.assertIn("not a checkpoint file", str(ctx.exception))
+
+    def _checkpoint_file(self, directory: str) -> Path:
+        target = self.run_dir / directory / "rein.safetensors"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"weights")
+        return target
 
 
 if __name__ == "__main__":

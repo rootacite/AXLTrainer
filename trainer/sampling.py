@@ -18,13 +18,13 @@ if base_dir not in sys.path:
 from text_processing import encode_prompt_batch
 
 try:
-    from config import TrainConfig, resolve_sample_sets
+    from config import TrainConfig, active_sample_sets
     from env import flush_memory
     import control
     from device_swap import SwapContext, at_safe_point
     from models import sample_scheduler_kwargs
 except ImportError:
-    from trainer.config import TrainConfig, resolve_sample_sets
+    from trainer.config import TrainConfig, active_sample_sets
     from trainer.env import flush_memory
     from trainer import control
     from trainer.device_swap import SwapContext, at_safe_point
@@ -218,7 +218,10 @@ def generate_sample_image(
     pipe.text_encoder = trained_te1
     pipe.text_encoder_2 = trained_te2
 
-    sets = resolve_sample_sets(cfg)
+    # The prompts this run samples with: the sets saved for it in its own log directory when the
+    # Dashboard edited them, else the config it started from (`config.active_sample_sets`), so a
+    # change made while the run is live lands on the next checkpoint it writes.
+    sets = active_sample_sets(cfg)
     total_images = sum(sample_set.repeat for sample_set in sets)
     scheduler_kwargs = sample_scheduler_kwargs(cfg, pipe.scheduler.config)
 

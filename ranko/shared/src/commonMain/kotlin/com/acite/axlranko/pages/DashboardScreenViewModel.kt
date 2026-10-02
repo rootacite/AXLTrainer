@@ -15,8 +15,11 @@ import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.HardwareHistory
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.MetricPoint
+import com.acite.axlranko.model.SampleClearResult
 import com.acite.axlranko.model.SampleItem
+import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TrainStatus
+import com.acite.axlranko.model.sampleSetInfos
 import com.acite.axlranko.pages.components.JOB_ERROR
 import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.checkpointRows
@@ -123,6 +126,14 @@ class DashboardScreenViewModel(
                 evaluationPrompts = null,
                 evaluationPromptsError = null,
                 evaluationError = null,
+                // The prompts, and the outcome of the last clear, belong to the run they were
+                // read for: the section reloads them for the run now being shown.
+                samplePrompts = null,
+                samplePromptsLoading = false,
+                samplePromptsError = null,
+                samplePromptsEditorOpen = false,
+                clearingSamplesPath = null,
+                clearSamplesResult = null,
                 samples = emptyMap(),
                 checkpointPins = emptyList(),
                 checkpointPinsFile = null,
@@ -481,6 +492,144 @@ class DashboardScreenViewModel(
                     it.copy(
                         evaluationPromptsLoading = false,
                         evaluationPromptsError = e.message ?: e.toString(),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Loads the displayed run's sampling prompts, once per run: its own saved config, or the sets
+     * the editor wrote for it (`sample_prompts`). Called when the section appears and whenever the
+     * page follows a different run; a poll does not re-read it, because only an edit changes it.
+     */
+    fun loadSamplePrompts(force: Boolean = false) {
+        val state = _uiState.value
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+        val runId = shown?.runId ?: state.runId
+        if (runId.isNullOrBlank()) return
+        if (!force && (state.samplePrompts?.runId == runId || state.samplePromptsLoading)) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(samplePromptsLoading = true) }
+            try {
+                val response = withContext(IoDispatcher) {
+                    ipc.samplePrompts(name = shown?.outputName, runId = runId)
+                }
+                _uiState.update { current ->
+                    // A switch to another run under the call must not install the old run's prompts.
+                    val now = displayedRun(current.runs, current.selectedRun, current.runId)
+                    if ((now?.runId ?: current.runId) != runId) return@update current
+                    current.copy(samplePrompts = response, samplePromptsLoading = false, samplePromptsError = null)
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(samplePromptsLoading = false, samplePromptsError = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    fun openSamplePromptsEditor() {
+        _uiState.update { it.copy(samplePromptsEditorOpen = true, samplePromptsError = null) }
+    }
+
+    fun closeSamplePromptsEditor() {
+        _uiState.update { it.copy(samplePromptsEditorOpen = false) }
+    }
+
+    /**
+     * Saves the edited prompt sets for the displayed run. The helper stores them whole in that
+     * run's log directory, where the trainer's own sample points read them before every pass — so
+     * the next checkpoint of a live run uses them too — and where evaluations resolve them.
+     */
+    fun saveSamplePrompts(forms: List<SampleSetForm>) {
+        if (_uiState.value.samplePromptsSaving) return
+        val sets = sampleSetInfos(forms)
+        if (sets == null) {
+            _uiState.update { it.copy(samplePromptsError = "Fix the highlighted fields first") }
+            return
+        }
+        val state = _uiState.value
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+        _uiState.update { it.copy(samplePromptsSaving = true, samplePromptsError = null) }
+        viewModelScope.launch {
+            try {
+                val response = withContext(IoDispatcher) {
+                    ipc.setSamplePrompts(sets, name = shown?.outputName, runId = shown?.runId ?: state.runId)
+                }
+                _uiState.update {
+                    it.copy(
+                        samplePromptsSaving = false,
+                        samplePrompts = response,
+                        samplePromptsEditorOpen = false,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(samplePromptsSaving = false, samplePromptsError = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    /** Drops this run's edited prompts, so it samples with the config it started from again. */
+    fun resetSamplePrompts() {
+        if (_uiState.value.samplePromptsSaving) return
+        val state = _uiState.value
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+        _uiState.update { it.copy(samplePromptsSaving = true, samplePromptsError = null) }
+        viewModelScope.launch {
+            try {
+                val response = withContext(IoDispatcher) {
+                    ipc.setSamplePrompts(null, name = shown?.outputName, runId = shown?.runId ?: state.runId)
+                }
+                _uiState.update {
+                    it.copy(samplePromptsSaving = false, samplePrompts = response)
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(samplePromptsSaving = false, samplePromptsError = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    /**
+     * Clears one checkpoint's sample images: the run's own at its step and every pass the card
+     * shows, with the job records that produced them. One at a time; api.py refuses it while the
+     * GPU is busy or a generation is running.
+     */
+    fun clearCheckpointSamples(checkpoint: CheckpointItem) {
+        if (_uiState.value.clearingSamplesPath != null) return
+        _uiState.update {
+            it.copy(clearingSamplesPath = checkpoint.path, clearSamplesResult = null)
+        }
+        viewModelScope.launch {
+            try {
+                val state = _uiState.value
+                val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+                val cleared = withContext(IoDispatcher) {
+                    ipc.clearCheckpointSamples(
+                        checkpoint = checkpoint.path,
+                        name = shown?.outputName,
+                        runId = shown?.runId ?: state.runId,
+                    )
+                }
+                _uiState.update {
+                    it.copy(
+                        clearingSamplesPath = null,
+                        clearSamplesResult = cleared.copy(path = checkpoint.path),
+                    )
+                }
+                fetchOnce()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        clearingSamplesPath = null,
+                        clearSamplesResult = SampleClearResult(
+                            path = checkpoint.path,
+                            error = e.message ?: e.toString(),
+                        ),
                     )
                 }
             }
