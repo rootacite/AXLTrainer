@@ -36,6 +36,19 @@ internal fun evaluationRequestError(depthText: String, thresholdText: String): S
 internal fun evaluationDefaultDepth(existingImages: Int): Int = existingImages.coerceAtLeast(1)
 
 /**
+ * The tags the picker opens on: the selection the run recorded, kept to the tags the picker can
+ * offer (a tag this run's prompts no longer ask for has no row to tick), in the payload's order.
+ * An empty result is the default — every tag the prompt asks for is scored.
+ */
+internal fun evaluationPrefillSelection(
+    selectedTags: List<String>,
+    offered: List<String>,
+): Set<String> {
+    val known = offered.toSet()
+    return selectedTags.filter { it in known }.toSet()
+}
+
+/**
  * `Evaluating · rendering 3/4`, then `tagging 8/21` — the phase names what the counters count, since
  * the scored set grows by the rendered images at the handover.
  */

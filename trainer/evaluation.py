@@ -10,21 +10,28 @@ unit-testable and api.py can prepare an evaluation before spawning anything:
   sample passes, listing only the `(set, repeat)` slots that are missing.
 * `score_images` — two scoreboards over tagged images: per image (micro) and per prompt (union),
   optionally narrowed to the tags the caller picked out of `prompt_tag_counts`.
+* the tags one run's last evaluation was narrowed to, kept in its log directory so the next
+  evaluation of that run opens on the same selection (`read_evaluation_tags` /
+  `write_evaluation_tags`, with `last_selected_tags` as the fallback for a run that predates the
+  file).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import sys
+import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
 try:
-    from genjob import STATE_RUNNING, read_job
+    from genjob import MODE_EVALUATE, STATE_RUNNING, read_job
 except ImportError:
-    from trainer.genjob import STATE_RUNNING, read_job
+    from trainer.genjob import MODE_EVALUATE, STATE_RUNNING, read_job
 
 # `{name}_{step:06d}_p{set}_{repeat}.png`, and the older two-number form, which api.scan_samples
 # also reads as set 0.
@@ -152,6 +159,89 @@ def prompt_tag_counts(sets: Sequence[Any]) -> list[dict[str, Any]]:
         }
         for tag, count in ordered
     ]
+
+
+# The tags one run's last evaluation was narrowed to, beside its config snapshot, its edited prompt
+# sets and its checkpoint pins. Only the API ever writes it.
+EVALUATION_TAGS_FILENAME = "evaluation_tags.json"
+
+
+def evaluation_tags_path(log_dir: Union[str, Path]) -> Path:
+    """Where one run's last tag selection lives: inside its log directory, beside the snapshot."""
+    return Path(log_dir) / EVALUATION_TAGS_FILENAME
+
+
+def read_evaluation_tags(log_dir: Union[str, Path]) -> Optional[list[str]]:
+    """The tags this run's last evaluation was narrowed to, or None when it has none saved.
+
+    Read leniently: no file, unreadable JSON, anything that is not a list, or a list holding an
+    entry that is not a string, is warned about on stderr and read as "nothing saved" — a broken or
+    hand-edited file must never take the panel's picker down with it. An empty list is a real
+    record ("every tag the prompts ask for was scored"), which is why it is not the same as none.
+    """
+    path = evaluation_tags_path(log_dir)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[Warn] {path} could not be read ({exc}); no saved tag selection", file=sys.stderr)
+        return None
+    if not isinstance(raw, list) or any(not isinstance(entry, str) for entry in raw):
+        print(f"[Warn] {path} is not a list of tags; no saved tag selection", file=sys.stderr)
+        return None
+    return [str(entry) for entry in raw]
+
+
+def write_evaluation_tags(log_dir: Union[str, Path], tags: Any) -> Path:
+    """Remember the tags an evaluation of this run is being narrowed to (written whole, then renamed).
+
+    Written by the API when a pass is started, an empty list included: clearing the picker back to
+    "every tag the prompts ask for" is a choice like any other, and the next evaluation of this run
+    opens on it.
+    """
+    path = evaluation_tags_path(log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(sorted(selected_tags(tags)), ensure_ascii=False, indent=2)
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def last_selected_tags(jobs: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The selection this run's most recent finished evaluation recorded, if any.
+
+    The fallback for a run that predates `evaluation_tags.json`: an `evaluate` job that is no longer
+    running carries the tags it was narrowed to — `tags`, or the `scores.tags` the records written
+    before that field keep them in. `jobs` is `genjob.list_jobs`' own output, newest first, and the
+    newest such record is authoritative even when it recorded an empty selection (which means every
+    tag the prompt asks for was scored); a run with no finished evaluation answers with an empty
+    list, which is the same thing.
+    """
+    for job in jobs:
+        if str(job.get("mode") or "") != MODE_EVALUATE:
+            continue
+        if str(job.get("state") or "") == STATE_RUNNING:
+            continue
+        recorded = job.get("tags")
+        if not isinstance(recorded, list):
+            scores = job.get("scores")
+            recorded = scores.get("tags") if isinstance(scores, Mapping) else None
+        if not isinstance(recorded, list):
+            continue
+        return sorted(selected_tags(recorded))
+    return []
 
 
 def sample_name_parts(name: str) -> Optional[tuple[int, int, int]]:

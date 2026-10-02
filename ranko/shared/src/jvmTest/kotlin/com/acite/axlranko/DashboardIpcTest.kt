@@ -856,6 +856,7 @@ class DashboardIpcTest {
                 {"tag": "1girl", "count": 6, "frequency": 100.0},
                 {"tag": "anal", "count": 2, "frequency": 33.3333}
               ],
+              "selected_tags": ["1girl", "anal"],
               "reason": ""
             }
             """.trimIndent()
@@ -864,6 +865,7 @@ class DashboardIpcTest {
         assertEquals(listOf("1girl", "anal"), parsed.tags.map { it.tag })
         assertEquals(2, parsed.tags[1].count)
         assertEquals(33.3333f, parsed.tags[1].frequency)
+        assertEquals(listOf("1girl", "anal"), parsed.selectedTags)
         assertEquals("", parsed.reason)
     }
 
@@ -872,6 +874,7 @@ class DashboardIpcTest {
         val raw = """{"run_id": "rein_x", "tags": [], "reason": "validation.samples is empty"}"""
         val parsed = json.decodeFromString(EvaluationPromptsResponse.serializer(), raw)
         assertEquals(emptyList(), parsed.tags)
+        assertEquals(emptyList(), parsed.selectedTags)
         assertEquals("validation.samples is empty", parsed.reason)
     }
 

@@ -27,22 +27,28 @@ from trainer.config import (
     tracker_hparams,
 )
 from trainer.evaluation import (
+    EVALUATION_TAGS_FILENAME,
     MAX_DEPTH,
     MAX_RENDER,
     ImageRef,
     collect_images,
+    evaluation_tags_path,
     expansion_plan,
     images_from_payload,
+    last_selected_tags,
     normalize_depth,
     normalize_tag,
     normalize_threshold,
     prompt_tag_counts,
     prompt_tags,
+    read_evaluation_tags,
     render_slots,
     sample_name_parts,
     score_images,
     selected_tags,
+    write_evaluation_tags,
 )
+from trainer.genjob import STATE_RUNNING
 
 SOURCE = """\
 [environment]
@@ -750,6 +756,92 @@ class PromptTagCountsTest(unittest.TestCase):
 
     def test_missing_prompts_are_skipped(self):
         self.assertEqual(prompt_tag_counts([{}, {"prompt": ""}]), [])
+
+
+class EvaluationTagsStoreTest(unittest.TestCase):
+    """The tag selection a run's evaluations are recorded with, in that run's own log directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log_dir = Path(self.tmp.name) / "logs" / "rein_20260911_120000"
+
+    def test_the_file_sits_in_the_runs_log_directory(self):
+        self.assertEqual(
+            evaluation_tags_path(self.log_dir),
+            self.log_dir / EVALUATION_TAGS_FILENAME,
+        )
+
+    def test_no_file_is_no_record(self):
+        self.assertIsNone(read_evaluation_tags(self.log_dir))
+
+    def test_an_empty_list_is_a_record_of_its_own(self):
+        """Clearing the picker is a choice: it must not read like a run that never recorded one."""
+        write_evaluation_tags(self.log_dir, [])
+        self.assertEqual(read_evaluation_tags(self.log_dir), [])
+
+    def test_writing_normalizes_and_sorts_the_selection(self):
+        path = write_evaluation_tags(self.log_dir, [" (Anal:1.2) ", "1girl", "1girl"])
+        self.assertEqual(path, evaluation_tags_path(self.log_dir))
+        self.assertEqual(read_evaluation_tags(self.log_dir), ["1girl", "anal"])
+
+    def test_writing_creates_the_run_directory_and_leaves_no_temp_file(self):
+        self.assertFalse(self.log_dir.is_dir())
+        write_evaluation_tags(self.log_dir, ["anal"])
+        self.assertEqual([entry.name for entry in self.log_dir.iterdir()], [EVALUATION_TAGS_FILENAME])
+
+    def test_a_broken_file_is_warned_about_and_read_as_nothing(self):
+        for raw in ('{"tags": ["anal"]}', '["anal", 3]', "not json at all"):
+            with self.subTest(raw=raw):
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                evaluation_tags_path(self.log_dir).write_text(raw, encoding="utf-8")
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    self.assertIsNone(read_evaluation_tags(self.log_dir))
+                self.assertIn("[Warn]", stderr.getvalue())
+
+
+def evaluation_job(state="done", **fields):
+    """One `evaluate` job record as `genjob` writes it, with only what the scan reads."""
+    job = {"id": "rein_s003050_evaluate_gen_1", "mode": "evaluate", "state": state}
+    job.update(fields)
+    return job
+
+
+class LastSelectedTagsTest(unittest.TestCase):
+    """The fallback for a run from before `evaluation_tags.json`: its newest finished evaluation."""
+
+    def test_the_newest_finished_evaluation_wins(self):
+        jobs = [evaluation_job(tags=["anal"]), evaluation_job(tags=["pussy"])]
+        self.assertEqual(last_selected_tags(jobs), ["anal"])
+
+    def test_a_running_evaluation_is_not_a_record_yet(self):
+        jobs = [evaluation_job(state=STATE_RUNNING, tags=["anal"]), evaluation_job(tags=["pussy"])]
+        self.assertEqual(last_selected_tags(jobs), ["pussy"])
+
+    def test_other_kinds_of_job_are_skipped(self):
+        jobs = [
+            {"id": "sets_1", "mode": "sets", "state": "done", "tags": ["anal"]},
+            {"id": "batch_1", "mode": "batch", "state": "done"},
+            evaluation_job(state="cancelled", tags=["1girl"]),
+        ]
+        self.assertEqual(last_selected_tags(jobs), ["1girl"])
+
+    def test_an_older_record_keeps_its_selection_in_the_scores(self):
+        jobs = [evaluation_job(scores={"tags": [" (Anal:1.2) ", "1girl"]})]
+        self.assertEqual(last_selected_tags(jobs), ["1girl", "anal"])
+
+    def test_an_empty_recorded_selection_is_an_answer(self):
+        jobs = [evaluation_job(tags=[]), evaluation_job(tags=["anal"], started_at=1.0)]
+        self.assertEqual(last_selected_tags(jobs), [])
+
+    def test_a_record_without_any_selection_is_skipped(self):
+        jobs = [evaluation_job(scores=None), evaluation_job(tags=["anal"])]
+        self.assertEqual(last_selected_tags(jobs), ["anal"])
+
+    def test_no_finished_evaluation_asks_nothing(self):
+        self.assertEqual(last_selected_tags([]), [])
+        self.assertEqual(last_selected_tags([evaluation_job(state=STATE_RUNNING, tags=["anal"])]), [])
 
 
 class ImageRefRecordTest(unittest.TestCase):

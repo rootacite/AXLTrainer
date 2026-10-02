@@ -513,8 +513,10 @@ class TrainerIpcClient {
 
     /**
      * The prompts — and the tags they ask for, with their frequency — an evaluation of this
-     * checkpoint would score against, resolved from the config that checkpoint's run saved. Read
-     * only and never failing: `tags` comes back empty with `reason` set when the config is unusable.
+     * checkpoint would score against, resolved from the config that checkpoint's run saved, plus
+     * the tags that run's last evaluation was narrowed to (`selectedTags`), so the picker reopens
+     * on the same selection. Read only and never failing: `tags` comes back empty with `reason` set
+     * when the config is unusable.
      */
     suspend fun evaluationPrompts(
         checkpoint: String,

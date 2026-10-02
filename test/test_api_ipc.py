@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -5,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -1568,6 +1570,12 @@ class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
     def _stored(self) -> dict:
         return self._spec_written_by_last_spawn()
 
+    def _selection(self):
+        """This run's saved tag selection, or None when it has none."""
+        from trainer import evaluation
+
+        return evaluation.read_evaluation_tags(self.logs / self.RUN_ID)
+
     def test_dispatch_registered(self):
         self.assertIn("evaluate_checkpoint", api._HANDLERS)
         self.assertIn("evaluation_prompts", api._HANDLERS)
@@ -1582,6 +1590,21 @@ class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
 
         self._evaluate(tags="anal, pussy")
         self.assertEqual(self._stored()["tags"], ["anal", "pussy"])
+
+    def test_starting_an_evaluation_saves_the_selection_for_this_run(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._evaluate(tags=[" (Anal:1.2) ", "1girl"])
+        self.assertEqual(self._selection(), ["1girl", "anal"])
+
+        # Clearing the picker is a choice like any other, and it is remembered as one.
+        self._evaluate(tags=[])
+        self.assertEqual(self._selection(), [])
+
+    def test_a_refused_evaluation_saves_no_selection(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        with self.assertRaises(ValueError):
+            self._evaluate(depth=0, tags=["anal"])
+        self.assertIsNone(self._selection())
 
     def test_a_bad_tags_payload_is_refused(self):
         self._write_snapshot(("1girl", 9, 1))
@@ -1606,6 +1629,89 @@ class EvaluateCheckpointIpcTest(GeneratedFixture, unittest.TestCase):
                 {"tag": "anal", "count": 2, "frequency": 100.0},
                 {"tag": "solo", "count": 1, "frequency": 50.0},
             ],
+        )
+
+    def test_the_prompt_picker_opens_on_the_runs_saved_selection(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._evaluate(tags="anal")
+
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["selected_tags"], ["anal"])
+
+    def test_the_picker_asks_for_everything_when_the_run_saved_nothing(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+        self.assertEqual(result["selected_tags"], [])
+
+    def test_the_picker_falls_back_to_the_newest_finished_evaluation(self):
+        """A run from before `evaluation_tags.json`: its own last evaluation is its record."""
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._write_job(
+            "old_evaluate_gen_1", mode="evaluate", state="done", tags=["1girl"], started_at=100.0
+        )
+        # `_write_job` leaves the state alone, so the newer record is still running.
+        self._write_job("live_evaluate_gen_2", mode="evaluate", tags=["pussy"], started_at=200.0)
+
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["selected_tags"], ["1girl"])
+
+    def test_a_finished_evaluation_is_read_from_its_scores_when_it_has_no_tags_field(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._write_job(
+            "evaluate_gen_1",
+            mode="evaluate",
+            state="done",
+            scores={"tags": [" (Anal:1.2) ", "1girl"]},
+        )
+
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["selected_tags"], ["1girl", "anal"])
+
+    def test_other_kinds_of_job_are_no_selection(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        self._write_job("sets_gen_1", mode="sets", state="done", tags=["anal"])
+        self._write_job("single_gen_2", state="done", tags=["1girl"])
+
+        result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["selected_tags"], [])
+
+    def test_a_broken_saved_selection_warns_and_falls_back_to_the_evaluations(self):
+        self._write_snapshot(("1girl, anal", 9, 1))
+        log_dir = self.logs / self.RUN_ID
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "evaluation_tags.json").write_text("{not a list", encoding="utf-8")
+        self._write_job("evaluate_gen_1", mode="evaluate", state="done", tags=["anal"])
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            result = api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})
+
+        self.assertEqual(result["selected_tags"], ["anal"])
+        self.assertIn("[Warn]", stderr.getvalue())
+
+    def test_the_selection_belongs_to_the_checkpoints_own_run(self):
+        other = "kanae_20260101_000000"
+        other_checkpoint = self.out / other / "kanae_s000100" / "kanae.safetensors"
+        other_checkpoint.parent.mkdir(parents=True)
+        other_checkpoint.write_bytes(b"weights")
+        self._write_snapshot(("1girl, anal", 9, 1), run_id=other)
+        self._write_snapshot(("1girl, anal", 9, 1))
+
+        api.handle_evaluate_checkpoint(
+            {"checkpoint": str(other_checkpoint), "depth": 1, "tags": "1girl"}
+        )
+
+        self.assertEqual(
+            api.handle_evaluation_prompts({"checkpoint": str(other_checkpoint)})["selected_tags"],
+            ["1girl"],
+        )
+        self.assertEqual(
+            api.handle_evaluation_prompts({"checkpoint": str(self.checkpoint)})["selected_tags"],
+            [],
         )
 
     def test_the_prompt_picker_never_fails_over_an_unusable_config(self):

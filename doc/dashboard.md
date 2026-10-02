@@ -139,6 +139,11 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
     about actually drawn" rather than "how close is the caption to the prompt". Nothing selected
     (the default) scores every tag the prompt asks for, exactly as before. Press **Evaluate again**
     to run another pass on the same checkpoint.
+    The selection is remembered **per run**: starting a pass writes it beside that run's logs
+    (`{logging_dir}/{run_id}/evaluation_tags.json`), so the panel reopens on the same tags — for
+    every checkpoint of that run — and clearing it back to all tags is remembered just as well. A
+    run from before that file existed falls back to what its newest finished evaluation recorded
+    (its own job record), and a run with neither opens on nothing selected.
     The pass runs detached and uses **the prompts that run samples with**: the sets saved for it in
     its own log directory (`Sampling prompts` above), else the `config.toml` copy `trainer/main.py`
     keeps beside its logs, so an old checkpoint's images are topped up with the prompts, size, steps,

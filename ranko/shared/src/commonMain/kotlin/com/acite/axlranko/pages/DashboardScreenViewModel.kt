@@ -25,6 +25,7 @@ import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.checkpointRows
 import com.acite.axlranko.pages.components.checkpointsForRun
 import com.acite.axlranko.pages.components.displayedRun
+import com.acite.axlranko.pages.components.evaluationPrefillSelection
 import com.acite.axlranko.pages.components.generateFormDefaults
 import com.acite.axlranko.pages.components.generateFormError
 import com.acite.axlranko.pages.components.generatedSampleItems
@@ -484,8 +485,20 @@ class DashboardScreenViewModel(
                         runId = selected?.runId ?: _uiState.value.runId,
                     )
                 }
-                _uiState.update {
-                    it.copy(evaluationPrompts = prompts, evaluationPromptsLoading = false)
+                _uiState.update { current ->
+                    // A panel closed under the call keeps its own state; the reply's recorded
+                    // selection is the one this run's last evaluation scored with.
+                    if (current.evaluationTarget?.checkpoint?.path != prompts.checkpoint) {
+                        return@update current.copy(evaluationPromptsLoading = false)
+                    }
+                    current.copy(
+                        evaluationPrompts = prompts,
+                        evaluationPromptsLoading = false,
+                        evaluationTagSelection = evaluationPrefillSelection(
+                            prompts.selectedTags,
+                            prompts.tags.map { it.tag },
+                        ),
+                    )
                 }
             } catch (e: Exception) {
                 _uiState.update {

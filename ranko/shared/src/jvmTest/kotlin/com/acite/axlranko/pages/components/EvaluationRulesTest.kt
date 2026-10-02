@@ -105,6 +105,28 @@ class EvaluationRulesTest {
     }
 
     @Test
+    fun thePickerPrefillsTheRunsRecordedSelection() {
+        assertEquals(
+            setOf("1girl", "anal"),
+            evaluationPrefillSelection(listOf("1girl", "anal"), listOf("anal", "1girl", "solo")),
+        )
+    }
+
+    @Test
+    fun aTagThisRunsPromptsNoLongerAskForHasNoRowToTick() {
+        assertEquals(
+            setOf("anal"),
+            evaluationPrefillSelection(listOf("retired tag", "anal"), listOf("anal", "1girl")),
+        )
+    }
+
+    @Test
+    fun nothingRecordedAndNothingOfferedAreBothAnEmptyPick() {
+        assertEquals(emptySet(), evaluationPrefillSelection(emptyList(), listOf("anal")))
+        assertEquals(emptySet(), evaluationPrefillSelection(listOf("anal"), emptyList()))
+    }
+
+    @Test
     fun theProgressLabelNamesThePhaseThatOwnsTheCounters() {
         assertEquals(
             "Evaluating · rendering 3/4",

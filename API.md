@@ -371,7 +371,7 @@ The record is a job with `mode: "evaluate"`:
 | Field | Description |
 |---|---|
 | `depth`, `threshold`, `categories` | The request, as accepted. |
-| `tags` | The tags the scoring was narrowed to, normalized; `[]` means every tag a prompt asks for. |
+| `tags` | The tags the scoring was narrowed to, normalized; `[]` means every tag a prompt asks for. The same selection is written to the run's own log directory (`{logging_dir}/{run_id}/evaluation_tags.json`, beside `sample_sets.json`), so `evaluation_prompts` offers it again the next time this run is evaluated. |
 | `config_source` | The file the prompts came from: the sets saved for that run (`{logging_dir}/{run_id}/sample_sets.json`, `sample_prompts_set`), else the `config.toml` it saved beside its logs, else the hparams it recorded at startup, else today's repo `config.toml`. |
 | `sample_sets` | The resolved prompt sets the top-up renders with. |
 | `plan` | `{needed, depth, passes, per_pass, existing_images, render_total, sets: [{set_index, repeat, existing, render}]}`. `needed` is false when the checkpoint already holds `depth` images — then **nothing is rendered** and the pass goes straight to tagging. Otherwise `passes = ceil((depth - existing_images) / per_pass)` whole copies of the config's sample pass are rendered (`render_total = passes × per_pass` images), each set contributing its own `repeat × passes` and `render` listing the repeat indices that pass writes: the set's numbering continues after the highest index it already uses, so an earlier pass is never written over. The count overshoots `depth` by less than one pass — and the images already there count towards it, whatever produced them (the run's own sample point, an earlier `sets` pass, an earlier evaluation). |
@@ -392,11 +392,19 @@ none of them is counted in `images_skipped` rather than scored.
 
 ### `evaluation_prompts`
 
-Read-only, no GPU: the prompts an evaluation of this checkpoint would be scored against, and the tags
-they ask for with their frequency. This is what the Dashboard's picker offers before a pass is
-started, so the selection and the scoring come from the same config. It resolves the run and the
-config exactly as `evaluate_checkpoint` does (the checkpoint's own run wins; the prompts saved for
-it, else its saved `config.toml`, else the hparams it recorded, else today's file).
+Read-only, no GPU: the prompts an evaluation of this checkpoint would be scored against, the tags
+they ask for with their frequency, and the tags this run's last evaluation was narrowed to. This is
+what the Dashboard's picker offers before a pass is started, so the selection and the scoring come
+from the same config. It resolves the run and the config exactly as `evaluate_checkpoint` does (the
+checkpoint's own run wins; the prompts saved for it, else its saved `config.toml`, else the hparams
+it recorded, else today's file).
+
+`selected_tags` is what that run's own evaluations recorded, in this order: the selection saved for
+it (`{logging_dir}/{run_id}/evaluation_tags.json`, written when a pass is started), else the tags
+the newest `evaluate` job of that run that is no longer running recorded (`tags`, or the
+`scores.tags` the older records keep them in), else `[]` — a run whose evaluations never recorded a
+selection, or one that scored every tag the prompts ask for. The selection is the run's, not the
+checkpoint's, and it is offered for every checkpoint of that run.
 
 Params:
 
@@ -418,6 +426,7 @@ Result:
     {"tag": "1girl", "count": 6, "frequency": 100.0},
     {"tag": "anal", "count": 2, "frequency": 33.3333}
   ],
+  "selected_tags": ["anal"],
   "reason": ""
 }
 ```

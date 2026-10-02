@@ -295,6 +295,12 @@ data class EvaluationPromptsResponse(
     @SerialName("config_source") val configSource: String = "",
     /** The tags the prompts ask for, most frequent first; empty with [reason] set when unusable. */
     val tags: List<PromptTagCount> = emptyList(),
+    /**
+     * What this run's last evaluation was narrowed to (`evaluation_tags.json`, or the newest
+     * finished evaluation's own record for a run from before that file existed); empty means every
+     * tag the prompts ask for, which is also what a run with no recorded selection answers.
+     */
+    @SerialName("selected_tags") val selectedTags: List<String> = emptyList(),
     val reason: String = "",
 )
 

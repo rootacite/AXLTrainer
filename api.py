@@ -1353,6 +1353,19 @@ def _checkpoint_run(
     return resolved_run, resolved_name, _samples_dir(cfg, resolved_run, resolved_name)
 
 
+def _saved_tag_selection(log_dir: Path, samples_dir: Path) -> list[str]:
+    """The tags an evaluation of this run is narrowed to, as the picker should open on them.
+
+    The selection the run saved when a pass was started (`evaluation_tags.json`), else what its most
+    recent finished evaluation recorded — the fallback for a run from before that file existed —
+    else nothing, which means every tag the prompts ask for.
+    """
+    saved = evaluation.read_evaluation_tags(log_dir)
+    if saved is None:
+        saved = evaluation.last_selected_tags(genjob.list_jobs(genjob.generated_dir(samples_dir)))
+    return sorted(evaluation.selected_tags(saved))
+
+
 def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
     """Start one evaluation of this checkpoint: top its samples up to Depth, tag them, score them.
 
@@ -1404,6 +1417,12 @@ def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
         sample_sets=[asdict(sample_set) for sample_set in sets],
         tags=tags,
     )
+    # The selection is this run's from now on, so its next evaluation opens on it. A run directory
+    # that refuses the write is a warning: the pass itself is what was asked for.
+    try:
+        evaluation.write_evaluation_tags(config_log_dir, tags)
+    except OSError as exc:
+        print(f"[Warn] could not save the tag selection ({exc})", file=sys.stderr)
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}
 
@@ -1416,6 +1435,9 @@ def handle_evaluation_prompts(params: dict[str, Any]) -> dict[str, Any]:
     run wins when its path sits under `output_dir` — and reads the same config snapshot or hparams
     fallback, so what the picker offers is what the pass will score against.
 
+    `selected_tags` is the selection this run's last evaluation used (`_saved_tag_selection`), so
+    reopening the panel offers the same tags rather than an empty picker.
+
     Never fails for a config it cannot use: `tags` comes back empty with `reason` set, and the panel
     falls back to "score every tag the prompt asks for".
     """
@@ -1424,8 +1446,9 @@ def handle_evaluation_prompts(params: dict[str, Any]) -> dict[str, Any]:
     if not raw:
         raise ValueError("checkpoint is empty")
     checkpoint = resolve_resume_path(raw)
-    run_id, output_name, _samples_dir = _checkpoint_run(params, cfg, checkpoint)
-    mapping, config_source = run_config_mapping(_log_dir(cfg, run_id))
+    run_id, output_name, samples_dir = _checkpoint_run(params, cfg, checkpoint)
+    config_log_dir = _log_dir(cfg, run_id)
+    mapping, config_source = run_config_mapping(config_log_dir)
     payload: dict[str, Any] = {
         "run_id": run_id,
         "output_name": output_name,
@@ -1433,6 +1456,8 @@ def handle_evaluation_prompts(params: dict[str, Any]) -> dict[str, Any]:
         "config_source": config_source,
         "sample_sets": [],
         "tags": [],
+        # What this run's last evaluation was narrowed to, so the panel reopens on the same pick.
+        "selected_tags": _saved_tag_selection(config_log_dir, samples_dir),
         "reason": "",
     }
     try:
