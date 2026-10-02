@@ -4,7 +4,7 @@ Ranko ("AxlRanko") is the desktop GUI, built with Kotlin Multiplatform + Compose
 
 The chrome is the same **Sky & Sakura** night palette as KataHana (deep purple, sakura pink, sky blue, Nunito, porcelain cards). Utils → **Appearance** can switch the backdrop (solid / glow orbs / a local image), **card blur** vs **background blur** (independent; cards/nav vs the wallpaper in the gaps), font scale (text only), icon scale (icons, padding, component size), and **thumbnail quality** (JPEG 1–100 for dataset/sample thumbs over IPC). Those prefs live in Java Preferences, not `config.toml`.
 
-![Dashboard — live training run](screenshots/dashboard-training.png)
+![Dashboard — charts after a run](screenshots/dashboard-charts.webp)
 
 ## Requirements
 
@@ -28,7 +28,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 ### Images — dataset caption editor
 
-![Images tab](screenshots/images-tab.png)
+![Images tab](screenshots/images-tab.webp)
 
 - Left: scrollable thumbnail list of every image in the selected dataset folder (jpg/jpeg/png/webp/bmp) — the entries of `[[environment.train_data]]`, picked by the chip row above the panels when the config lists more than one folder (`train_data_dir` alone when it lists one). `*.mask.png` sidecars are not listed. The selected image is highlighted; images with unsaved caption edits get a **red border**. A small pink corner dot marks images that already have a loss mask (`{stem}.mask.png` or an alpha channel on the training image); the dot turns red while the in-memory mask is unsaved.
 - Right, top: a **Mask** toolbar (toggle paint, mask-only view, brush size, feather as % of diameter default 20%, strength default 100%, invert / fill white / fill black, clear, save mask), then the large preview. With **Mask** on, left-drag paints white (train) and right-drag paints black (ignore; Ctrl+left also erases). Strokes are sampled along the pointer path, so fast movement stays continuous. The cursor shows the brush footprint: the solid circle is the full-strength core, the dashed circle is the outer edge of the feather, and both scale with the image. **Alt+wheel** over the canvas resizes the brush (same range as the slider, wheel up larger). The brush only paints while the pointer is over the image: dragging into the letterbox or past the edges stops painting (nothing is smeared along the border), and re-entering the image starts a new segment rather than a line back to where the pointer left. The overlay dims ignored regions. If there is no sidecar, a transparent training image is previewed using its alpha as the mask. **Save mask** writes `{stem}.mask.png` (takes precedence over alpha). **Clear** deletes only the sidecar and falls back to alpha (or full-image training). Switching thumbs auto-saves a dirty mask. Caption **Save** does not write the mask.
@@ -38,7 +38,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 ### Statistics — tag analysis & bulk cleanup
 
-![Statistics tab](screenshots/statistics-tab.png)
+![Statistics tab](screenshots/statistics-tab.webp)
 
 - Left: every tag with a **frequency bar** colored by occurrence rate (blue → green → red as frequency rises), plus count and percentage. A tag that has a row in `tagger/selected_tags.csv` is shown as `english [chinese]`; search matches either side. Captions on disk stay English. A copy button after the label puts the English tag on the clipboard. Selected tags slide right.
 - Right top: a staggered grid of thumbnails matching the current filter. **Click a thumbnail to jump to the Images tab with that image preselected.**
@@ -53,7 +53,7 @@ The app opens with a floating, draggable navigation rail (Images / Statistics / 
 
 ### Utils — config editor
 
-![Utils tab](screenshots/utils-tab.png)
+![Utils tab — Training section](screenshots/utils-training.webp)
 
 - A validated, structured editor for `config.toml` (repo root) — no hand-editing TOML.
 - Environment section lists the **Train data directories**: one row per `[[environment.train_data]]` entry — a folder path with **Browse** and its per-epoch **Repeat** (1–512), `+ Add folder`, and a delete button per row (the last row stays). `train_data_dir` is written as the first row's path. Then **Auto-tag dataset**: a row of **category switches** (`general` / `character` / `copyright` / `style` / `meta` / `rating`, asked from the model itself through IPC `tagger_info`; only `general` is on at first, and the last one cannot be switched off), a confidence slider / threshold (default `0.35`) and a **Tag dataset** button that tags the selected folder (the chip row above it when there is more than one). Under the slider sit the model's **calibrated thresholds** — one tick per selected category, drawn at its own value, and spelled out as `general 0.17` or `general 0.17 → 0.35` when the slider is above it, because the slider is a floor over them. That calls IPC `dataset_tag`, which runs `tagger2/main.py` (Pixai tagger v1, PyTorch/ROCm) on that folder and overwrites sidecar `.txt` captions. The **Partial tagging** switch turns that into a pass that *adds* instead of replacing: a **Tags to add** field takes a comma-separated list, and only those tags are looked for — each one the model reports above the threshold is appended to the captions that lack it, everything else in every caption is left exactly as it was, and a caption that would gain nothing is not rewritten (the button becomes **Add tags**, the category pills step aside since a requested tag is looked up in all six, and the threshold reads "the absolute floor for the tags above"). The status line then reports what happened per tag (`Added anal ×12 · pussy ×3 · 15/100 images · never matched: …`). When it finishes, Images and Statistics reload from disk. A tag holds that folder and the GPU until it ends, so anything else that would write into the same folder — a caption save, a mask save, a drop, a second tag — is refused **at once** with a line naming the tag and how long it has been running, instead of queueing behind it; the rest of the app (charts, other folders, other pages) keeps working while it runs. With the model not downloaded yet, the card shows the one line that says how to fetch it and still runs the tagger's own default category.
