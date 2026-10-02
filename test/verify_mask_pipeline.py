@@ -1354,14 +1354,24 @@ def launch_run(*, name: str, data_dir: Path, seed: int, steps: int, work: Path, 
                tier: str, batch_size: int = 3, resume_from: Path | None = None,
                save_every_override: int | None = None, lr: tuple[float, float] = (2e-4, 2e-5),
                warmup: int = 10, quiet: bool = False, retries: int = 0,
-               no_hip_memory_caching: bool = False) -> RunResult:
-    """Run one child training, retrying the intermittent ROCm GPU memory fault."""
-    for hook in BEFORE_LAUNCH:
-        hook()
+               no_hip_memory_caching: bool = False,
+               extra_sections: dict[str, dict[str, Any]] | None = None,
+               hook: bool = False) -> RunResult:
+    """Run one child training, retrying the intermittent ROCm GPU memory fault.
+
+    `extra_sections` is merged into the generated mirror config last, so a caller with keys this
+    function does not know about (the optimizer probe's `[network]`, for one) can set them without
+    a second config writer; it never changes what an existing caller gets. `hook` runs the child
+    through the repo's `start_hook.sh`, i.e. under the `[environment].amdfq` allocation patch —
+    off by default, because the tiers' measurements are the unpatched ones.
+    """
+    for hook_fn in BEFORE_LAUNCH:
+        hook_fn()
     result = _launch_once(name=name, data_dir=data_dir, seed=seed, steps=steps, work=work,
                           masked=masked, tier=tier, batch_size=batch_size, resume_from=resume_from,
                           save_every_override=save_every_override, lr=lr, warmup=warmup, quiet=quiet,
-                          no_hip_memory_caching=no_hip_memory_caching)
+                          no_hip_memory_caching=no_hip_memory_caching,
+                          extra_sections=extra_sections, hook=hook)
     attempt = 1
     while result.gpu_fault and attempt <= retries:
         print(f"      [{tier}] {name}: (attempt {attempt}) died from the known gfx1201 Tensile GPU "
@@ -1369,8 +1379,8 @@ def launch_run(*, name: str, data_dir: Path, seed: int, steps: int, work: Path, 
         attempt += 1
         # The fault is shape/allocation driven and reproduces, so do not burn a second identical
         # attempt: switch to the documented (much slower) dodge right away.
-        for hook in BEFORE_LAUNCH:
-            hook()
+        for hook_fn in BEFORE_LAUNCH:
+            hook_fn()
         escalate = attempt >= 2 and not no_hip_memory_caching
         if escalate:
             print(f"      [{tier}] {name}: retrying with PYTORCH_NO_HIP_MEMORY_CACHING=1", flush=True)
@@ -1378,7 +1388,7 @@ def launch_run(*, name: str, data_dir: Path, seed: int, steps: int, work: Path, 
                               masked=masked, tier=tier, batch_size=batch_size, resume_from=resume_from,
                               save_every_override=save_every_override, lr=lr, warmup=warmup,
                               quiet=quiet, no_hip_memory_caching=no_hip_memory_caching or escalate,
-                              attempt=attempt)
+                              attempt=attempt, extra_sections=extra_sections, hook=hook)
     result.attempts = attempt
     return result
 
@@ -1387,7 +1397,9 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
                  tier: str, batch_size: int = 3, resume_from: Path | None = None,
                  save_every_override: int | None = None, lr: tuple[float, float] = (2e-4, 2e-5),
                  warmup: int = 10, quiet: bool = False, no_hip_memory_caching: bool = False,
-                 attempt: int = 1) -> RunResult:
+                 attempt: int = 1,
+                 extra_sections: dict[str, dict[str, Any]] | None = None,
+                 hook: bool = False) -> RunResult:
     from trainer.dataset import LoraImageDataset
 
     run_root = work / f"run_{name}"
@@ -1435,6 +1447,8 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
     }
     for section, values in overrides.items():
         sections.setdefault(section, {}).update(values)
+    for section, values in (extra_sections or {}).items():
+        sections.setdefault(section, {}).update(values)
     write_toml(mirror / "config.toml", sections)
 
     # Re-running the same work dir only redoes runs that did not finish, so a verification hit by
@@ -1457,8 +1471,16 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
 
     log_path = run_root / "train.out"
     started = time.time()
+    command = [sys.executable, "-u", "trainer/main.py"]
+    if hook:
+        # start_hook.sh resolves [environment].amdfq through trainer/amdfq_patch.py and execs the
+        # trainer under the same LD_PRELOAD / AMDFQ_* environment start_train.sh sets. It lives in
+        # the real repo root (that is where the .so and the config it resolves against are), and
+        # `--workd` puts the trainer itself in the mirror. `exec` keeps the PID, so everything that
+        # watches state.json still sees the trainer.
+        command = ["bash", str(REPO_ROOT / "start_hook.sh"), "--workd", str(mirror), *command]
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen([sys.executable, "-u", "trainer/main.py"], cwd=mirror,
+        proc = subprocess.Popen(command, cwd=mirror,
                                 env=child_env(runtime_dir, no_hip_memory_caching=no_hip_memory_caching),
                                 stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL)
@@ -1499,7 +1521,7 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
         claims={"seed": seed, "steps_requested": steps, "epochs": epochs,
                 "steps_per_epoch": steps_per_epoch, "images": n_images, "masked": masked,
                 "save_every_n_steps": cadence, "mirror_config": str(mirror / "config.toml"),
-                "gpu_memory_fault": fault},
+                "gpu_memory_fault": fault, "hook": bool(hook)},
     )
     result.gpu_fault = fault
     if result.returncode != 0:
