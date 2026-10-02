@@ -228,6 +228,22 @@ class TrainConfigFromMappingTest(unittest.TestCase):
         self.assertEqual([entry["prompt"] for entry in cfg.samples], ["snapshot prompt"])
         self.assertEqual([s.prompt for s in resolve_sample_sets(cfg)], ["snapshot prompt"])
 
+    def test_the_list_shaped_keys_a_mapping_omits_read_as_empty(self):
+        """Absent means empty, not "whatever config.toml this process happens to sit beside".
+
+        `samples` and `train_data` are the keys a mapping can be missing (a config that carried only
+        the flat scalars has no `[[validation.samples]]`), and their dataclass defaults read the
+        file - so an old run would render today's validation blocks, or train on today's folders.
+        """
+        cfg = TrainConfig.from_mapping(
+            {"sample_width": 512, "sample_steps": 4, "train_data_dir": "/data/x"}
+        )
+        self.assertEqual(cfg.samples, [])
+        self.assertEqual(cfg.train_data, [])
+        self.assertEqual(cfg.sample_width, 512)
+        self.assertEqual(cfg.train_data_dir, "/data/x")
+        self.assertEqual([sample_set.width for sample_set in resolve_sample_sets(cfg)], [512])
+
     def test_keys_the_config_does_not_declare_are_ignored(self):
         cfg = TrainConfig.from_mapping({"bookkeeping": "nonsense", "epoch": 2, "_current_epoch": 99})
         self.assertEqual(cfg.epoch, 2)

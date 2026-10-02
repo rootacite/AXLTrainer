@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -310,6 +311,61 @@ class BatchSpecTest(unittest.TestCase):
         job = self._spec([])
         with self.assertRaises(RuntimeError):
             generator.run_sample_batch(job, self.generated)
+
+    def test_the_recorded_sets_are_what_a_range_renders(self):
+        """The range's prompts come off the record, the way a single-checkpoint pass takes them.
+
+        `run_sample_batch` used to resolve them from `config_log_dir` itself. For a run whose
+        snapshot carries no `[[validation.samples]]` (a config with only the flat `sample_*`
+        scalars) that fell through to *today's* repo `config.toml`, so a range could render prompts,
+        sizes and step counts the run never used.
+        """
+        recorded = SampleSet(
+            name="planned", prompt="the planned prompt", negative="n", width=8, height=8, steps=1,
+            guidance_scale=4.0, guidance_rescale=0.5, seed=7, repeat=1,
+        )
+        job = genjob.new_batch_job(
+            run_id="rein_20260101_000000",
+            output_name="rein",
+            checkpoints=[{"path": "rein_s000100", "step": 100}],
+            from_step=100,
+            to_step=100,
+            images_per_checkpoint=1,
+            sample_sets=[asdict(recorded)],
+        )
+        genjob.write_job(self.generated, job)
+        cfg = types.SimpleNamespace(
+            pretrained_model_name_or_path="base.safetensors",
+            network_type="standard",
+            network_dim=8,
+            network_alpha=4,
+            conv_dim=0,
+            conv_alpha=0,
+            mixed_precision="bf16",
+        )
+        seen: dict = {}
+
+        def fake_render(**kwargs):
+            seen["prompts"] = [entry.prompt for entry in kwargs["sets"]]
+            return []
+
+        def refuse(cfg):
+            raise AssertionError("the recorded sets must be used, not re-resolved from a config")
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(generator, "resolve_resume_path", lambda raw: Path(str(raw)).with_suffix(".safetensors")))
+            stack.enter_context(mock.patch.object(generator, "read_lora_metadata", lambda path: {}))
+            stack.enter_context(mock.patch.object(generator, "_record_config", lambda spec: cfg))
+            stack.enter_context(
+                mock.patch.object(generator, "_build_config", lambda metadata, checkpoint, base_cfg=None: cfg)
+            )
+            stack.enter_context(mock.patch.object(generator, "resolve_sample_sets", refuse))
+            stack.enter_context(mock.patch.object(generator, "_load_family", lambda cfg, dtype: (None, None)))
+            stack.enter_context(mock.patch.object(generator, "_render_sets", fake_render))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            generator.run_sample_batch(job, self.generated)
+
+        self.assertEqual(seen["prompts"], ["the planned prompt"])
 
     def test_a_missing_checkpoint_fails_that_entry_and_leaves_the_batch_recorded(self):
         """One unusable checkpoint must not stop the range — the batch keeps going and reports it."""

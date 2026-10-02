@@ -1173,6 +1173,9 @@ class GeneratedSampleIpcTest(GeneratedFixture, unittest.TestCase):
         self.assertEqual(stored["total_images"], 3)
         self.assertEqual(stored["images_done"], 0)
         self.assertEqual(stored["checkpoint_index"], 0)
+        # The prompts this run samples with travel on the record, exactly as api.py resolved them.
+        self.assertEqual([entry["prompt"] for entry in stored["sample_sets"]], ["a", "b"])
+        self.assertEqual([entry["repeat"] for entry in stored["sample_sets"]], [2, 1])
         self.assertEqual(stored["job_ids"], [])
         self.assertEqual(stored["failed"], [])
         self.assertEqual(stored["config_log_dir"], str(self.logs / self.RUN_ID))

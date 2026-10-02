@@ -309,6 +309,7 @@ def new_batch_job(
     to_step: int,
     images_per_checkpoint: int,
     config_log_dir: str = "",
+    sample_sets: Optional[list[Mapping[str, Any]]] = None,
     now: Optional[Union[datetime, float]] = None,
 ) -> dict[str, Any]:
     """The plan api.py writes before spawning a range batch.
@@ -331,6 +332,11 @@ def new_batch_job(
         "from_step": int(from_step),
         "to_step": int(to_step),
         "config_log_dir": str(config_log_dir or ""),
+        # The prompt sets the range renders with, recorded the way a single-checkpoint pass records
+        # them: whoever planned the batch had them resolved in hand, and the runner must not derive
+        # them again from a config file that may have moved on since. Empty on an older record or a
+        # hand-written spec, which is when the runner resolves the run's own config itself.
+        "sample_sets": [dict(entry) for entry in (sample_sets or [])],
         "checkpoint_index": 0,
         "total_checkpoints": len(checkpoints),
         "current_checkpoint": None,

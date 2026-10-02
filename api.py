@@ -1321,6 +1321,9 @@ def handle_generate_checkpoint_samples_batch(params: dict[str, Any]) -> dict[str
         to_step=to_step,
         images_per_checkpoint=images_per_checkpoint,
         config_log_dir=str(log_dir),
+        # The prompts are resolved here, once for the range, and recorded: the runner renders what
+        # this run's own sets say rather than re-reading a config file later.
+        sample_sets=[asdict(sample_set) for sample_set in sets],
     )
     job, log = _spawn_generator(generated, job)
     return {"job": _json_safe(job), "log_path": log}

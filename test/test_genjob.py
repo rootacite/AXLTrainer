@@ -154,6 +154,17 @@ class BatchJobTest(unittest.TestCase):
         # today's config.toml rather than failing.
         self.assertEqual(self._job()["config_log_dir"], "")
 
+    def test_it_records_the_prompt_sets_the_range_renders_with(self):
+        # api.py resolves the run's prompts when it plans the batch, and the record has to carry
+        # them: the runner must not derive them again from a config file that may have moved on.
+        sets = [{"name": "planned", "prompt": "p", "width": 64, "height": 64, "steps": 1,
+                 "guidance_scale": 4.0, "guidance_rescale": 0.5, "seed": 7, "negative": "n",
+                 "repeat": 2}]
+        self.assertEqual(self._job(sample_sets=sets)["sample_sets"], sets)
+
+    def test_a_batch_without_recorded_sets_reads_as_empty(self):
+        self.assertEqual(self._job()["sample_sets"], [])
+
 
 class EvaluationJobTest(unittest.TestCase):
     """The record api.py writes before an evaluation: a plan plus the set of images to score."""

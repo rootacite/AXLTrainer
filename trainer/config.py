@@ -712,11 +712,20 @@ class TrainConfig:
 
         A run's old samples are its own config's, so rendering them again must not read today's
         `config.toml` (`run_config_mapping` hands over the run's snapshot or the fallback). Keys the
-        mapping does not carry keep the dataclass defaults; a key this config does not declare - a
-        `[bookkeeping]` extra, or a section the GUI wrote - is ignored rather than an error.
+        mapping does not carry keep the dataclass defaults — except the two list-shaped ones, whose
+        "default" is whatever `config.toml` this process happens to sit beside: absent means empty
+        there, so a run that had no `[[validation.samples]]` keeps sampling with its own flat
+        `sample_*` scalars instead of today's blocks, and one with no `[[environment.train_data]]`
+        blocks keeps its `train_data_dir` scalar instead of today's folders. A key this config does
+        not declare - a `[bookkeeping]` extra, or a section the GUI wrote - is ignored rather than an
+        error.
         """
         declared = {item.name for item in fields(cls) if item.init}
-        return cls(**{key: value for key, value in mapping.items() if key in declared})
+        values = {key: value for key, value in mapping.items() if key in declared}
+        for key in ("samples", "train_data"):
+            if key in declared and key not in values:
+                values[key] = []
+        return cls(**values)
 
     def __post_init__(self) -> None:
         # Derived on every construction (as `run_dir` is written by `main.py`), so `replace()` on

@@ -611,9 +611,11 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _log(f"batch {batch_id}: {len(entries)} checkpoint(s) on {device}")
 
-    # Every checkpoint of a batch belongs to one run, so the run's own prompts (its saved config, or
-    # the sets the Dashboard edited for it) are resolved once for the whole range.
+    # Every checkpoint of a batch belongs to one run: the prompts come off the record, the way a
+    # single-checkpoint pass takes them, and only a record that carries none (an older one, or a
+    # hand-written spec) resolves the run's own config for the whole range.
     prompt_cfg = _record_config(spec)
+    recorded_sets = _record_sets(spec)
 
     loaded_key: tuple | None = None
     pipe = None
@@ -665,7 +667,7 @@ def run_sample_batch(spec: dict, generated: Path) -> None:
                 )
                 metadata = read_lora_metadata(checkpoint)
                 cfg = _build_config(metadata, checkpoint, base_cfg=prompt_cfg)
-                sets = resolve_sample_sets(cfg)
+                sets = recorded_sets or resolve_sample_sets(cfg)
 
                 job = genjob.new_job(
                     {"step": entry.get("step")},
