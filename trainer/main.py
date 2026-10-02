@@ -16,7 +16,7 @@ from config import (
 from models import artifact_root, lora_checkpoint_file
 from cache import warm_latent_cache
 from env import flush_memory
-from loop import train_one_epoch
+from loop import optimizers_eval, train_one_epoch
 from runs import create_run_dirs
 from setup import build_train_objects
 
@@ -203,11 +203,7 @@ def main() -> None:
             control.end_run(control.STATUS_FINISHED, detail="stopped_during_training")
             return
 
-        if hasattr(artifacts.denoise_optimizer, "eval"):
-            artifacts.denoise_optimizer.eval()
-        if hasattr(artifacts.te_optimizer, "eval"):
-            artifacts.te_optimizer.eval()
-        try:
+        with optimizers_eval((artifacts.denoise_optimizer, artifacts.te_optimizer)):
             artifacts.family.save_lora(
                 accelerator,
                 artifacts.modules,
@@ -226,11 +222,6 @@ def main() -> None:
                     output_dir_base=artifact_root(cfg),
                     swap_ctx=swap_ctx,
                 )
-        finally:
-            if hasattr(artifacts.denoise_optimizer, "train"):
-                artifacts.denoise_optimizer.train()
-            if hasattr(artifacts.te_optimizer, "train"):
-                artifacts.te_optimizer.train()
 
         if control.should_stop():
             progress.close()

@@ -21,6 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from schedulefree import AdamWScheduleFree
 
+from trainer import control, loop
+from trainer.config import TrainConfig
+from trainer.control import LiveSettings
 from trainer.models import build_te_optimizer, build_unet_optimizer
 from trainer.setup import TrainArtifacts
 
@@ -144,6 +147,191 @@ class TeWarmupStepsConfigTest(unittest.TestCase):
     def test_neither_key_falls_back_to_the_default(self):
         cfg = self._load("# no optimizer keys at all\n")
         self.assertEqual(100, cfg.te_warmup_steps)
+
+
+class _StubAccelerator:
+    is_main_process = True
+
+    def log(self, payload, step=None):
+        pass
+
+
+class _RecordingFamily:
+    """`save_lora` / `generate_sample`, recording what the weights were when they were called.
+
+    This is the whole point of the invariant: the cadence save and the sample pass read the
+    parameters, so they have to see the averaged `x`, and the training iterate afterwards.
+    """
+
+    def __init__(self, optimizers, params):
+        self.optimizers = optimizers
+        self.params = params
+        self.seen: list[tuple[str, dict]] = []
+
+    def _snapshot(self, kind: str) -> None:
+        self.seen.append(
+            (
+                kind,
+                {
+                    "params": {name: param.detach().clone() for name, param in self.params.items()},
+                    "train_mode": {
+                        name: bool(optimizer.param_groups[0]["train_mode"])
+                        for name, optimizer in self.optimizers.items()
+                    },
+                },
+            )
+        )
+
+    def save_lora(self, accelerator, modules, cfg, global_step, **kwargs):
+        self._snapshot("save")
+
+    def generate_sample(self, **kwargs):
+        self._snapshot("sample")
+
+
+def expected_x(optimizer, param) -> torch.Tensor:
+    """What `AdamWScheduleFree.eval()` leaves in the parameter: `p + (1 - 1/beta1)(z - p)`."""
+    beta1 = optimizer.param_groups[0]["betas"][0]
+    z = optimizer.state[param]["z"].detach()
+    return param.detach() + (1 - 1 / beta1) * (z - param.detach())
+
+
+class CheckpointAndSamplesUseTheAveragedWeightsTest(unittest.TestCase):
+    """`loop.optimizers_eval`, as the step cadence save and `main.py`'s final save both use it.
+
+    Schedule-Free trains at `y` and averages into `x`; a checkpoint (and the samples drawn from it)
+    that is written without `eval()` silently holds `y` instead — and one that is left in eval mode
+    makes the next `step()` raise. Both directions are pinned here, with the value hand-computed
+    from the optimizer's own state.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+
+    def tearDown(self):
+        control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def _optimizers(self):
+        # A deliberately coarse step: `x` and `y` are only 1.1% of `z - p` apart, so a fine lr puts
+        # them inside one float32 ulp and the test could not tell the two apart at all.
+        cfg = SimpleNamespace(
+            unet_learning_rate=0.05, unet_weight_decay=0.0, unet_betas_1=0.9, unet_betas_2=0.99,
+            unet_warmup_steps=1,
+            te_learning_rate=0.05, te_weight_decay=0.0, te_betas_1=0.9, te_betas_2=0.99,
+            te_warmup_steps=1,
+        )
+        params = {
+            "denoise": torch.nn.Parameter(torch.linspace(-0.01, 0.01, 4)),
+            "te": torch.nn.Parameter(torch.linspace(0.01, -0.01, 4)),
+        }
+        optimizers = {
+            "denoise": build_unet_optimizer(cfg, [params["denoise"]]),
+            "te": build_te_optimizer(cfg, [params["te"]]),
+        }
+        for optimizer in optimizers.values():
+            optimizer.train()
+        for _ in range(5):
+            for param in params.values():
+                param.grad = torch.full_like(param, 0.25)
+            for optimizer in optimizers.values():
+                optimizer.step()
+        return optimizers, params
+
+    def _artifacts(self, optimizers, params, *, sampling_enabled: bool):
+        family = _RecordingFamily(optimizers, params)
+        return SimpleNamespace(
+            accelerator=_StubAccelerator(),
+            denoise_optimizer=optimizers["denoise"],
+            te_optimizer=optimizers["te"],
+            settings=LiveSettings(
+                save_every_n_steps=1,
+                sampling_enabled=sampling_enabled,
+                next_save_step=1,
+            ),
+            family=family,
+            modules=SimpleNamespace(),
+            device=torch.device("cpu"),
+            weight_dtype=torch.bfloat16,
+        ), family
+
+    def _assert_snapshot_is_x(self, snapshot: dict, optimizers, params, expected: dict) -> None:
+        for name, param in params.items():
+            torch.testing.assert_close(
+                snapshot["params"][name],
+                expected[name],
+                rtol=0.0,
+                atol=1e-6,
+                msg=f"{name}: the weights written were not the averaged x",
+            )
+            self.assertFalse(
+                snapshot["train_mode"][name],
+                f"{name}: the optimizer was still in train mode, so the save/sample read y",
+            )
+
+    def test_a_cadence_save_and_its_samples_read_x_and_restore_y(self):
+        optimizers, params = self._optimizers()
+        expected = {name: expected_x(optimizers[name], param) for name, param in params.items()}
+        y = {name: param.detach().clone() for name, param in params.items()}
+        # x and y really are different values here, well beyond the tolerance below, so reading the
+        # wrong one cannot pass unnoticed.
+        for name in params:
+            gap = float((expected[name] - y[name]).abs().max())
+            self.assertGreater(gap, 1e-3, f"{name}: x and y are {gap:g} apart, too close to test")
+        artifacts, family = self._artifacts(optimizers, params, sampling_enabled=True)
+
+        loop._maybe_log_and_sample(artifacts=artifacts, cfg=TrainConfig(), global_step=1)
+
+        self.assertEqual(["save", "sample"], [kind for kind, _ in family.seen])
+        for _kind, snapshot in family.seen:
+            self._assert_snapshot_is_x(snapshot, optimizers, params, expected)
+        for name, param in params.items():
+            self.assertTrue(torch.equal(param.detach(), y[name]), f"{name}: y was not restored")
+            self.assertTrue(optimizers[name].param_groups[0]["train_mode"])
+        # …and the run can go on stepping, which is what a left-behind eval mode would break.
+        for _ in range(2):
+            for param in params.values():
+                param.grad = torch.full_like(param, 0.25)
+            for optimizer in optimizers.values():
+                optimizer.step()
+
+    def test_a_save_without_sampling_reads_x_as_well(self):
+        optimizers, params = self._optimizers()
+        expected = {name: expected_x(optimizers[name], param) for name, param in params.items()}
+        artifacts, family = self._artifacts(optimizers, params, sampling_enabled=False)
+
+        loop._maybe_log_and_sample(artifacts=artifacts, cfg=TrainConfig(), global_step=1)
+
+        self.assertEqual(["save"], [kind for kind, _ in family.seen])
+        self._assert_snapshot_is_x(family.seen[0][1], optimizers, params, expected)
+
+    def test_the_shared_helper_restores_the_modes_even_when_the_body_raises(self):
+        optimizers, params = self._optimizers()
+
+        with self.assertRaises(RuntimeError):
+            with loop.optimizers_eval(optimizers.values()):
+                self.assertFalse(optimizers["te"].param_groups[0]["train_mode"])
+                raise RuntimeError("a save that blows up")
+
+        for optimizer in optimizers.values():
+            self.assertTrue(optimizer.param_groups[0]["train_mode"])
+
+    def test_a_plain_optimizer_without_eval_or_train_is_left_alone(self):
+        param = torch.nn.Parameter(torch.zeros(2))
+        plain = torch.optim.AdamW([param])
+
+        with loop.optimizers_eval((plain,)):
+            param.grad = torch.ones_like(param)
+            plain.step()
+
+        self.assertEqual(2, param.numel())
 
 
 if __name__ == "__main__":

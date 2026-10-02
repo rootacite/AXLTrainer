@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import torch
 
@@ -34,6 +35,26 @@ def _scheduled_lr(optimizer: Any) -> float:
     """The LR Schedule-Free last applied (`scheduled_lr`, its warmup ramp included)."""
     group = optimizer.param_groups[0]
     return group.get("scheduled_lr", group["lr"])
+
+
+@contextlib.contextmanager
+def optimizers_eval(optimizers: Iterable[Any]):
+    """Run the body with every optimizer in eval mode, i.e. with the parameters at the averaged `x`.
+
+    Schedule-Free keeps them at the training iterate `y`; `x` is only there after `eval()`, so
+    anything that reads the weights rather than stepping them — a checkpoint, and the samples drawn
+    from it — has to be written inside this. Both are put back in the `finally`, whatever the save
+    or the sample does. `optimizer_eval` is the one implementation of that: the step cadence save in
+    `_maybe_log_and_sample` and `main.py`'s final save both use it.
+    """
+    switched = [opt for opt in optimizers if hasattr(opt, "eval") and hasattr(opt, "train")]
+    for optimizer in switched:
+        optimizer.eval()
+    try:
+        yield
+    finally:
+        for optimizer in switched:
+            optimizer.train()
 
 
 def _batch_int(values: Any, idx: int) -> int:
@@ -173,14 +194,9 @@ def _maybe_log_and_sample(
 
         settings = artifacts.settings
         if settings.due(global_step):
-            # Schedule-Free keeps the parameters at y while training; eval() is what puts them
-            # back to the averaged x, so a checkpoint (and the samples drawn from it) has to be
-            # saved with both optimizers in eval mode.
-            if hasattr(denoise_optimizer, "eval"):
-                denoise_optimizer.eval()
-            if hasattr(te_optimizer, "eval"):
-                te_optimizer.eval()
-            try:
+            # The checkpoint and the samples drawn from it have to be written with both optimizers
+            # in eval mode (see `optimizers_eval`): they hold y while training, x is the averaged one.
+            with optimizers_eval((denoise_optimizer, te_optimizer)):
                 artifacts.family.save_lora(
                     accelerator, artifacts.modules, cfg, global_step
                 )
@@ -195,11 +211,6 @@ def _maybe_log_and_sample(
                         output_dir_base=artifact_root(cfg),
                         swap_ctx=swap_ctx,
                     )
-            finally:
-                if hasattr(denoise_optimizer, "train"):
-                    denoise_optimizer.train()
-                if hasattr(te_optimizer, "train"):
-                    te_optimizer.train()
             settings.mark_saved(global_step)
             control.publish_settings(settings)
 
