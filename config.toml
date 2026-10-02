@@ -74,7 +74,7 @@ mixed_precision = "bf16"
 train_batch_size = 3
 gradient_accumulation_steps = 1
 learning_rate = 1.0
-epoch = 64
+epoch = 72
 save_every_n_epochs = 1
 save_every_n_steps = 50
 # Render the `[[validation.samples]]` images every time a checkpoint is written. false = save
@@ -92,7 +92,7 @@ resume_lora_path = ""
 network_type = "locon"
 network_dim = 32
 network_alpha = 16
-network_dropout = 0.18
+network_dropout = 0.12
 conv_dim = 16
 conv_alpha = 8
 clip_skip = 1
@@ -123,7 +123,7 @@ noise_offset = 0.05
 flush_memory_every_step = false
 
 [unet_optimizer]
-unet_learning_rate = 5.0E-5
+unet_learning_rate = 1.0E-4
 unet_weight_decay = 0.01
 unet_betas_1 = 0.9
 unet_betas_2 = 0.99
@@ -131,7 +131,7 @@ unet_warmup_steps = 250
 unet_max_grad_norm = 1.0
 
 [te_optimizer]
-te_learning_rate = 5.0E-6
+te_learning_rate = 8.0E-6
 te_weight_decay = 0.01
 te_betas_1 = 0.9
 te_betas_2 = 0.99
@@ -206,7 +206,7 @@ repeat = 1
 
 [[validation.samples]]
 name = "paizuri"
-prompt = "yui_character, 1girl, large breasts, solo, nightgown, hair ornament, open clothes, breasts, breasts out, nipples, looking at viewer, open eyes, blush, (paizuri:1.1), (oral:1.1), cafe, indoors, window, newest, best quality, highres"
+prompt = "yui_character, 1girl, large breasts, solo, nightgown, hair ornament, open clothes, breasts, breasts out, nipples, looking at viewer, open eyes, blush, (paizuri:1.1), (oral:1.1), penis, cafe, indoors, window, newest, best quality, highres"
 negative = "worst quality, low quality, normal quality, deformed, bad anatomy, out of frame, logo, watermark, censorship, internal, gore, guro, horror, non-human, monster, alien, zombie, fused fingers, distorted anatomy, bad composition, lowres, bad quality, dead eyes, jpeg artifacts, old, early"
 width = 1152
 height = 768
