@@ -13,10 +13,10 @@ from config import (
     save_run_config,
     tracker_hparams,
 )
-from models import artifact_root, lora_checkpoint_file
+from models import artifact_root
 from cache import warm_latent_cache
 from env import flush_memory
-from loop import optimizers_eval, train_one_epoch
+from loop import optimizers_eval, save_stopped_lora, train_one_epoch
 from runs import create_run_dirs
 from setup import build_train_objects
 
@@ -192,10 +192,7 @@ def main() -> None:
                 break
 
         if stopped_during == "training":
-            if global_step > 0 and not lora_checkpoint_file(cfg, global_step).is_file():
-                artifacts.family.save_lora(
-                    accelerator, artifacts.modules, cfg, global_step
-                )
+            save_stopped_lora(artifacts, cfg, global_step)
             progress.close()
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:

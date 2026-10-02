@@ -323,6 +323,40 @@ class CheckpointAndSamplesUseTheAveragedWeightsTest(unittest.TestCase):
         for optimizer in optimizers.values():
             self.assertTrue(optimizer.param_groups[0]["train_mode"])
 
+    def test_the_early_stop_save_reads_x_too(self):
+        """`loop.save_stopped_lora`, the third save site: a stop during training owes a checkpoint."""
+        optimizers, params = self._optimizers()
+        expected = {name: expected_x(optimizers[name], param) for name, param in params.items()}
+        y = {name: param.detach().clone() for name, param in params.items()}
+        artifacts, family = self._artifacts(optimizers, params, sampling_enabled=False)
+        cfg = TrainConfig()
+        # A run directory of its own, so the guard below sees no checkpoint for the step.
+        cfg.output_dir = self.tmp.name
+        cfg.logging_dir = self.tmp.name
+        cfg.run_dir = ""
+        cfg.output_name = "stopped"
+
+        self.assertTrue(loop.save_stopped_lora(artifacts, cfg, global_step=1))
+        self.assertEqual(["save"], [kind for kind, _ in family.seen])
+        self._assert_snapshot_is_x(family.seen[0][1], optimizers, params, expected)
+        for name, param in params.items():
+            self.assertTrue(torch.equal(param.detach(), y[name]), f"{name}: y was not restored")
+            self.assertTrue(optimizers[name].param_groups[0]["train_mode"])
+        for _ in range(2):  # the run could keep stepping; a left-behind eval mode would break this
+            for param in params.values():
+                param.grad = torch.full_like(param, 0.25)
+            for optimizer in optimizers.values():
+                optimizer.step()
+
+        # The two ways it owes nothing: the step already has a checkpoint, and step 0.
+        written = loop.lora_checkpoint_file(cfg, 1)
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_bytes(b"")
+        before = len(family.seen)
+        self.assertFalse(loop.save_stopped_lora(artifacts, cfg, global_step=1))
+        self.assertFalse(loop.save_stopped_lora(artifacts, cfg, global_step=0))
+        self.assertEqual(before, len(family.seen))
+
     def test_a_plain_optimizer_without_eval_or_train_is_left_alone(self):
         param = torch.nn.Parameter(torch.zeros(2))
         plain = torch.optim.AdamW([param])

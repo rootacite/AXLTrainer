@@ -15,7 +15,7 @@ try:
     from control import LiveSettings
     from device_swap import SwapContext, at_safe_point
     from family import FamilyModules, ModelFamily
-    from models import artifact_root
+    from models import artifact_root, lora_checkpoint_file
     from setup import TrainArtifacts
 except ImportError:
     from trainer.config import TrainConfig
@@ -25,7 +25,7 @@ except ImportError:
     from trainer.control import LiveSettings
     from trainer.device_swap import SwapContext, at_safe_point
     from trainer.family import FamilyModules, ModelFamily
-    from trainer.models import artifact_root
+    from trainer.models import artifact_root, lora_checkpoint_file
     from trainer.setup import TrainArtifacts
 
 _loss_recorder = LossRecorder()
@@ -55,6 +55,20 @@ def optimizers_eval(optimizers: Iterable[Any]):
     finally:
         for optimizer in switched:
             optimizer.train()
+
+
+def save_stopped_lora(artifacts: TrainArtifacts, cfg: TrainConfig, global_step: int) -> bool:
+    """Write the checkpoint a stop during training owes, if this step has none.
+
+    Same rule as the cadence save: the weights are read rather than stepped, so it runs inside
+    `optimizers_eval`. Without that the file would hold the training iterate `y` — the mode the loop
+    leaves behind — instead of the averaged `x` every other checkpoint is written from.
+    """
+    if global_step <= 0 or lora_checkpoint_file(cfg, global_step).is_file():
+        return False
+    with optimizers_eval((artifacts.denoise_optimizer, artifacts.te_optimizer)):
+        artifacts.family.save_lora(artifacts.accelerator, artifacts.modules, cfg, global_step)
+    return True
 
 
 def _batch_int(values: Any, idx: int) -> int:
