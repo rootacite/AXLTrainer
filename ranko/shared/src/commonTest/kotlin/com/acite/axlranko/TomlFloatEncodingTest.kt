@@ -70,7 +70,7 @@ class TomlFloatEncodingTest {
         val training = form.toTomlSections()["training"]!!
         assertEquals("5.0", training["min_snr_gamma"])
         assertEquals("1.0", training["learning_rate"])
-        assertEquals("1.0", training["max_grad_norm"])
+        assertEquals("1.0", form.toTomlSections()["unet_optimizer"]!!["unet_max_grad_norm"])
         assertEquals("0.0", form.toTomlSections()["network"]!!["network_dropout"])
         assertEquals("0.0", form.toTomlSections()["optimization"]!!["noise_offset"])
         assertEquals("true", form.toTomlSections()["optimization"]!!["flush_memory_every_step"])
@@ -199,9 +199,6 @@ private fun wholeValuedFloatConfig(): AxlTrainerConfig {
             trainBatchSize = 1,
             gradientAccumulationSteps = 1,
             learningRate = 1.0,
-            lrScheduler = "cosine",
-            lrWarmupSteps = 0,
-            maxGradNorm = 1.0,
             epoch = 1,
             saveEveryNEpochs = 1,
             saveEveryNSteps = 100
@@ -234,15 +231,16 @@ private fun wholeValuedFloatConfig(): AxlTrainerConfig {
             unetWeightDecay = 0.01,
             unetBetas1 = 0.9,
             unetBetas2 = 0.99,
-            unetEps = 1e-8,
-            unetWarmupSteps = 0
+            unetWarmupSteps = 0,
+            unetMaxGradNorm = 1.0
         ),
         teOptimizer = TeOptimizerConfig(
             teLearningRate = 1e-5,
             teWeightDecay = 0.01,
             teBetas1 = 0.9,
             teBetas2 = 0.99,
-            teMaxGradNorm = 0.3
+            teMaxGradNorm = 1.0,
+            teWarmupSteps = 100
         ),
         infrastructure = InfrastructureConfig(
             maxDataLoaderNWorkers = 0,

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import torch
 from diffusers.models.attention_processor import AttnProcessor2_0
 from safetensors import safe_open
 
@@ -17,29 +15,6 @@ try:
     from config import TrainConfig
 except ImportError:
     from trainer.config import TrainConfig
-
-
-def build_scheduler(
-    optimizer: torch.optim.Optimizer,
-    total_steps: int,
-    cfg: TrainConfig,
-) -> torch.optim.lr_scheduler.LRScheduler:
-    warmup_steps = max(0, min(cfg.lr_warmup_steps, total_steps))
-
-    def lr_lambda(step: int) -> float:
-        if warmup_steps > 0 and step < warmup_steps:
-            return float(step + 1) / float(warmup_steps)
-
-        decay_steps = max(1, total_steps - warmup_steps)
-        progress = min(1.0, max(0.0, (step - warmup_steps) / decay_steps))
-
-        if cfg.lr_scheduler == "cosine":
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
-        if cfg.lr_scheduler == "linear":
-            return 1.0 - progress
-        return 1.0
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def sample_scheduler_kwargs(cfg: TrainConfig, base_scheduler_config: Any) -> dict[str, Any]:
@@ -72,28 +47,36 @@ def enable_flash_attention(unet: Any) -> None:
     logger.info("UNet attention processor set to AttnProcessor2_0.")
 
 
-def build_unet_optimizer(cfg: TrainConfig, params):
+def _schedule_free_class():
     try:
         from schedulefree import AdamWScheduleFree
     except ImportError as e:
-        raise RuntimeError("schedulefree is required for UNet optimizer.") from e
+        raise RuntimeError("schedulefree is required for the trainer's optimizers.") from e
+    return AdamWScheduleFree
 
+
+def build_unet_optimizer(cfg: TrainConfig, params):
+    # `eps` keeps the library default (1e-8), like the TE optimizer's.
+    AdamWScheduleFree = _schedule_free_class()
     return AdamWScheduleFree(
         params,
         lr=cfg.unet_learning_rate,
         betas=(cfg.unet_betas_1, cfg.unet_betas_2),
-        eps=cfg.unet_eps,
         weight_decay=cfg.unet_weight_decay,
         warmup_steps=cfg.unet_warmup_steps,
     )
 
 
 def build_te_optimizer(cfg: TrainConfig, params):
-    return torch.optim.AdamW(
+    # Schedule-Free AdamW like the UNet, with its own warmup (`te_warmup_steps`); `eps` keeps the
+    # library default (1e-8).
+    AdamWScheduleFree = _schedule_free_class()
+    return AdamWScheduleFree(
         params,
         lr=cfg.te_learning_rate,
         betas=(cfg.te_betas_1, cfg.te_betas_2),
         weight_decay=cfg.te_weight_decay,
+        warmup_steps=cfg.te_warmup_steps,
     )
 
 
@@ -143,10 +126,9 @@ def build_kohya_metadata(
     put("ss_learning_rate", cfg.learning_rate)
     put("ss_unet_lr", cfg.unet_learning_rate)
     put("ss_text_encoder_lr", cfg.te_learning_rate)
-    put("ss_lr_scheduler", cfg.lr_scheduler)
-    put("ss_lr_warmup_steps", cfg.lr_warmup_steps)
+    put("ss_lr_warmup_steps", cfg.te_warmup_steps)
     put("ss_mixed_precision", cfg.mixed_precision)
-    put("ss_max_grad_norm", cfg.max_grad_norm)
+    put("ss_max_grad_norm", cfg.unet_max_grad_norm)
     put("ss_clip_skip", cfg.clip_skip)
     put("ss_network_dropout", cfg.network_dropout)
     put("ss_enable_bucket", cfg.enable_bucket)

@@ -234,8 +234,11 @@ class ResumeConfigTest {
             train_batch_size = 3
             gradient_accumulation_steps = 1
             learning_rate = 1.0
+            # A row this version no longer declares, the way an old file still carries it: it has
+            # to be ignored rather than made fatal.
             lr_scheduler = "cosine"
-            lr_warmup_steps = 100
+            # And one that moved to `[unet_optimizer].unet_max_grad_norm`, which the loader still
+            # reads from here when the new key is absent.
             max_grad_norm = 1.0
             epoch = 16
             save_every_n_epochs = 1
@@ -270,6 +273,7 @@ class ResumeConfigTest {
             unet_weight_decay = 0.01
             unet_betas_1 = 0.9
             unet_betas_2 = 0.99
+            # Like `lr_scheduler` above: a row this version no longer declares.
             unet_eps = 1.0E-8
             unet_warmup_steps = 100
 
@@ -279,6 +283,7 @@ class ResumeConfigTest {
             te_betas_1 = 0.9
             te_betas_2 = 0.99
             te_max_grad_norm = 0.3
+            te_warmup_steps = 100
 
             [infrastructure]
             max_data_loader_n_workers = 20

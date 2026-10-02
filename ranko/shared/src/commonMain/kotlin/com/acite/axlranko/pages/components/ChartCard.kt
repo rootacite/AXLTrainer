@@ -87,6 +87,55 @@ private const val WHEEL_ZOOM_STEP = 1.15f
 private const val WHEEL_ZOOM_INTENSITY = 2.5f
 private const val JUMP_REJECT_FRACTION = 0.5f
 
+/** A chart whose x axis counts steps opens on its newest [DEFAULT_STEP_SPAN] steps. */
+internal const val DEFAULT_STEP_SPAN = 1200f
+
+/** Room the right-hand labels of a dual-axis chart need, mirroring the left padding. */
+internal const val PLOT_RIGHT_PADDING = 52f
+
+/**
+ * The x window a chart opens on: the whole range, or its newest [maxStepSpan] steps. A null span —
+ * every chart whose x axis is not a step count — keeps the full range.
+ */
+internal fun initialXWindow(xMin: Float, xMax: Float, maxStepSpan: Float?): Pair<Float, Float> {
+    val full = xMax - xMin
+    if (!full.isFinite() || full <= 1e-9f) return xMin to xMax
+    val span = maxStepSpan?.takeIf { it > 0f && it.isFinite() }?.coerceAtMost(full) ?: full
+    return (xMax - span) to xMax
+}
+
+/**
+ * Range of one series inside an x window, padded so a flat curve (a learning rate after its warmup)
+ * gets a readable span instead of collapsing onto a single line.
+ */
+internal fun windowDomain(
+    points: List<MetricPoint>,
+    xMin: Float,
+    xMax: Float,
+    padFraction: Float = 0.05f,
+): Pair<Float, Float>? {
+    val inWindow = points.filter { it.step >= xMin && it.step <= xMax }
+    val considered = if (inWindow.isEmpty()) points else inWindow
+    if (considered.isEmpty()) return null
+    val lo = considered.minOf { it.value }
+    val hi = considered.maxOf { it.value }
+    val span = hi - lo
+    val pad = if (span > 1e-12f) span * padFraction else maxOf(abs(hi) * padFraction, 1e-12f)
+    return (lo - pad) to (hi + pad)
+}
+
+/**
+ * Value a normalized y tick (the 0..100 the viewport spans) stands for on one series' own axis, so a
+ * dual-axis chart can label its left and right edges in the units each curve is drawn in.
+ */
+internal fun axisTickValue(
+    viewportMin: Float,
+    viewportSpan: Float,
+    fraction: Float,
+    domainMin: Float,
+    domainMax: Float,
+): Float = domainMin + ((viewportMin + fraction * viewportSpan) / 100f) * (domainMax - domainMin)
+
 private fun zoomRange(current: Float, factor: Float, minRange: Float, fullRange: Float): Float {
     if (fullRange <= 1e-9f) return 0f
     val lo = minOf(minRange, fullRange)
@@ -210,6 +259,8 @@ fun ChartCard(
     outlierClip: Float = 0.15f,
     strokeWidth: Float = 3f,
     chartHeight: Dp = 220.dp,
+    /** Steps the x axis opens on (null = the whole range); see [initialXWindow]. */
+    defaultStepSpan: Float? = null,
     /**
      * Receives the step under the picking click and where that click landed (window-root pixels).
      * Fired by `Ctrl`+left click and by a left double click; null keeps the chart a pure display.
@@ -227,6 +278,7 @@ fun ChartCard(
         strokeWidth = strokeWidth,
         chartHeight = chartHeight,
         showLegend = false,
+        defaultStepSpan = defaultStepSpan,
         onPickStep = onPickStep,
         showHoverStep = showHoverStep,
         pickMarkers = pickMarkers,
@@ -243,6 +295,13 @@ fun MultiSeriesChartCard(
     strokeWidth: Float = 3f,
     chartHeight: Dp = 220.dp,
     showLegend: Boolean = true,
+    /** Steps the x axis opens on (null = the whole range); see [initialXWindow]. */
+    defaultStepSpan: Float? = null,
+    /**
+     * Draw the first two series against their own vertical axes: the left edge is labelled in
+     * series 0's units, the right edge in series 1's, each in that curve's colour.
+     */
+    dualAxis: Boolean = false,
     onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
     showHoverStep: Boolean = false,
     pickMarkers: ChartPickMarkers? = null,
@@ -307,6 +366,8 @@ fun MultiSeriesChartCard(
                     outlierClip = outlierClip,
                     strokeWidth = strokeWidth,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
+                    defaultStepSpan = defaultStepSpan,
+                    dualAxis = dualAxis,
                     onPickStep = onPickStep,
                     showHoverStep = showHoverStep,
                     pickMarkers = pickMarkers,
@@ -362,45 +423,91 @@ private fun InteractiveLineChart(
     outlierClip: Float,
     strokeWidth: Float,
     modifier: Modifier = Modifier,
+    defaultStepSpan: Float? = null,
+    dualAxis: Boolean = false,
     onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
     showHoverStep: Boolean = false,
     pickMarkers: ChartPickMarkers? = null,
 ) {
-    val prepared = remember(series, smoothing) {
+    val rawSeries = remember(series) {
         series.mapNotNull { item ->
             if (item.points.isEmpty()) return@mapNotNull null
-            val raw = item.points
-                .map { ChartPoint(it.step.toFloat(), mapSeriesY(it.value, item)) }
-                .sortedBy { it.step }
+            item to item.points.map { ChartPoint(it.step.toFloat(), it.value) }.sortedBy { it.step }
+        }
+    }
+    if (rawSeries.isEmpty()) return
+
+    val fullX = remember(rawSeries) {
+        val all = rawSeries.flatMap { it.second }
+        all.minOf { it.step } to all.maxOf { it.step }
+    }
+    // The window the chart opens on — the newest `defaultStepSpan` steps, or the whole range.
+    val windowX = remember(fullX, defaultStepSpan) {
+        initialXWindow(fullX.first, fullX.second, defaultStepSpan)
+    }
+
+    // A dual-axis chart draws each of its first two curves through that curve's own range *inside
+    // the opening window*, so the two can be read against a left and a right scale.
+    val chartSeries = remember(rawSeries, dualAxis, windowX) {
+        rawSeries.mapIndexed { index, (item, _) ->
+            if (!dualAxis || index > 1 || (item.domainMin != null && item.domainMax != null)) {
+                item
+            } else {
+                val domain = windowDomain(item.points, windowX.first, windowX.second)
+                if (domain == null) item else item.copy(domainMin = domain.first, domainMax = domain.second)
+            }
+        }
+    }
+    val axisDomains = remember(chartSeries) {
+        chartSeries.mapNotNull { item ->
+            val lo = item.domainMin
+            val hi = item.domainMax
+            if (lo != null && hi != null) lo to hi else null
+        }
+    }
+    val rightDomain = if (dualAxis && axisDomains.size >= 2) axisDomains[1] else null
+    // A dual-axis chart labels its left edge in series 0's units even when the second series has
+    // nothing to draw (a run from before the other curve was logged).
+    val leftDomain = axisDomains.firstOrNull().takeIf { dualAxis }
+    val rightPad = if (rightDomain != null) PLOT_RIGHT_PADDING else 0f
+    val leftAxisColor = chartSeries.firstOrNull()?.color ?: Color.Unspecified
+    val rightAxisColor = chartSeries.getOrNull(1)?.color ?: Color.Unspecified
+
+    val prepared = remember(rawSeries, chartSeries, smoothing) {
+        rawSeries.mapIndexed { index, (_, points) ->
+            val item = chartSeries[index]
+            val raw = points.map { ChartPoint(it.step, mapSeriesY(it.value, item)) }
             PreparedSeries(color = item.color, raw = raw, smooth = smoothPoints(raw, smoothing))
         }
     }
-    if (prepared.isEmpty()) return
 
-    val allRaw = remember(prepared) { prepared.flatMap { it.raw } }
-    val normalized = series.any { it.domainMin != null && it.domainMax != null }
+    val allMapped = remember(prepared) { prepared.flatMap { it.raw } }
+    val normalized = axisDomains.isNotEmpty()
 
-    val fullBounds = remember(allRaw, normalized) {
+    val fullBounds = remember(fullX, allMapped, normalized) {
         Viewport(
-            xMin = allRaw.minOf { it.step },
-            xMax = allRaw.maxOf { it.step },
-            yMin = if (normalized) 0f else allRaw.minOf { it.value },
-            yMax = if (normalized) 100f else allRaw.maxOf { it.value },
+            xMin = fullX.first,
+            xMax = fullX.second,
+            yMin = if (normalized) 0f else allMapped.minOf { it.value },
+            yMax = if (normalized) 100f else allMapped.maxOf { it.value },
         )
     }
 
-    val initialViewport = remember(allRaw, outlierClip, fullBounds, normalized) {
+    // The y range is fitted to the points the window actually shows, so an early spike the window
+    // has scrolled past cannot flatten the curve that is on screen.
+    val initialViewport = remember(allMapped, windowX, outlierClip, normalized) {
         if (normalized) {
-            fullBounds
+            Viewport(xMin = windowX.first, xMax = windowX.second, yMin = 0f, yMax = 100f)
         } else {
-            val sortedY = allRaw.map { it.value }.sorted()
+            val inWindow = allMapped.filter { it.step >= windowX.first && it.step <= windowX.second }
+            val sortedY = (if (inWindow.isEmpty()) allMapped else inWindow).map { it.value }.sorted()
             val half = (outlierClip / 2f).coerceIn(0f, 0.49f)
             val yLo = sortedY.percentile(half)
             val yHi = sortedY.percentile(1f - half)
             val yPad = ((yHi - yLo) * 0.05f).coerceAtLeast(abs(yHi) * 0.01f)
             Viewport(
-                xMin = fullBounds.xMin,
-                xMax = fullBounds.xMax,
+                xMin = windowX.first,
+                xMax = windowX.second,
                 yMin = yLo - yPad,
                 yMax = yHi + yPad,
             )
@@ -417,8 +524,8 @@ private fun InteractiveLineChart(
     // repaints the canvas without recomposing the card.
     val hoverX = remember { mutableStateOf<Float?>(null) }
 
-    val avgStepGap = remember(allRaw) {
-        val xs = allRaw.map { it.step }.distinct().sorted()
+    val avgStepGap = remember(allMapped) {
+        val xs = allMapped.map { it.step }.distinct().sorted()
         if (xs.size < 2) 0f
         else (xs.last() - xs.first()) / (xs.size - 1).toFloat()
     }
@@ -460,10 +567,10 @@ private fun InteractiveLineChart(
     val axisColor = colors.stroke
 
     val gestureModifier = modifier
-        .pointerInput(fullBounds) {
+        .pointerInput(fullBounds, rightPad) {
             detectDragGestures(
                 onDrag = { change, dragAmount ->
-                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING - rightPad).coerceAtLeast(1f)
                     val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
                     val dx = dragAmount.x
                     val dy = dragAmount.y
@@ -486,7 +593,7 @@ private fun InteractiveLineChart(
                 },
             )
         }
-        .pointerInput(fullBounds, minXRange, minYRange) {
+        .pointerInput(fullBounds, minXRange, minYRange, rightPad) {
             awaitPointerEventScope {
                 while (true) {
                     val event = awaitPointerEvent()
@@ -510,7 +617,7 @@ private fun InteractiveLineChart(
                     }
                     if (amount == 0f || !amount.isFinite()) continue
 
-                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                    val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING - rightPad).coerceAtLeast(1f)
                     val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
                     val factor = WHEEL_ZOOM_STEP.pow(-amount * WHEEL_ZOOM_INTENSITY)
                     val vp = viewport
@@ -542,7 +649,7 @@ private fun InteractiveLineChart(
                 }
             }
         }
-        .pointerInput(fullBounds) {
+        .pointerInput(fullBounds, rightPad) {
             if (pickHandler.value == null) return@pointerInput
             awaitPointerEventScope {
                 var trackedId: PointerId? = null
@@ -582,7 +689,7 @@ private fun InteractiveLineChart(
                             lastPlainClickMillis = if (ctrlAtPress || doubleClick) 0L else clickedAt
                             if (!ctrlAtPress && !doubleClick) continue
 
-                            val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING).coerceAtLeast(1f)
+                            val plotW = (size.width.toFloat() - PLOT_LEFT_PADDING - rightPad).coerceAtLeast(1f)
                             val plotH = (size.height.toFloat() - PLOT_BOTTOM_PADDING).coerceAtLeast(1f)
                             if (downPosition.y > plotH) continue
                             val step = stepAtPlotX(
@@ -605,7 +712,7 @@ private fun InteractiveLineChart(
             .onGloballyPositioned {
                 canvasOrigin.value = it.boundsInRoot().topLeft
             }
-            .pointerInput(showHoverStep) {
+            .pointerInput(showHoverStep, rightPad) {
                 if (!showHoverStep) return@pointerInput
                 awaitPointerEventScope {
                     while (true) {
@@ -637,7 +744,7 @@ private fun InteractiveLineChart(
         val h = size.height
         val leftPad = PLOT_LEFT_PADDING
         val bottomPad = PLOT_BOTTOM_PADDING
-        val plotW = w - leftPad
+        val plotW = w - leftPad - rightPad
         val plotH = h - bottomPad
 
         fun dataToScreen(step: Float, value: Float) = Offset(
@@ -655,9 +762,13 @@ private fun InteractiveLineChart(
             axisColor = axisColor,
             textMeasurer = textMeasurer,
             labelStyle = labelStyle,
+            leftDomain = leftDomain,
+            leftColor = leftAxisColor,
+            rightDomain = rightDomain,
+            rightColor = rightAxisColor,
         )
 
-        clipRect(left = leftPad, top = 0f, right = w, bottom = plotH) {
+        clipRect(left = leftPad, top = 0f, right = leftPad + plotW, bottom = plotH) {
             val rawStroke = (strokeWidth * 0.5f).coerceAtLeast(0.8f)
             for (item in visibleSeries) {
                 if (item.raw.isEmpty() && item.smooth.isEmpty()) continue
@@ -796,23 +907,48 @@ private fun DrawScope.drawGridAndLabels(
     axisColor: Color,
     textMeasurer: TextMeasurer,
     labelStyle: TextStyle,
+    leftDomain: Pair<Float, Float>? = null,
+    leftColor: Color = Color.Unspecified,
+    rightDomain: Pair<Float, Float>? = null,
+    rightColor: Color = Color.Unspecified,
 ) {
     val xTicks = 5
     val yTicks = 4
 
     for (i in 0..yTicks) {
         val frac = i.toFloat() / yTicks
-        val yVal = vp.yMin + frac * vp.yRange
         val yScr = plotH - frac * plotH
-        drawLine(gridColor, Offset(leftPad, yScr), Offset(totalW, yScr), strokeWidth = 1f)
-        val layout = textMeasurer.measure(formatAxisValue(yVal), labelStyle)
+        drawLine(gridColor, Offset(leftPad, yScr), Offset(leftPad + plotW, yScr), strokeWidth = 1f)
+
+        val leftValue = if (leftDomain != null) {
+            axisTickValue(vp.yMin, vp.yRange, frac, leftDomain.first, leftDomain.second)
+        } else {
+            vp.yMin + frac * vp.yRange
+        }
+        val leftStyle = if (leftDomain != null) labelStyle.copy(color = leftColor) else labelStyle
+        val leftLayout = textMeasurer.measure(formatAxisValue(leftValue), leftStyle)
         drawText(
-            layout,
+            leftLayout,
             topLeft = Offset(
-                x = (leftPad - layout.size.width - 4f).coerceAtLeast(0f),
-                y = yScr - layout.size.height / 2f,
+                x = (leftPad - leftLayout.size.width - 4f).coerceAtLeast(0f),
+                y = yScr - leftLayout.size.height / 2f,
             ),
         )
+
+        if (rightDomain != null) {
+            val rightValue = axisTickValue(vp.yMin, vp.yRange, frac, rightDomain.first, rightDomain.second)
+            val rightLayout = textMeasurer.measure(
+                formatAxisValue(rightValue),
+                labelStyle.copy(color = rightColor),
+            )
+            drawText(
+                rightLayout,
+                topLeft = Offset(
+                    x = totalW - rightLayout.size.width,
+                    y = yScr - rightLayout.size.height / 2f,
+                ),
+            )
+        }
     }
 
     for (i in 0..xTicks) {
@@ -831,7 +967,7 @@ private fun DrawScope.drawGridAndLabels(
     }
 
     drawLine(axisColor, Offset(leftPad, 0f), Offset(leftPad, plotH), strokeWidth = 1f)
-    drawLine(axisColor, Offset(leftPad, plotH), Offset(totalW, plotH), strokeWidth = 1f)
+    drawLine(axisColor, Offset(leftPad, plotH), Offset(leftPad + plotW, plotH), strokeWidth = 1f)
 }
 
 private fun buildPath(

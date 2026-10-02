@@ -30,6 +30,12 @@ except ImportError:
 _loss_recorder = LossRecorder()
 
 
+def _scheduled_lr(optimizer: Any) -> float:
+    """The LR Schedule-Free last applied (`scheduled_lr`, its warmup ramp included)."""
+    group = optimizer.param_groups[0]
+    return group.get("scheduled_lr", group["lr"])
+
+
 def _batch_int(values: Any, idx: int) -> int:
     item = values[idx]
     if torch.is_tensor(item):
@@ -151,27 +157,29 @@ def _maybe_log_and_sample(
     accelerator = artifacts.accelerator
     if accelerator.is_main_process:
         denoise_optimizer = artifacts.denoise_optimizer
-        te_scheduler = artifacts.te_scheduler
-        unet_effective_lr = denoise_optimizer.param_groups[0].get(
-            "scheduled_lr", denoise_optimizer.param_groups[0]["lr"]
-        )
-        te_base_lr = te_scheduler.get_last_lr()[0]
+        te_optimizer = artifacts.te_optimizer
+        unet_effective_lr = _scheduled_lr(denoise_optimizer)
+        te_effective_lr = _scheduled_lr(te_optimizer)
 
         accelerator.log(
             {
                 "Train/Loss": _maybe_log_and_sample.last_loss,
                 "Train/Avg_Loss": _maybe_log_and_sample.last_avg_loss,
                 "UNet/LR/Effective_Actual_LR": unet_effective_lr,
-                "TE/LR/Base_Scheduled": te_base_lr,
-                "TE/LR/Effective_Actual_LR": te_base_lr,
+                "TE/LR/Effective_Actual_LR": te_effective_lr,
             },
             step=global_step,
         )
 
         settings = artifacts.settings
         if settings.due(global_step):
+            # Schedule-Free keeps the parameters at y while training; eval() is what puts them
+            # back to the averaged x, so a checkpoint (and the samples drawn from it) has to be
+            # saved with both optimizers in eval mode.
             if hasattr(denoise_optimizer, "eval"):
                 denoise_optimizer.eval()
+            if hasattr(te_optimizer, "eval"):
+                te_optimizer.eval()
             try:
                 artifacts.family.save_lora(
                     accelerator, artifacts.modules, cfg, global_step
@@ -190,6 +198,8 @@ def _maybe_log_and_sample(
             finally:
                 if hasattr(denoise_optimizer, "train"):
                     denoise_optimizer.train()
+                if hasattr(te_optimizer, "train"):
+                    te_optimizer.train()
             settings.mark_saved(global_step)
             control.publish_settings(settings)
 
@@ -227,13 +237,14 @@ def train_one_epoch(
     text_encoders = modules.text_encoders
     denoise_optimizer = artifacts.denoise_optimizer
     te_optimizer = artifacts.te_optimizer
-    te_scheduler = artifacts.te_scheduler
     device = artifacts.device
     weight_dtype = artifacts.weight_dtype
 
     denoise.train()
     if hasattr(denoise_optimizer, "train"):
         denoise_optimizer.train()
+    if hasattr(te_optimizer, "train"):
+        te_optimizer.train()
     for te in text_encoders:
         te.train()
 
@@ -284,11 +295,10 @@ def train_one_epoch(
                 batch_item_count += len(indices)
 
             if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(denoise_clip_params, cfg.max_grad_norm)
+                accelerator.clip_grad_norm_(denoise_clip_params, cfg.unet_max_grad_norm)
                 accelerator.clip_grad_norm_(te_clip_params, cfg.te_max_grad_norm)
                 denoise_optimizer.step()
                 te_optimizer.step()
-                te_scheduler.step()
                 denoise_optimizer.zero_grad(set_to_none=True)
                 te_optimizer.zero_grad(set_to_none=True)
 

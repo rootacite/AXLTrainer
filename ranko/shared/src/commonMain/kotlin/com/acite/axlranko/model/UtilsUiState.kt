@@ -52,9 +52,6 @@ enum class ConfigSection(
             "train_batch_size",
             "gradient_accumulation_steps",
             "learning_rate",
-            "lr_scheduler",
-            "lr_warmup_steps",
-            "max_grad_norm",
             "epoch",
             "save_every_n_epochs",
             "save_every_n_steps",
@@ -105,25 +102,28 @@ enum class ConfigSection(
     ),
     UnetOptimizer(
         title = "UNet Optimizer",
-        description = "AdamW hyperparameters for the UNet",
+        description = "Schedule-Free AdamW hyperparameters for the UNet",
         fieldKeys = setOf(
             "unet_learning_rate",
             "unet_weight_decay",
             "unet_betas_1",
             "unet_betas_2",
-            "unet_eps",
-            "unet_warmup_steps"
+            "unet_warmup_steps",
+            "unet_max_grad_norm"
         )
     ),
     TeOptimizer(
         title = "Text Encoder",
-        description = "AdamW hyperparameters for the text encoder",
+        description = "Schedule-Free AdamW hyperparameters for the text encoder",
         fieldKeys = setOf(
             "te_learning_rate",
             "te_weight_decay",
             "te_betas_1",
             "te_betas_2",
-            "te_max_grad_norm"
+            "te_max_grad_norm",
+            // The warmup that used to be `[training].lr_warmup_steps`, so an error for it (and the
+            // field itself) belongs to this section.
+            "te_warmup_steps"
         )
     ),
     Infrastructure(

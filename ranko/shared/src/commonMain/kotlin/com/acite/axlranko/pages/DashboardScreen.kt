@@ -109,16 +109,19 @@ import com.acite.axlranko.model.SampleClearResult
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.pages.components.ChartCard
 import com.acite.axlranko.pages.components.ChartPickMarkers
+import com.acite.axlranko.pages.components.ChartSeries
 import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.ClearedSamplesStatus
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
+import com.acite.axlranko.pages.components.DEFAULT_STEP_SPAN
 import com.acite.axlranko.pages.components.EvaluationDialog
 import com.acite.axlranko.pages.components.PAGE_PANEL_MARGIN
 import com.acite.axlranko.pages.components.evaluationRecallHeadline
 import com.acite.axlranko.pages.components.HardwareSection
 import com.acite.axlranko.pages.components.ImagePreviewOverlay
 import com.acite.axlranko.pages.components.MetricCard
+import com.acite.axlranko.pages.components.MultiSeriesChartCard
 import com.acite.axlranko.pages.components.PANEL_CARD_PADDING
 import com.acite.axlranko.pages.components.PreviewImage
 import com.acite.axlranko.pages.components.PANEL_MAX_HEIGHT
@@ -710,6 +713,7 @@ private fun ChartsSection(
                 modifier = Modifier.fillMaxWidth(),
                 strokeWidth = stroke,
                 chartHeight = 280.dp,
+                defaultStepSpan = DEFAULT_STEP_SPAN,
                 onPickStep = onPickStep,
                 showHoverStep = true,
                 pickMarkers = pickMarkers,
@@ -717,17 +721,11 @@ private fun ChartsSection(
             if (isWide) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                     TrainingChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, stroke, Modifier.weight(1f))
-                    TrainingChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), colors.accentBlue, smoothing, stroke, Modifier.weight(1f))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    TrainingChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), colors.qualityOrange, smoothing, stroke, Modifier.weight(1f))
-                    TrainingChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), colors.accentLilac, smoothing, stroke, Modifier.weight(1f))
+                    LearningRateChartCard(metrics, smoothing, stroke, Modifier.weight(1f))
                 }
             } else {
                 TrainingChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, stroke, Modifier.fillMaxWidth())
-                TrainingChartCard("UNet / LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), colors.accentBlue, smoothing, stroke, Modifier.fillMaxWidth())
-                TrainingChartCard("TE / Base LR", metrics["TE/LR/Base_Scheduled"].orEmpty(), colors.qualityOrange, smoothing, stroke, Modifier.fillMaxWidth())
-                TrainingChartCard("TE / Effective LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), colors.accentLilac, smoothing, stroke, Modifier.fillMaxWidth())
+                LearningRateChartCard(metrics, smoothing, stroke, Modifier.fillMaxWidth())
             }
         }
     }
@@ -750,6 +748,30 @@ private fun TrainingChartCard(
         smoothing = smoothing,
         modifier = modifier,
         strokeWidth = stroke,
+        defaultStepSpan = DEFAULT_STEP_SPAN,
+        showHoverStep = true,
+    )
+}
+
+@Composable
+private fun LearningRateChartCard(
+    metrics: Map<String, List<MetricPoint>>,
+    smoothing: Float,
+    stroke: Float,
+    modifier: Modifier,
+) {
+    val colors = rankoColors
+    MultiSeriesChartCard(
+        title = "Learning Rate",
+        series = listOf(
+            ChartSeries("UNet LR", metrics["UNet/LR/Effective_Actual_LR"].orEmpty(), colors.accentBlue),
+            ChartSeries("TE LR", metrics["TE/LR/Effective_Actual_LR"].orEmpty(), colors.accentLilac),
+        ),
+        smoothing = smoothing,
+        modifier = modifier,
+        strokeWidth = stroke,
+        defaultStepSpan = DEFAULT_STEP_SPAN,
+        dualAxis = true,
         showHoverStep = true,
     )
 }

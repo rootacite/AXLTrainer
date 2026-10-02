@@ -1422,12 +1422,11 @@ def _launch_once(*, name: str, data_dir: Path, seed: int, steps: int, work: Path
             "sampling_enabled": True,
             "resume_lora_path": str(resume_from) if resume_from else "",
             "train_batch_size": batch_size,
-            "lr_warmup_steps": warmup,
         },
         # Raised over config.toml so a few minutes of training moves the LoRA clearly
         # enough to measure; both variants get the same values.
         "unet_optimizer": {"unet_learning_rate": lr[0], "unet_warmup_steps": warmup},
-        "te_optimizer": {"te_learning_rate": lr[1]},
+        "te_optimizer": {"te_learning_rate": lr[1], "te_warmup_steps": warmup},
         # 2 workers: the children only decode 6 images per epoch, and each worker is another
         # few hundred MB of resident memory while a full SDXL pipeline is already in flight.
         "infrastructure": {"max_data_loader_n_workers": 2, "persistent_workers": True},

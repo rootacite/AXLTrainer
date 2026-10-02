@@ -67,9 +67,17 @@ data class TrainingConfig(
     @SerialName("train_batch_size") val trainBatchSize: Int,
     @SerialName("gradient_accumulation_steps") val gradientAccumulationSteps: Int,
     @SerialName("learning_rate") val learningRate: Double,
-    @SerialName("lr_scheduler") val lrScheduler: String,
-    @SerialName("lr_warmup_steps") val lrWarmupSteps: Int,
-    @SerialName("max_grad_norm") val maxGradNorm: Double,
+    /**
+     * The text encoder's warmup used to live here; it is now `[te_optimizer].te_warmup_steps`.
+     * Kept as a read-only fallback for a config that was written before the move.
+     */
+    @SerialName("lr_warmup_steps") val lrWarmupSteps: Int? = null,
+    /**
+     * The UNet's gradient-clipping threshold used to live here; it is now
+     * `[unet_optimizer].unet_max_grad_norm`. Kept as a read-only fallback for a config that was
+     * written before the move.
+     */
+    @SerialName("max_grad_norm") val maxGradNorm: Double? = null,
     val epoch: Int,
     @SerialName("save_every_n_epochs") val saveEveryNEpochs: Int,
     @SerialName("save_every_n_steps") val saveEveryNSteps: Int,
@@ -119,9 +127,20 @@ data class UnetOptimizerConfig(
     @SerialName("unet_weight_decay") val unetWeightDecay: Double,
     @SerialName("unet_betas_1") val unetBetas1: Double,
     @SerialName("unet_betas_2") val unetBetas2: Double,
-    @SerialName("unet_eps") val unetEps: Double,
-    @SerialName("unet_warmup_steps") val unetWarmupSteps: Int
+    @SerialName("unet_warmup_steps") val unetWarmupSteps: Int,
+    @SerialName("unet_max_grad_norm") val unetMaxGradNorm: Double? = null
 )
+
+/** The trainer's own default when a config carries neither the key nor its old home. */
+const val DEFAULT_UNET_MAX_GRAD_NORM = 1.0
+
+/**
+ * Gradient-clipping threshold of the UNet's LoRA parameters: `[unet_optimizer].unet_max_grad_norm`,
+ * the `[training].max_grad_norm` it replaced, or the trainer's default. The trainer resolves the two
+ * keys the same way, so the Utils form shows the value the run will actually use.
+ */
+fun AxlTrainerConfig.effectiveUnetMaxGradNorm(): Double =
+    unetOptimizer.unetMaxGradNorm ?: training.maxGradNorm ?: DEFAULT_UNET_MAX_GRAD_NORM
 
 @Serializable
 data class TeOptimizerConfig(
@@ -129,8 +148,20 @@ data class TeOptimizerConfig(
     @SerialName("te_weight_decay") val teWeightDecay: Double,
     @SerialName("te_betas_1") val teBetas1: Double,
     @SerialName("te_betas_2") val teBetas2: Double,
-    @SerialName("te_max_grad_norm") val teMaxGradNorm: Double
+    @SerialName("te_max_grad_norm") val teMaxGradNorm: Double,
+    @SerialName("te_warmup_steps") val teWarmupSteps: Int? = null
 )
+
+/** The trainer's own default when a config carries neither the key nor its old home. */
+const val DEFAULT_TE_WARMUP_STEPS = 100
+
+/**
+ * Schedule-Free warmup of the text-encoder optimizer: `[te_optimizer].te_warmup_steps`, the
+ * `[training].lr_warmup_steps` it replaced, or the trainer's default. The trainer resolves the two
+ * keys the same way, so the Utils form shows the value the run will actually use.
+ */
+fun AxlTrainerConfig.effectiveTeWarmupSteps(): Int =
+    teOptimizer.teWarmupSteps ?: training.lrWarmupSteps ?: DEFAULT_TE_WARMUP_STEPS
 
 @Serializable
 data class InfrastructureConfig(

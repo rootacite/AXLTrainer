@@ -55,7 +55,7 @@ repeat = 1
   what every config written before this list keeps doing.
 - The repeat reaches training in one place: the folder's images get their record index **repeated** in the
   bucket list the batch sampler draws from. So one epoch is `images × repeat` samples, and `len(dataloader)`
-  — from which `steps_per_epoch`, the total step count, the progress bars and the TE cosine schedule are all
+  — from which `steps_per_epoch`, the total step count and the progress bars are all
   derived — grows with the sum. `len(dataset)` itself stays the number of unique images (the latent warm-up
   walks that index range, and must not reload one latent per repeat).
 - A batch is still one aspect-ratio bucket's worth of images, so a repeated image can land in the same batch
@@ -90,9 +90,6 @@ These also populate `modelspec.*` and `ss_base_model_version` on every `.safeten
 | `train_batch_size` | `4` | Per-device batch size. |
 | `gradient_accumulation_steps` | `1` | Effective batch = `train_batch_size × gradient_accumulation_steps`. |
 | `learning_rate` | `1.0` | **Metadata only** (`ss_learning_rate`). Actual LRs come from `[unet_optimizer]` / `[te_optimizer]`. |
-| `lr_scheduler` | `"cosine"` | One of: `cosine`, `cosine_with_restarts`, `linear`, `constant`, `constant_with_warmup`, `polynomial`, `adafactor`. |
-| `lr_warmup_steps` | `100` | Warmup applied to the text-encoder scheduler (Schedule-Free AdamW handles its own warmup via `unet_warmup_steps`). |
-| `max_grad_norm` | `1.0` | UNet gradient clipping. |
 | `epoch` | `16` | Total epochs for this run. |
 | `save_every_n_epochs` | `1` | **Defined but not used**; checkpoints are driven by `save_every_n_steps`. |
 | `save_every_n_steps` | `100` | Steps between LoRA checkpoints (`0` writes none). The value here is what a run **starts** with; the Dashboard's Training Control card can retune it for the run in progress (a change restarts the countdown from the step that adopts it), and a run keeps its own cadence — the file is never rewritten by a live change. |
@@ -154,10 +151,15 @@ bucket and the leftover bars carry loss weight 0, so they neither train nor coun
 | `unet_weight_decay` | `0.01` | |
 | `unet_betas_1` | `0.9` | |
 | `unet_betas_2` | `0.99` | |
-| `unet_eps` | `1e-8` | |
 | `unet_warmup_steps` | `100` | Schedule-Free warmup (no separate LR scheduler is needed for the UNet). |
+| `unet_max_grad_norm` | `1.0` | UNet gradient clipping (recorded as `ss_max_grad_norm`). Moved here from `[training].max_grad_norm`, which the loader still reads when this key is absent. |
 
-### `[te_optimizer]` — text-encoder optimizer (plain AdamW)
+Neither optimizer takes an `eps`: both keep the library's `1e-8`. Gradients are clipped separately
+for the two parameter sets, just before each optimizer step — the UNet's LoRA parameters to
+`unet_max_grad_norm` and the text encoders' to `te_max_grad_norm`. Nothing is clipped while gradient
+accumulation is still summing: clipping runs only on the step that actually syncs gradients.
+
+### `[te_optimizer]` — text-encoder optimizer (Schedule-Free AdamW)
 
 | Key | Default | Notes |
 | --- | --- | --- |
@@ -165,7 +167,10 @@ bucket and the leftover bars carry loss weight 0, so they neither train nor coun
 | `te_weight_decay` | `0.01` | |
 | `te_betas_1` | `0.9` | |
 | `te_betas_2` | `0.99` | |
-| `te_max_grad_norm` | `0.3` | Gradient clipping for the text encoders. |
+| `te_max_grad_norm` | `1.0` | Gradient clipping for the text encoders (the UNet's is `unet_max_grad_norm` above). |
+| `te_warmup_steps` | `100` | Schedule-Free warmup of the text encoders (`unet_warmup_steps` is the UNet's own). This key used to be `[training].lr_warmup_steps`; the trainer and Ranko still read that one when `te_warmup_steps` is absent, so a config written before the move keeps its warmup. |
+
+No LR scheduler is built for the text encoders.
 
 ### `[infrastructure]` — data loading
 
@@ -251,7 +256,7 @@ Intentionally empty. The Python side treats missing keys as `None`; it exists fo
 - **Effective batch size** = `train_batch_size × gradient_accumulation_steps`.
 - **LoRA scale** = `network_alpha / network_dim` (0.5 with the defaults).
 - **Steps per epoch** = `⌈len(dataloader) / gradient_accumulation_steps⌉`; **total steps** = steps-per-epoch × `epoch`.
-- **UNet LR vs TE LR**: the UNet uses Schedule-Free AdamW (its own warmup via `unet_warmup_steps`); the text encoders use plain AdamW with a warmup + `lr_scheduler` decay. The dashboard's "TE LR" card reflects the scheduled TE LR.
+- **UNet LR vs TE LR**: both use Schedule-Free AdamW — the UNet with its own warmup via `unet_warmup_steps`, the text encoders with `te_warmup_steps`. Each publishes its own scheduled LR, and the dashboard's `Learning Rate` chart draws the two against a left and a right axis.
 - **Bucket and pad**: `pick_bucket_size` derives the bucket from the image's aspect ratio and the `train_resolution²` budget; `fit_geometry` then places the image inside it as `{fit_w}×{fit_h}` centred at an offset, and the rest of the bucket is pad. The trainer prints the bucket list and the mean pad for a run (`Letterbox: n/m samples padded, mean x%`).
 
 ## Editing from the GUI
@@ -259,7 +264,7 @@ Intentionally empty. The Python side treats missing keys as `None`; it exists fo
 The Ranko **Utils** tab is a validated form over exactly these sections/keys:
 
 - Path fields have a Browse button (OS file dialog: the desktop portal picker on Linux).
-- `mixed_precision`, `network_type`, and `lr_scheduler` are segmented buttons / chips.
+- `mixed_precision` and `network_type` are segmented buttons / chips.
 - Booleans are switches.
 - Inline hints show derived values (effective batch, LoRA scale, bucket-step divisibility, sample aspect ratio).
 - The **Validation** section edits `[[validation.samples]]` as horizontal tabs: one chip per set

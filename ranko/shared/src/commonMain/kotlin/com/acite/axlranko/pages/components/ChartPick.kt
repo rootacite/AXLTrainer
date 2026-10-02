@@ -208,7 +208,7 @@ internal val TRAINING_STAT_TAGS = listOf(
     "Train/Avg_Loss" to "Avg Loss",
     "Train/Loss" to "Loss",
     "UNet/LR/Effective_Actual_LR" to "UNet LR",
-    "TE/LR/Base_Scheduled" to "TE LR",
+    "TE/LR/Effective_Actual_LR" to "TE LR",
 )
 
 internal data class TrainingStat(val label: String, val value: String, val step: Int?)

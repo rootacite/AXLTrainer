@@ -81,9 +81,6 @@ class ModelSpecCatalogTest {
                 trainBatchSize = 1,
                 gradientAccumulationSteps = 1,
                 learningRate = 1.0,
-                lrScheduler = "cosine",
-                lrWarmupSteps = 0,
-                maxGradNorm = 1.0,
                 epoch = 1,
                 saveEveryNEpochs = 1,
                 saveEveryNSteps = 100
@@ -116,15 +113,16 @@ class ModelSpecCatalogTest {
                 unetWeightDecay = 0.01,
                 unetBetas1 = 0.9,
                 unetBetas2 = 0.99,
-                unetEps = 1e-8,
-                unetWarmupSteps = 0
+                unetWarmupSteps = 0,
+                unetMaxGradNorm = 1.0
             ),
             teOptimizer = TeOptimizerConfig(
                 teLearningRate = 1e-5,
                 teWeightDecay = 0.01,
                 teBetas1 = 0.9,
                 teBetas2 = 0.99,
-                teMaxGradNorm = 0.3
+                teMaxGradNorm = 1.0,
+                teWarmupSteps = 100
             ),
             infrastructure = InfrastructureConfig(
                 maxDataLoaderNWorkers = 0,

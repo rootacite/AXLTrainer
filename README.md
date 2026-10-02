@@ -141,7 +141,7 @@ Provides real-time training telemetry, dynamic run management, interactive loss 
 
 #### Interactive Charts & Checkpoint Inspection
 
-- **Rendered Metrics**: Five interactive canvas charts — `Train/Avg_Loss`, `Train/Loss`, `UNet/LR/Effective_Actual_LR`, `TE/LR/Base_Scheduled` and `TE/LR/Effective_Actual_LR`. Supports EMA smoothing adjustments, zooming (`Ctrl`+wheel for the X axis, `Shift`+wheel for Y), and panning.
+- **Rendered Metrics**: Three interactive canvas charts — `Train/Avg_Loss`, `Train/Loss`, and a dual-axis `Learning Rate` chart (`UNet/LR/Effective_Actual_LR` on the left axis, `TE/LR/Effective_Actual_LR` on the right). Supports EMA smoothing adjustments, zooming (`Ctrl`+wheel for the X axis, `Shift`+wheel for Y), panning, and a default window of the newest 1200 steps.
 - **Checkpoint Selection**: Double-clicking or `Ctrl`-clicking a point on the loss curve locates the nearest checkpoint, displaying its step details, parameters, loss values, and associated sample outputs.
 - **On-Demand Sample Generation**: Renders new test images directly from selected historical checkpoints using metadata extracted from the checkpoint itself.
 

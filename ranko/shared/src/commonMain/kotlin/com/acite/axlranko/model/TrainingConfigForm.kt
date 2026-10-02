@@ -6,6 +6,8 @@ import com.acite.axlranko.data.SampleSetConfig
 import com.acite.axlranko.data.TomlDocumentPatcher
 import com.acite.axlranko.data.TrainDataEntryConfig
 import com.acite.axlranko.data.ValidationConfig
+import com.acite.axlranko.data.effectiveTeWarmupSteps
+import com.acite.axlranko.data.effectiveUnetMaxGradNorm
 import com.acite.axlranko.data.trainDataEntries
 
 /** The TOML section the sample-set blocks live in. */
@@ -140,9 +142,6 @@ data class TrainingConfigForm(
     val trainBatchSize: String = "",
     val gradientAccumulationSteps: String = "",
     val learningRate: String = "",
-    val lrScheduler: String = "cosine",
-    val lrWarmupSteps: String = "",
-    val maxGradNorm: String = "",
     val epoch: String = "",
     val saveEveryNEpochs: String = "",
     val saveEveryNSteps: String = "",
@@ -181,14 +180,15 @@ data class TrainingConfigForm(
     val unetWeightDecay: String = "",
     val unetBetas1: String = "",
     val unetBetas2: String = "",
-    val unetEps: String = "",
     val unetWarmupSteps: String = "",
+    val unetMaxGradNorm: String = "",
 
     val teLearningRate: String = "",
     val teWeightDecay: String = "",
     val teBetas1: String = "",
     val teBetas2: String = "",
     val teMaxGradNorm: String = "",
+    val teWarmupSteps: String = "",
 
     val maxDataLoaderNWorkers: String = "",
     val persistentWorkers: Boolean = true,
@@ -323,9 +323,6 @@ data class TrainingConfigForm(
         requireInt("train_batch_size", trainBatchSize, min = 1)
         requireInt("gradient_accumulation_steps", gradientAccumulationSteps, min = 1)
         requireDouble("learning_rate", learningRate, min = 0.0)
-        requireText("lr_scheduler", lrScheduler)
-        requireInt("lr_warmup_steps", lrWarmupSteps, min = 0)
-        requireDouble("max_grad_norm", maxGradNorm, min = 0.0)
         requireInt("epoch", epoch, min = 1)
         requireInt("save_every_n_epochs", saveEveryNEpochs, min = 1)
         requireInt("save_every_n_steps", saveEveryNSteps, min = 1)
@@ -360,14 +357,15 @@ data class TrainingConfigForm(
         requireDouble("unet_weight_decay", unetWeightDecay, min = 0.0)
         requireDouble("unet_betas_1", unetBetas1, min = 0.0, max = 1.0)
         requireDouble("unet_betas_2", unetBetas2, min = 0.0, max = 1.0)
-        requireDouble("unet_eps", unetEps, min = 0.0)
         requireInt("unet_warmup_steps", unetWarmupSteps, min = 0)
+        requireDouble("unet_max_grad_norm", unetMaxGradNorm, min = 0.0)
 
         requireDouble("te_learning_rate", teLearningRate, min = 0.0)
         requireDouble("te_weight_decay", teWeightDecay, min = 0.0)
         requireDouble("te_betas_1", teBetas1, min = 0.0, max = 1.0)
         requireDouble("te_betas_2", teBetas2, min = 0.0, max = 1.0)
         requireDouble("te_max_grad_norm", teMaxGradNorm, min = 0.0)
+        requireInt("te_warmup_steps", teWarmupSteps, min = 0)
 
         requireInt("max_data_loader_n_workers", maxDataLoaderNWorkers, min = 0)
 
@@ -416,9 +414,6 @@ data class TrainingConfigForm(
                 "train_batch_size" to n(trainBatchSize),
                 "gradient_accumulation_steps" to n(gradientAccumulationSteps),
                 "learning_rate" to f(learningRate),
-                "lr_scheduler" to q(lrScheduler.trim()),
-                "lr_warmup_steps" to n(lrWarmupSteps),
-                "max_grad_norm" to f(maxGradNorm),
                 "epoch" to n(epoch),
                 "save_every_n_epochs" to n(saveEveryNEpochs),
                 "save_every_n_steps" to n(saveEveryNSteps),
@@ -459,15 +454,16 @@ data class TrainingConfigForm(
                 "unet_weight_decay" to f(unetWeightDecay),
                 "unet_betas_1" to f(unetBetas1),
                 "unet_betas_2" to f(unetBetas2),
-                "unet_eps" to f(unetEps),
-                "unet_warmup_steps" to n(unetWarmupSteps)
+                "unet_warmup_steps" to n(unetWarmupSteps),
+                "unet_max_grad_norm" to f(unetMaxGradNorm)
             ),
             "te_optimizer" to mapOf(
                 "te_learning_rate" to f(teLearningRate),
                 "te_weight_decay" to f(teWeightDecay),
                 "te_betas_1" to f(teBetas1),
                 "te_betas_2" to f(teBetas2),
-                "te_max_grad_norm" to f(teMaxGradNorm)
+                "te_max_grad_norm" to f(teMaxGradNorm),
+                "te_warmup_steps" to n(teWarmupSteps)
             ),
             "infrastructure" to mapOf(
                 "max_data_loader_n_workers" to n(maxDataLoaderNWorkers),
@@ -537,15 +533,6 @@ data class TrainingConfigForm(
         /** Pool sizes the picker offers, in MiB; 0 is off. The hook clamps to 16..512 and rounds to
          * an even number of allocation granules, so these are all values it takes as written. */
         val amdfqPoolMibOptions = listOf(0, 16, 32, 64, 128, 256, 512)
-        val lrSchedulerOptions = listOf(
-            "cosine",
-            "cosine_with_restarts",
-            "linear",
-            "polynomial",
-            "constant",
-            "constant_with_warmup",
-            "adafactor"
-        )
 
         fun from(config: AxlTrainerConfig): TrainingConfigForm {
             val env = config.environment
@@ -579,9 +566,6 @@ data class TrainingConfigForm(
                 trainBatchSize = train.trainBatchSize.toString(),
                 gradientAccumulationSteps = train.gradientAccumulationSteps.toString(),
                 learningRate = formatNumber(train.learningRate),
-                lrScheduler = train.lrScheduler,
-                lrWarmupSteps = train.lrWarmupSteps.toString(),
-                maxGradNorm = formatNumber(train.maxGradNorm),
                 epoch = train.epoch.toString(),
                 saveEveryNEpochs = train.saveEveryNEpochs.toString(),
                 saveEveryNSteps = train.saveEveryNSteps.toString(),
@@ -614,13 +598,14 @@ data class TrainingConfigForm(
                 unetWeightDecay = formatNumber(unet.unetWeightDecay),
                 unetBetas1 = formatNumber(unet.unetBetas1),
                 unetBetas2 = formatNumber(unet.unetBetas2),
-                unetEps = formatNumber(unet.unetEps),
                 unetWarmupSteps = unet.unetWarmupSteps.toString(),
+                unetMaxGradNorm = formatNumber(config.effectiveUnetMaxGradNorm()),
                 teLearningRate = formatNumber(te.teLearningRate),
                 teWeightDecay = formatNumber(te.teWeightDecay),
                 teBetas1 = formatNumber(te.teBetas1),
                 teBetas2 = formatNumber(te.teBetas2),
                 teMaxGradNorm = formatNumber(te.teMaxGradNorm),
+                teWarmupSteps = config.effectiveTeWarmupSteps().toString(),
                 maxDataLoaderNWorkers = infra.maxDataLoaderNWorkers.toString(),
                 persistentWorkers = infra.persistentWorkers,
                 sampleSets = sampleSetsOf(vali)

@@ -1058,12 +1058,6 @@ private fun TrainingFields(
             )
         }
     }
-    ChoiceChips(
-        label = "LR scheduler",
-        value = form.lrScheduler,
-        options = TrainingConfigForm.lrSchedulerOptions,
-        onChange = { viewModel.updateForm { copy(lrScheduler = it) } }
-    )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ConfigTextField(
             label = "Learning rate scale",
@@ -1071,13 +1065,6 @@ private fun TrainingFields(
             error = errors["learning_rate"],
             supporting = "Multiplier in front of UNet / TE rates",
             onValueChange = { viewModel.updateForm { copy(learningRate = it) } },
-            modifier = Modifier.weight(1f)
-        )
-        ConfigTextField(
-            label = "LR warmup steps",
-            value = form.lrWarmupSteps,
-            error = errors["lr_warmup_steps"],
-            onValueChange = { viewModel.updateForm { copy(lrWarmupSteps = it) } },
             modifier = Modifier.weight(1f)
         )
     }
@@ -1088,13 +1075,6 @@ private fun TrainingFields(
             error = errors["min_snr_gamma"],
             supporting = "epsilon bases only · 0 = off · 5.0 is a common SDXL starting point",
             onValueChange = { viewModel.updateForm { copy(minSnrGamma = it) } },
-            modifier = Modifier.weight(1f)
-        )
-        ConfigTextField(
-            label = "Max grad norm",
-            value = form.maxGradNorm,
-            error = errors["max_grad_norm"],
-            onValueChange = { viewModel.updateForm { copy(maxGradNorm = it) } },
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
@@ -1540,10 +1520,10 @@ private fun UnetFields(
             modifier = Modifier.weight(1f)
         )
         ConfigTextField(
-            label = "Epsilon",
-            value = form.unetEps,
-            error = errors["unet_eps"],
-            onValueChange = { viewModel.updateForm { copy(unetEps = it) } },
+            label = "Max grad norm",
+            value = form.unetMaxGradNorm,
+            error = errors["unet_max_grad_norm"],
+            onValueChange = { viewModel.updateForm { copy(unetMaxGradNorm = it) } },
             modifier = Modifier.weight(1f)
         )
     }
@@ -1601,6 +1581,13 @@ private fun TeFields(
             modifier = Modifier.weight(1f)
         )
     }
+    ConfigTextField(
+        label = "TE warmup steps",
+        value = form.teWarmupSteps,
+        error = errors["te_warmup_steps"],
+        supporting = "Schedule-Free warmup; the UNet keeps its own",
+        onValueChange = { viewModel.updateForm { copy(teWarmupSteps = it) } }
+    )
 }
 
 @Composable
@@ -1979,37 +1966,6 @@ private fun ConfigSwitch(
             }
         }
         Switch(checked = checked, onCheckedChange = onChecked)
-    }
-}
-
-@Composable
-private fun ChoiceChips(
-    label: String,
-    value: String,
-    options: List<String>,
-    onChange: (String) -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, style = MaterialTheme.typography.labelLarge)
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { option ->
-                CapsuleChoice(
-                    text = option,
-                    selected = value == option,
-                    onClick = { onChange(option) },
-                )
-            }
-            if (value.isNotBlank() && value !in options) {
-                CapsuleChoice(
-                    text = value,
-                    selected = true,
-                    onClick = {},
-                )
-            }
-        }
     }
 }
 

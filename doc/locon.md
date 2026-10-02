@@ -19,6 +19,12 @@ the *why*, the layer list, the ComfyUI key findings, and the resume rules.
 Default stays attention LoRA (`network_type = "standard"`). LoCon is an opt-in on the same PEFT +
 kohya `.safetensors` path.
 
+## Base-model pairing (field note)
+
+Reported by the maintainer, 2026-10-02, and not measured in this repo: train the LoCon with
+**Illustrious XL v2.0 stable** as the base model and generate with **WAI** as the base model, and the
+result is strikingly good — more so the more deliberately the LoCon is allowed to overfit.
+
 ## 1. Which LoCon
 
 kohya_ss GUI exposes two things that share the word "LoCon":

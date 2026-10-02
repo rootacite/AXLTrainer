@@ -280,9 +280,6 @@ class ValidationSetsTest {
             train_batch_size = 3
             gradient_accumulation_steps = 1
             learning_rate = 1.0
-            lr_scheduler = "cosine"
-            lr_warmup_steps = 100
-            max_grad_norm = 1.0
             epoch = 16
             save_every_n_epochs = 1
             save_every_n_steps = 100
@@ -315,15 +312,16 @@ class ValidationSetsTest {
             unet_weight_decay = 0.01
             unet_betas_1 = 0.9
             unet_betas_2 = 0.99
-            unet_eps = 1.0E-8
             unet_warmup_steps = 100
+            unet_max_grad_norm = 1.0
 
             [te_optimizer]
             te_learning_rate = 5.0E-6
             te_weight_decay = 0.01
             te_betas_1 = 0.9
             te_betas_2 = 0.99
-            te_max_grad_norm = 0.3
+            te_max_grad_norm = 1.0
+            te_warmup_steps = 100
 
             [infrastructure]
             max_data_loader_n_workers = 20

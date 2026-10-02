@@ -613,9 +613,6 @@ class TrainConfig:
     train_batch_size: int = get_val("train_batch_size", 3)
     gradient_accumulation_steps: int = get_val("gradient_accumulation_steps", 1)
     learning_rate: float = get_val("learning_rate", 1.0)
-    lr_scheduler: str = get_val("lr_scheduler", "cosine")
-    lr_warmup_steps: int = get_val("lr_warmup_steps", 100)
-    max_grad_norm: float = get_val("max_grad_norm", 1.0)
     epoch: int = get_val("epoch", 60)
     save_every_n_epochs: int = get_val("save_every_n_epochs", 1)
     save_every_n_steps: int = get_val("save_every_n_steps", 100)
@@ -664,15 +661,22 @@ class TrainConfig:
     unet_weight_decay: float = get_val("unet_weight_decay", 0.01)
     unet_betas_1: float = get_val("unet_betas_1", 0.9)
     unet_betas_2: float = get_val("unet_betas_2", 0.99)
-    unet_eps: float = get_val("unet_eps", 1e-8)
     unet_warmup_steps: int = get_val("unet_warmup_steps", 100)
+    # This clip threshold used to live in `[training]` as `max_grad_norm`; that key is still read
+    # when `unet_max_grad_norm` is absent.
+    unet_max_grad_norm: float = get_val(
+        "unet_max_grad_norm", get_val("max_grad_norm", 1.0)
+    )
 
-    # TE optimizer (fixed AdamW)
+    # TE optimizer (Schedule-Free AdamW)
     te_learning_rate: float = get_val("te_learning_rate", 6e-6)
     te_weight_decay: float = get_val("te_weight_decay", 0.01)
     te_betas_1: float = get_val("te_betas_1", 0.9)
     te_betas_2: float = get_val("te_betas_2", 0.99)
-    te_max_grad_norm: float = get_val("te_max_grad_norm", 0.3)
+    te_max_grad_norm: float = get_val("te_max_grad_norm", 1.0)
+    # This warmup used to live in `[training]` as `lr_warmup_steps`; that key is still read when
+    # `te_warmup_steps` is absent, so a config written before the move keeps its warmup.
+    te_warmup_steps: int = get_val("te_warmup_steps", get_val("lr_warmup_steps", 100))
 
     # Infrastructure
     max_data_loader_n_workers: int = get_val("max_data_loader_n_workers", 20)

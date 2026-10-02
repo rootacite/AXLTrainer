@@ -330,7 +330,7 @@ class ChartPickTest {
             "Train/Avg_Loss" to listOf(MetricPoint(step = 100, value = 0.123456f)),
             "Train/Loss" to listOf(MetricPoint(step = 100, value = 0.2f)),
             "UNet/LR/Effective_Actual_LR" to listOf(MetricPoint(step = 100, value = 2.5e-5f)),
-            "TE/LR/Base_Scheduled" to listOf(MetricPoint(step = 100, value = 2.5e-6f)),
+            "TE/LR/Effective_Actual_LR" to listOf(MetricPoint(step = 100, value = 2.5e-6f)),
         )
         val stats = trainingInfoAt(metrics, step = 101f)
 

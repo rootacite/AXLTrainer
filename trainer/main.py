@@ -40,13 +40,11 @@ def _prepare_artifacts(artifacts) -> None:
         *artifacts.modules.text_encoders,
         artifacts.denoise_optimizer,
         artifacts.te_optimizer,
-        artifacts.te_scheduler,
     )
     artifacts.modules.denoise = prepared[0]
     artifacts.modules.text_encoders = list(prepared[1 : 1 + n_te])
     artifacts.denoise_optimizer = prepared[1 + n_te]
     artifacts.te_optimizer = prepared[2 + n_te]
-    artifacts.te_scheduler = prepared[3 + n_te]
 
 
 def main() -> None:
@@ -207,6 +205,8 @@ def main() -> None:
 
         if hasattr(artifacts.denoise_optimizer, "eval"):
             artifacts.denoise_optimizer.eval()
+        if hasattr(artifacts.te_optimizer, "eval"):
+            artifacts.te_optimizer.eval()
         try:
             artifacts.family.save_lora(
                 accelerator,
@@ -229,6 +229,8 @@ def main() -> None:
         finally:
             if hasattr(artifacts.denoise_optimizer, "train"):
                 artifacts.denoise_optimizer.train()
+            if hasattr(artifacts.te_optimizer, "train"):
+                artifacts.te_optimizer.train()
 
         if control.should_stop():
             progress.close()

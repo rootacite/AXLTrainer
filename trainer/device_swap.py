@@ -66,13 +66,33 @@ def _named_modules(ctx: SwapContext) -> list[tuple[str, Any]]:
     return items
 
 
+def _optimizer_train_mode(optimizer: Any) -> Optional[bool]:
+    """Schedule-Free's `train_mode` flag, or None for an optimizer that has no such mode."""
+    if optimizer is None or not getattr(optimizer, "param_groups", None):
+        return None
+    return bool(optimizer.param_groups[0].get("train_mode", False))
+
+
+def _set_optimizer_train_mode(optimizer: Any, wanted: Optional[bool]) -> None:
+    if optimizer is None or wanted is None:
+        return
+    current = _optimizer_train_mode(optimizer)
+    if current is None:
+        return
+    if wanted and not current and hasattr(optimizer, "train"):
+        optimizer.train()
+    elif (not wanted) and current and hasattr(optimizer, "eval"):
+        optimizer.eval()
+
+
 def capture_modes(ctx: SwapContext) -> dict[str, Any]:
     modes: dict[str, Any] = {}
     for name, module in _named_modules(ctx):
         modes[name] = bool(module.training) if module is not None and hasattr(module, "training") else None
-    denoise_opt = ctx.denoise_optimizer
-    if denoise_opt is not None and getattr(denoise_opt, "param_groups", None):
-        modes["denoise_opt_train_mode"] = bool(denoise_opt.param_groups[0].get("train_mode", False))
+    for name, optimizer in (("denoise", ctx.denoise_optimizer), ("te", ctx.te_optimizer)):
+        mode = _optimizer_train_mode(optimizer)
+        if mode is not None:
+            modes[f"{name}_opt_train_mode"] = mode
     return modes
 
 
@@ -82,15 +102,8 @@ def restore_modes(ctx: SwapContext, modes: dict[str, Any]) -> None:
         if module is None or flag is None:
             continue
         module.train(flag)
-    denoise_opt = ctx.denoise_optimizer
-    wanted = modes.get("denoise_opt_train_mode")
-    if denoise_opt is None or wanted is None:
-        return
-    current = bool(denoise_opt.param_groups[0].get("train_mode", False)) if denoise_opt.param_groups else False
-    if wanted and not current and hasattr(denoise_opt, "train"):
-        denoise_opt.train()
-    elif (not wanted) and current and hasattr(denoise_opt, "eval"):
-        denoise_opt.eval()
+    for name, optimizer in (("denoise", ctx.denoise_optimizer), ("te", ctx.te_optimizer)):
+        _set_optimizer_train_mode(optimizer, modes.get(f"{name}_opt_train_mode"))
 
 
 def _first_trainable_param(module: Any) -> Optional[tuple[str, torch.Tensor]]:

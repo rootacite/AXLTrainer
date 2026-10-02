@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,7 +13,6 @@ try:
     from dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from models import (
-        build_scheduler,
         build_te_optimizer,
         build_unet_optimizer,
     )
@@ -25,7 +23,6 @@ except ImportError:
     from trainer.dataset import BucketBatchSampler, LoraImageDataset, make_collate_fn
     from trainer.family import FamilyModules, ModelFamily, require_trainable, resolve_family
     from trainer.models import (
-        build_scheduler,
         build_te_optimizer,
         build_unet_optimizer,
     )
@@ -43,7 +40,6 @@ class TrainArtifacts:
     dataloader: DataLoader
     denoise_optimizer: Any
     te_optimizer: Any
-    te_scheduler: Any
     resume: dict[str, Any]
     # Cadence + sampling switch, replaced in place when the dashboard asks for a change.
     settings: LiveSettings = field(default_factory=LiveSettings)
@@ -93,12 +89,11 @@ def build_dataloader(cfg: TrainConfig) -> tuple[LoraImageDataset, DataLoader]:
     return train_dataset, dataloader
 
 
-def build_optimizers_and_schedulers(
+def build_optimizers(
     cfg: TrainConfig,
     modules: FamilyModules,
-    dataloader: DataLoader,
 ):
-    """Build optimizers for the denoise network and text encoders."""
+    """Build the Schedule-Free AdamW optimizers for the denoise network and the text encoders."""
     denoise_params = [p for p in modules.denoise.parameters() if p.requires_grad]
     te_params = [
         p
@@ -109,11 +104,7 @@ def build_optimizers_and_schedulers(
 
     denoise_optimizer = build_unet_optimizer(cfg, denoise_params)
     te_optimizer = build_te_optimizer(cfg, te_params)
-
-    steps_per_epoch = max(1, math.ceil(len(dataloader) / cfg.gradient_accumulation_steps))
-    total_steps = steps_per_epoch * cfg.epoch
-    te_scheduler = build_scheduler(te_optimizer, total_steps, cfg)
-    return denoise_optimizer, te_optimizer, te_scheduler
+    return denoise_optimizer, te_optimizer
 
 
 def build_train_objects(cfg: TrainConfig, settings: LiveSettings | None = None) -> TrainArtifacts:
@@ -143,11 +134,7 @@ def build_train_objects(cfg: TrainConfig, settings: LiveSettings | None = None) 
     modules.vae.to(device=device).eval()
 
     train_dataset, dataloader = build_dataloader(cfg)
-    denoise_optimizer, te_optimizer, te_scheduler = build_optimizers_and_schedulers(
-        cfg,
-        modules,
-        dataloader,
-    )
+    denoise_optimizer, te_optimizer = build_optimizers(cfg, modules)
 
     return TrainArtifacts(
         family=family,
@@ -159,7 +146,6 @@ def build_train_objects(cfg: TrainConfig, settings: LiveSettings | None = None) 
         dataloader=dataloader,
         denoise_optimizer=denoise_optimizer,
         te_optimizer=te_optimizer,
-        te_scheduler=te_scheduler,
         resume=resume,
         settings=settings if settings is not None else LiveSettings.from_config(cfg),
     )

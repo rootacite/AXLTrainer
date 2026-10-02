@@ -18,7 +18,7 @@ The dashboard starts it the same way — `api.py`'s `train_start` spawns `bash s
 
 1. **Startup (`starting`)** — loads `config.toml`, creates this run's timestamped output + log directory, acquires the run lock (`train.lock`, fails fast if another run holds it), seeds RNG, resolves `[model_spec].base_model_version` to a model family, and builds that family's pipeline (LoRA adapters via PEFT, dataset + DataLoader, optimizers). When `[training].resume_lora_path` is set, the LoRA weights are loaded here (before `accelerator.prepare`). Unknown or inconsistent spec strings fail here; `sd3.5-large` is a catalogued family but training is not implemented yet.
 2. **Encoding (`encoding`)** — if `cache_latents` and `cache_latents_to_disk` are on, all images are pre-encoded to latents by a 3-stage pipeline (CPU decode/resize/fit+pad → batched VAE encode per bucket → atomic `.pt` writes into that folder's `<folder>/.latents_cache/`). Already-cached images are skipped — a file that cannot be read, or that does not hold the keyed bucket's latent, is not one of them: it is re-encoded over the file and reported on stderr. The `.pt` name hashes the absolute path, the bucket **and** the fit geometry, so changing the bucket rule or the `[bucketing]` clamps re-encodes the dataset once instead of silently serving latents built from differently placed pixels, and two dataset folders never share a cache. Only the VAE is on the GPU (UNet + text encoders stay on CPU); encode batches are small and the VAE uses tiling. The VAE is moved back to CPU afterwards and GPU memory is flushed. Progress is published as `encoding.current/total`.
-3. **Training (`training`)** — the epoch loop. The DataLoader's batch sampler draws each batch from a **single aspect-ratio bucket** so `train_batch_size` images share a resolution and stack in one UNet step (remainders smaller than the batch size are kept). Prompts are encoded in one batched CLIP-L + CLIP-G forward (chunked only as far as the longest caption in that batch, up to `max_token_length`; `clip_skip` applied), noise + timesteps are added, and the UNet predicts the noise target (with optional `noise_offset`). After gradient accumulation, UNet grads are clipped to `max_grad_norm`, TE grads to `te_max_grad_norm`, and both optimizers step. Every `save_every_n_steps` steps the run saves a checkpoint, and — unless `sampling_enabled` is off — renders the validation samples for it. Both the cadence and the switch can be changed while the run is going (Dashboard → Training Control); the trainer takes the request at its next optimizer step and republishes what it is actually using.
+3. **Training (`training`)** — the epoch loop. The DataLoader's batch sampler draws each batch from a **single aspect-ratio bucket** so `train_batch_size` images share a resolution and stack in one UNet step (remainders smaller than the batch size are kept). Prompts are encoded in one batched CLIP-L + CLIP-G forward (chunked only as far as the longest caption in that batch, up to `max_token_length`; `clip_skip` applied), noise + timesteps are added, and the UNet predicts the noise target (with optional `noise_offset`). After gradient accumulation, UNet grads are clipped to `unet_max_grad_norm`, TE grads to `te_max_grad_norm`, and both optimizers step. Every `save_every_n_steps` steps the run saves a checkpoint, and — unless `sampling_enabled` is off — renders the validation samples for it. Both the cadence and the switch can be changed while the run is going (Dashboard → Training Control); the trainer takes the request at its next optimizer step and republishes what it is actually using.
 
    **Bucketing and padding.** Each image's bucket comes from its aspect ratio and the `train_resolution²` area budget, and the image is then **fitted whole into the bucket** (contain, centred) rather than centre-cropped: leftover bars are pad, and their loss weight is exactly 0. So no sample loses its head or feet, at the cost of a few percent of the bucket being unsupervised (`Letterbox: n/m samples padded, mean x%` is printed at startup). The pad is a neutral 127 grey. See [Configuration](configuration.md#bucketing--aspect-ratio-buckets).
 
@@ -33,7 +33,7 @@ TensorBoard metrics are written to `{logging_dir}/{run_id}/`:
 | `Train/Loss` | Per-step MSE loss; the Min-SNR-weighted value when `[training].min_snr_gamma` is active (epsilon bases only), so its scale is not comparable with a run that had the weighting off. |
 | `Train/Avg_Loss` | Kohya-style epoch-window moving average of the same value. |
 | `UNet/LR/Effective_Actual_LR` | Schedule-Free UNet effective LR. |
-| `TE/LR/Base_Scheduled` / `TE/LR/Effective_Actual_LR` | Text-encoder scheduled LR. |
+| `TE/LR/Effective_Actual_LR` | Schedule-Free text-encoder effective LR. |
 
 ## Pause / resume / early stop
 
@@ -90,8 +90,8 @@ What carries over and what does not:
 
 | Carried over | Restarts from zero |
 | --- | --- |
-| UNet / TE1 / TE2 LoRA weights (`lora_down`, `lora_up`) | Optimizer state (Schedule-Free AdamW on the UNet, AdamW on the TEs) |
-| — | LR schedules (`lr_warmup_steps`, TE cosine, `unet_warmup_steps`) |
+| UNet / TE1 / TE2 LoRA weights (`lora_down`, `lora_up`) | Optimizer state (Schedule-Free AdamW on both the UNet and the TEs) |
+| — | LR warmup (`te_warmup_steps`, `unet_warmup_steps`) |
 | — | `global_step` / `epoch` counters, sample filenames, TensorBoard step axis |
 | — | Dataset order (caption shuffle is reseeded per epoch) |
 
@@ -141,6 +141,6 @@ The latent cache is **not** deleted — it's reusable across runs.
 - **Stale state.** If a training process dies hard, the next status read reconciles the dead PID to `error` ("training process is no longer running"). Reset to clear.
 - **Stop during sampling** keeps the already-saved step checkpoint; the partially-denoised image is discarded.
 - **`sample_seed = 0`** gives each repeat a fresh random seed (printed to the log); set a fixed seed for reproducibility.
-- **Schedule-Free optimizer** requires `train()`/`eval()` mode toggling around sampling; the code does this automatically.
+- **Schedule-Free optimizers** require `train()`/`eval()` mode toggling around sampling and saving (eval() is what puts the parameters back to the averaged weights); the code does this for both optimizers automatically.
 - **One metric window per run.** Each run writes its own TensorBoard event directory, so the dashboard shows the current/latest run only; a resumed run starts a new curve at step 1 rather than continuing the old one.
 - **`ui.py` is deprecated** and still reads the old flat paths, so it will not show runs written in the new layout.
