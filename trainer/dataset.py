@@ -172,6 +172,29 @@ class LoraImageDataset(Dataset):
         )
         return cache_dir / f"{sha1_text(key)}.pt"
 
+    def cache_entries(self) -> List[Dict[str, Any]]:
+        """One entry per record for `warm_latent_cache`: index, bucket, cache path, file present.
+
+        The warm pass plans its encode batches from this, then touches pixels only for the images
+        the plan says still need encoding. `cached` is the cheap existence check; whether the file
+        really holds this bucket's latent stays `_cached_latent`'s verdict, which the pass collects
+        when it verifies what is already on disk.
+        """
+        entries: List[Dict[str, Any]] = []
+        for index, record in enumerate(self.records):
+            cache_path = self._cache_path(
+                Path(record["path"]), record["geom"], record["cache_dir"]
+            )
+            entries.append(
+                {
+                    "index": index,
+                    "bucket": (int(record["bucket_w"]), int(record["bucket_h"])),
+                    "cache_path": cache_path,
+                    "cached": cache_path.exists(),
+                }
+            )
+        return entries
+
     def _cached_latent(self, cache_path: Path, bucket_w: int, bucket_h: int) -> torch.Tensor | None:
         """The tensor behind a cache key, or `None` when the file is not that bucket's latent.
 

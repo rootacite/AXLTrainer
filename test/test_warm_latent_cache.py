@@ -48,8 +48,49 @@ class _MockLatentDist:
     def __init__(self, mean):
         self.mean = mean
 
-    def sample(self):
+    def sample(self, generator=None):
+        # The real `DiagonalGaussianDistribution.sample` takes a generator; this stand-in is
+        # deterministic so the equivalence test measures the pipeline, not the noise.
         return self.mean
+
+
+class _NoisyLatentDist:
+    """A distribution shaped like diffusers': one tensor of mean+logvar, sampled with a generator."""
+
+    def __init__(self, parameters):
+        self.parameters = parameters
+        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+        self.std = torch.exp(0.5 * torch.clamp(self.logvar, -30.0, 20.0))
+
+    def sample(self, generator=None):
+        noise = torch.randn(self.mean.shape, generator=generator, dtype=self.mean.dtype)
+        return self.mean + self.std * noise
+
+
+class _NoisyMockVAE(torch.nn.Module):
+    """Deterministic pixel pooling plus a real, generator-driven posterior draw.
+
+    `per_image=False` drops the per-image parameters, which is the shape of an encoder whose
+    distribution cannot be sliced for one image at a time — the pass's batch-wide fallback path.
+    """
+
+    def __init__(self, per_image: bool = True):
+        super().__init__()
+        self.config = type("Cfg", (), {"scaling_factor": 0.5})()
+        self.per_image = per_image
+        self.encode_calls = 0
+        self.batch_sizes = []
+
+    def encode(self, x):
+        self.encode_calls += 1
+        self.batch_sizes.append(x.shape[0])
+        pooled = x[:, :1, ::8, ::8].expand(-1, 4, -1, -1)
+        # Two channels of mean, two of logvar - what `latent_dist.parameters` holds for real.
+        logvar = torch.full_like(pooled, -6.0)
+        dist = _NoisyLatentDist(torch.cat([pooled * 2.0, logvar], dim=1))
+        if not self.per_image:
+            dist.parameters = None
+        return type("Enc", (), {"latent_dist": dist})()
 
 
 class MockVAE(torch.nn.Module):
@@ -363,6 +404,108 @@ def test_real_vae_smoke(model_root: Path, real_data_root: Path) -> None:
         )
 
 
+def _cached_tensors(root: Path) -> dict:
+    """image stem -> the cached latent. Compare tensors, not file bytes: `torch.save`'s zip
+    container carries the wall-clock time it was written, so two saves of the same tensor a second
+    apart are different files."""
+    return {stem: tensor for stem, (_, tensor) in collect_cached(root).items()}
+
+
+def test_latent_is_independent_of_batching_and_threads() -> None:
+    """The same image gets the same bytes however the plan batches it and however many threads run.
+
+    Each image's posterior sample comes from a generator seeded by its own cache key (which carries
+    the absolute image path, so it is the key that decides the value), and neither the batch an image
+    lands in nor the order the batches are encoded in can reach it.
+    """
+    from trainer import cache
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "data"
+        make_dataset_dir(root, n_images=9)
+        cfg = make_cfg(root)
+
+        variants = {}
+        for label, batch, workers in (("one", 1, 1), ("wide", 4, 8)):
+            for path in (root / ".latents_cache").glob("*.pt"):
+                path.unlink()
+            cache.warm_latent_cache(
+                LoraImageDataset(cfg), _NoisyMockVAE(), cfg, torch.device("cpu"), torch.float32,
+                prefetch_workers=workers, encode_batch_size=batch,
+            )
+            variants[label] = _cached_tensors(root)
+
+        assert variants["one"].keys() == variants["wide"].keys(), "different images were cached"
+        differing = [stem for stem in variants["one"]
+                     if not torch.equal(variants["one"][stem], variants["wide"][stem])]
+        assert not differing, f"latent depends on the batching for: {differing[:3]}"
+        print(f"  [ok] {len(variants['one'])} latents identical with 1 thread/batch of 1 "
+              f"and 8 threads/batches of 4")
+
+
+def test_repeated_runs_write_the_same_bytes() -> None:
+    """Encoding the same folder twice (cache cleared in between) writes the same files.
+
+    This is the property the training-determinism probe measured as missing: a re-encode used to be
+    a fresh draw from the global generator, so two cold runs never agreed.
+    """
+    from trainer import cache
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "data"
+        make_dataset_dir(root, n_images=9)
+        cfg = make_cfg(root)
+
+        first_vae = _NoisyMockVAE()
+        cache.warm_latent_cache(
+            LoraImageDataset(cfg), first_vae, cfg, torch.device("cpu"), torch.float32,
+            prefetch_workers=4, encode_batch_size=2,
+        )
+        first = _cached_tensors(root)
+        first_batches = list(first_vae.batch_sizes)
+
+        for path in (root / ".latents_cache").glob("*.pt"):
+            path.unlink()
+
+        second_vae = _NoisyMockVAE()
+        cache.warm_latent_cache(
+            LoraImageDataset(cfg), second_vae, cfg, torch.device("cpu"), torch.float32,
+            prefetch_workers=3, encode_batch_size=2,
+        )
+        second = _cached_tensors(root)
+
+        assert first.keys() == second.keys(), "the two passes cached different images"
+        differing = [stem for stem in first if not torch.equal(first[stem], second[stem])]
+        assert not differing, f"{len(differing)} of {len(first)} latents differ: {differing[:3]}"
+        assert first_batches == second_vae.batch_sizes, (first_batches, second_vae.batch_sizes)
+        print(f"  [ok] {len(first)} latents identical across two cold passes; "
+              f"batch order {first_batches} both times")
+
+
+def test_the_pass_leaves_the_global_generator_alone() -> None:
+    """The warm pass must not move the global generator, on either sampling path.
+
+    Training draws its noise, timesteps and dropout masks from that generator, so a pass that
+    consumes draws makes a run that had to encode differ from one that read the cache.
+    """
+    from trainer import cache
+
+    for label, vae in (("per-image", _NoisyMockVAE()), ("batch-wide", _NoisyMockVAE(per_image=False))):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "data"
+            make_dataset_dir(root, n_images=5)
+            cfg = make_cfg(root)
+            torch.manual_seed(1234)
+            before = torch.get_rng_state()
+            cache.warm_latent_cache(
+                LoraImageDataset(cfg), vae, cfg, torch.device("cpu"), torch.float32,
+                prefetch_workers=2, encode_batch_size=2,
+            )
+            after = torch.get_rng_state()
+            assert torch.equal(after, before), f"{label}: the pass moved the global generator"
+    print("  [ok] global RNG state unchanged with both sampling paths")
+
+
 # ------------------------------------------------------------------- runner
 
 def main() -> int:
@@ -376,6 +519,9 @@ def main() -> int:
         ("mixed pre-cached", test_mixed_precached),
         ("foreign cache file re-encoded", test_foreign_cache_file_is_re_encoded),
         ("gate disabled", test_gate_disabled),
+        ("latent independent of batching", test_latent_is_independent_of_batching_and_threads),
+        ("two cold passes agree", test_repeated_runs_write_the_same_bytes),
+        ("global generator untouched", test_the_pass_leaves_the_global_generator_alone),
     ]
     if args.real:
         tests.append(("real VAE smoke (CPU)", test_real_vae_smoke))
