@@ -94,13 +94,14 @@ internal fun downsampleSpark(
     val keepInterior = keep != null && keep != 0 && keep != last
     val budget = if (keepInterior) maxPoints - 1 else maxPoints
     if (budget < 2) return listOf(points.first(), points.last())
-    val indexes = sortedSetOf(0, last)
+    // sortedSetOf is a JVM TreeSet. Wasm has no such builder, so a set plus a sort.
+    val indexes = mutableSetOf(0, last)
     val stride = last.toDouble() / (budget - 1)
     for (i in 1 until budget - 1) {
         indexes += (i * stride).roundToInt().coerceIn(1, last - 1)
     }
     if (keep != null) indexes += keep
-    return indexes.map { points[it] }
+    return indexes.sorted().map { points[it] }
 }
 
 /** One slope per consecutive pair, in value per step. A zero Δstep is a slope of 0. */
