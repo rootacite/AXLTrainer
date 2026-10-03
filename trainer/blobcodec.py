@@ -1,4 +1,4 @@
-"""Resize and re-encode image blobs for Ranko IPC.
+"""Resize and re-encode image blobs for Chromatrix IPC.
 
 Torch-free on purpose: spawn workers import this module and must not import
 `api.py` or torch (ROCm does not survive a fork/spawn of a process that already

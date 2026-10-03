@@ -3,7 +3,7 @@ package com.acite.axlranko.util
 /**
  * WD-tagger English → Chinese map from `tagger/selected_tags.csv`.
  *
- * Ranko still stores captions as English; this is display (and search) only.
+ * Chromatrix still stores captions as English; this is display (and search) only.
  */
 class TagLexicon(private val chineseByEnglish: Map<String, String>) {
 

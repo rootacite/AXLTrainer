@@ -1111,7 +1111,7 @@ def run_tagger_process(
 
 
 def handle_hardware_status(_params: dict[str, Any]) -> dict[str, Any]:
-    """nvtop -s snapshot plus sysfs CPU/GPU temps. Never raises; Ranko keeps training UI up."""
+    """nvtop -s snapshot plus sysfs CPU/GPU temps. Never raises; Chromatrix keeps training UI up."""
     return _json_safe(collect_hardware_status())
 
 
@@ -1277,7 +1277,7 @@ def _claim_generation(params: dict[str, Any]) -> tuple[dict[str, Any], str, str,
 
 
 def handle_generate_sample(params: dict[str, Any]) -> dict[str, Any]:
-    """Start one "sample with this checkpoint" job. Returns immediately; Ranko follows the job file.
+    """Start one "sample with this checkpoint" job. Returns immediately; Chromatrix follows the job file.
 
     The image keeps its own prompt/CFG/seed and lands in the run's `_samples/generated/`; the
     form's defaults come from the run's own prompts, and `generate_checkpoint_samples` renders the
@@ -1554,7 +1554,7 @@ def _saved_tag_selection(log_dir: Path, samples_dir: Path) -> list[str]:
 def handle_evaluate_checkpoint(params: dict[str, Any]) -> dict[str, Any]:
     """Start one evaluation of this checkpoint: top its samples up to Depth, tag them, score them.
 
-    Returns immediately (`{job, log_path}`), like the generation entries; Ranko follows the job file
+    Returns immediately (`{job, log_path}`), like the generation entries; Chromatrix follows the job file
     and the reply's record already carries the plan (which slots to render, and which images are to
     be scored with which prompt). Prompts and sampling values come from the config the run that
     trained this checkpoint saved beside its logs, falling back to today's `config.toml` for a run
@@ -2579,7 +2579,7 @@ _MAX_SESSION_CONNECTIONS = 32
 # --- one client at a time ---------------------------------------------------
 #
 # api.py does no locking of its own: it serves a single client session and leaves ordering to
-# that client (`IpcResources` in Ranko). What it does enforce is that there *is* only one: the
+# that client (`IpcResources` in Chromatrix). What it does enforce is that there *is* only one: the
 # first client to say hello owns the helper, and any other instance is refused at once rather
 # than served interleaved. An instance that never disconnects cleanly is replaced after
 # `_OWNER_GRACE_SECONDS` without a live connection.
@@ -2687,7 +2687,7 @@ def dispatch(method: str, params: Optional[dict[str, Any]] = None) -> Any:
     """Serve one request.
 
     No locking, on purpose: the helper serves a single client session and that client (`IpcResources`
-    in Ranko) is what keeps two calls that fight over the same thing off the wire at once. Two
+    in Chromatrix) is what keeps two calls that fight over the same thing off the wire at once. Two
     clients are prevented a level up, in the connection handler (`ClientSession`).
     """
     handler = _HANDLERS.get(method)
@@ -2889,7 +2889,7 @@ def _ws_handler(
 
 
 def run_ws_loop(host: str, port: int, allow_networks: Optional[list[ipaddress._BaseNetwork]] = None) -> None:
-    # Keep stdout unused for JSON: Ranko talks over the socket. Logs go to stderr.
+    # Keep stdout unused for JSON: Chromatrix talks over the socket. Logs go to stderr.
     sys.stdout = sys.stderr
     _quiet_websockets_log()
     networks = list(allow_networks or [])
@@ -2902,7 +2902,7 @@ def run_ws_loop(host: str, port: int, allow_networks: Optional[list[ipaddress._B
 
 
 def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="AXLTrainer dashboard helper")
+    parser = argparse.ArgumentParser(description="Chromatrix dashboard helper")
     parser.add_argument(
         "--websocket",
         action="store_true",

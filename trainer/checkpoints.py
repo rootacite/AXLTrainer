@@ -1,4 +1,4 @@
-"""LoRA checkpoint discovery and metadata for resume + the Ranko picker."""
+"""LoRA checkpoint discovery and metadata for resume + the Chromatrix picker."""
 
 from __future__ import annotations
 

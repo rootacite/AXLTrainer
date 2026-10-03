@@ -1,4 +1,4 @@
-# Configuration contract — AXLTrainer
+# Configuration contract — Chromatrix
 
 > Detail behind `AGENT.md` §4. `AGENT.md` keeps the condensed rules; this file carries the full text.
 
@@ -13,7 +13,7 @@ Load path:
 
 - Python: `trainer/config.py` flattens **all TOML tables into one dict**. Section names do not exist at runtime on the Python side — only keys. `TrainConfig` fields default via `get_val(key, hardcoded)`. **TOML wins** over Python defaults.
 - Kotlin: `AxlTrainerConfig` is **sectional** (`environment`, `model_spec`, `training`, …). Utils tab saves via `TomlDocumentPatcher`: in-place replace of uncommented `key = value` inside named tables. Comments, blank lines, and unknown tables (e.g. `[bookkeeping]`) stay intact. **Do not rewrite the whole file.**
-- Kotlin load: ktoml refuses an integer literal for a `Double`, so `TomlIntegerLiterals` rewrites `key = 0` to `0.0` for the keys `AxlTrainerConfig` declares as `Double` before decoding. A hand-edited `amdfq_vram_reserve_gib = 0` must not cost Ranko its startup; the save side already writes `0.0` (`TomlDocumentPatcher.float`).
+- Kotlin load: ktoml refuses an integer literal for a `Double`, so `TomlIntegerLiterals` rewrites `key = 0` to `0.0` for the keys `AxlTrainerConfig` declares as `Double` before decoding. A hand-edited `amdfq_vram_reserve_gib = 0` must not cost Chromatrix its startup; the save side already writes `0.0` (`TomlDocumentPatcher.float`).
 
 Adding a hyperparameter (all four, or the GUI will drift):
 
@@ -50,9 +50,9 @@ must stay under `[validation]` (a top-level `[[samples]]` would be dropped, beca
 - Seed rule: inside a set the nth image uses `seed + n` (`0` = random per image). Two sets sharing a
   seed start from the same noise; that is the point (only the prompt differs).
 - Images: `{output_name}_{step:06d}_p{set}_{repeat}.png`, `set` counting from 0. `api.scan_samples`
-  also parses the old two-number name as set 0, and returns `set_index` for the Ranko `Pn` badges.
+  also parses the old two-number name as set 0, and returns `set_index` for the Chromatrix `Pn` badges.
   `control.set_sampling` reports a global image counter plus `prompt_set`/`prompt_sets`.
-- Ranko: `SampleSetForm` in `TrainingConfigForm`, tabs in the Utils Validation section,
+- Chromatrix: `SampleSetForm` in `TrainingConfigForm`, tabs in the Utils Validation section,
   `TomlDocumentPatcher.replaceArrayOfTables` for the blocks. The form writes `[validation]` from the
   **first** set, so the file never holds two contradictory prompts.
 
@@ -78,7 +78,7 @@ the flat `train_data_dir` scalar stays beside them as the **mirror of the first 
   the progress bars all follow that list length without a loop change. `__len__` stays the unique
   image count — `warm_latent_cache` walks `range(len(dataset))` — and `total_samples` carries the
   per-epoch figure.
-- Ranko: `TrainDataDirForm` in `TrainingConfigForm` (rows in the Utils Environment section),
+- Chromatrix: `TrainDataDirForm` in `TrainingConfigForm` (rows in the Utils Environment section),
   `TomlDocumentPatcher.replaceArrayOfTables` for the blocks, `train_data_dir` written from the
   **first** row so the file never holds two contradictory folders. `DatasetSelection` (a
   `@SingleIn(AppScope)` holder of one index) is what the single-folder pages — Images, Statistics,

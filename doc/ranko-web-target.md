@@ -1,10 +1,10 @@
-# Adding a Web target to Ranko (Compose Multiplatform)
+# Adding a Web target to Chromatrix (Compose Multiplatform)
 
-A runbook for Ranko's desktop + browser Compose Multiplatform tree. `:shared` now declares `wasmJs { browser() }` and `:webApp` is the executable. Keep this file for Gradle shape, FilePicker, and mask notes.
+A runbook for Chromatrix's desktop + browser Compose Multiplatform tree. `:shared` now declares `wasmJs { browser() }` and `:webApp` is the executable. Keep this file for Gradle shape, FilePicker, and mask notes.
 
 **Shipped:** `./gradlew :webApp:wasmJsBrowserDevelopmentRun` paints `App()`. Desktop FileKit stays; wasm uses `fs_listdir`. Mask raster is common `ByteArray`; wasm input is DOM. Helper bind may be LAN with `--allow-ip`. No Kotlin/JS compatibility mode, no auth token, no TLS.
 
-Recorded 2026-09-26 against Ranko as it stands: Kotlin **2.4.10**, Compose Multiplatform **1.12.0**, Metro **1.3.0**. Official pages cited below were current on that date.
+Recorded 2026-09-26 against Chromatrix as it stands: Kotlin **2.4.10**, Compose Multiplatform **1.12.0**, Metro **1.3.0**. Official pages cited below were current on that date.
 
 ## What "a Web target" means here
 
@@ -13,16 +13,16 @@ Compose Multiplatform for Web compiles the same `@Composable` UI to a canvas in 
 Sources:
 
 - [Choose the right web target](https://kotlinlang.org/docs/multiplatform/choosing-web-target.html) — Wasm for shared Compose UI; JS for HTML-native UI or logic-only sharing.
-- [Compose Multiplatform 1.9.0](https://blog.jetbrains.com/kotlin/2025/09/compose-multiplatform-1-9-0-compose-for-web-beta/) — Web target moved to Beta (2025-09). Ranko is already on Compose 1.12.
+- [Compose Multiplatform 1.9.0](https://blog.jetbrains.com/kotlin/2025/09/compose-multiplatform-1-9-0-compose-for-web-beta/) — Web target moved to Beta (2025-09). Chromatrix is already on Compose 1.12.
 - [Create your Compose Multiplatform app](https://kotlinlang.org/docs/multiplatform/compose-multiplatform-create-first-app.html) — wizard layout and run tasks.
 - [Get started with Kotlin/Wasm](https://kotlinlang.org/docs/wasm-get-started.html) — `wasmJsBrowserDevelopmentRun` / `wasmJsBrowserDistribution`.
 - [Recommended project structure](https://kotlinlang.org/docs/multiplatform/multiplatform-project-recommended-structure.html) — extract a `webApp` entry module.
 
-`ui.py` (Streamlit) is a separate, deprecated read-only viewer. A CMP Web target would be Ranko's own UI in the browser, and is a different product surface.
+`ui.py` (Streamlit) is a separate, deprecated read-only viewer. A CMP Web target would be Chromatrix's own UI in the browser, and is a different product surface.
 
-## Ranko's current Gradle shape
+## Chromatrix's current Gradle shape
 
-Ranko already matches the structure the KMP wizard emits for Desktop:
+Chromatrix already matches the structure the KMP wizard emits for Desktop:
 
 ```
 ranko/
@@ -37,7 +37,7 @@ ranko/
 
 `shared/build.gradle.kts` declares a single target, `jvm()`. `desktopApp` is a Kotlin/JVM application that depends on `projects.shared` and `compose.desktop.currentOs`. That is the same split the [recommended structure](https://kotlinlang.org/docs/multiplatform/multiplatform-project-recommended-structure.html) uses for Desktop; the missing piece is a `webApp` module plus `wasmJs` (and optionally `js`) on `shared`.
 
-The first 60 seconds of work is therefore Gradle and an empty `ComposeViewport`. Making Ranko *useful* in a browser is a later, larger pass: `commonMain` currently calls `java.io.File`, AWT, `Process`, and `java.util.prefs` as if it were JVM (see [What Ranko still assumes](#what-ranko-still-assumes)).
+The first 60 seconds of work is therefore Gradle and an empty `ComposeViewport`. Making Chromatrix *useful* in a browser is a later, larger pass: `commonMain` currently calls `java.io.File`, AWT, `Process`, and `java.util.prefs` as if it were JVM (see [What Chromatrix still assumes](#what-ranko-still-assumes)).
 
 ## Decision: which web backend
 
@@ -45,7 +45,7 @@ The first 60 seconds of work is therefore Gradle and an empty `ComposeViewport`.
 | --- | --- |
 | `wasmJs` only | First implementation. Official recommendation for a shared Compose UI. All current major browsers ship WasmGC. |
 | `wasmJs` + `js` | Ship a public site that must also run in older browsers. Enables `composeCompatibilityBrowserDistribution`. |
-| `js` only | Sharing logic with an HTML/React UI. Ranko wants the Compose chrome, so this is the wrong default. |
+| `js` only | Sharing logic with an HTML/React UI. Chromatrix wants the Compose chrome, so this is the wrong default. |
 
 Start with `wasmJs` on both `:shared` and `:webApp`. Add `js` only if compatibility mode is a product requirement.
 
@@ -101,10 +101,10 @@ plugins {
 kotlin {
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
-        outputModuleName.set("axlranko")
+        outputModuleName.set("chromatrix")
         browser {
             commonWebpackConfig {
-                outputFileName = "axlranko.js"
+                outputFileName = "chromatrix.js"
             }
         }
         binaries.executable()
@@ -121,7 +121,7 @@ kotlin {
 }
 ```
 
-Keep webpack config free of captured `project` / top-level `val`s. Ranko enables the Gradle configuration cache (`ranko/gradle.properties`); [KT-68614](https://youtrack.jetbrains.com/issue/KT-68614) fails the webpack task when a script-level `rootDirPath` is closed over. Put any path you need *inside* the `commonWebpackConfig { }` lambda, or skip the extra `devServer.static` block.
+Keep webpack config free of captured `project` / top-level `val`s. Chromatrix enables the Gradle configuration cache (`ranko/gradle.properties`); [KT-68614](https://youtrack.jetbrains.com/issue/KT-68614) fails the webpack task when a script-level `rootDirPath` is closed over. Put any path you need *inside* the `commonWebpackConfig { }` lambda, or skip the extra `devServer.static` block.
 
 3. Root `ranko/build.gradle.kts` already has `kotlinMultiplatform` / `compose*` as `apply false`. No change unless a new plugin is added.
 4. Apply the Metro plugin on `:webApp` as well, because `createGraph<AppGraph>()` is what `desktopApp` does in `main.kt`.
@@ -140,9 +140,9 @@ Compose for Web draws onto an HTML canvas through `ComposeViewport`. `CanvasBase
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AxlRanko</title>
+    <title>Chromatrix</title>
     <link rel="stylesheet" href="styles.css">
-    <script src="axlranko.js"></script>
+    <script src="chromatrix.js"></script>
 </head>
 <body>
     <div id="webApp"></div>
@@ -189,7 +189,7 @@ Compose resources (`composeResources/` fonts and the app icon) already live unde
 
 ## Step 4 — Make `commonMain` actually common
 
-Adding the target is mechanical. Compiling Ranko for Wasm is the real job: `shared/src/commonMain` currently imports JVM types throughout. A Wasm compile of `commonMain` is the inventory; the grep below is the 2026-09-26 snapshot.
+Adding the target is mechanical. Compiling Chromatrix for Wasm is the real job: `shared/src/commonMain` currently imports JVM types throughout. A Wasm compile of `commonMain` is the inventory; the grep below is the 2026-09-26 snapshot.
 
 ### Already on `expect` / `actual`
 
@@ -208,8 +208,8 @@ Adding the target is mechanical. Compiling Ranko for Wasm is the real job: `shar
 | `java.awt.*` | `Clipboard.kt`, `MaskCanvas.kt` (`BufferedImage`), `ImageScreen.kt` (`Cursor`), Dashboard / Statistics / Utils (`Cursor`) | AWT is JVM. Clipboard → `expect`; raster → Skia / Compose `ImageBitmap`; cursor → Compose `PointerIcon` (already used in places). |
 | `java.util.prefs.Preferences` | `AppearanceRepository.kt` | `localStorage` (or `expect`) on web. |
 | `coil-network-okhttp` | `shared/build.gradle.kts` `commonMain` | OkHttp is JVM. Web uses `coil-network-ktor3` + Ktor's JS engine. Keep OkHttp on `jvmMain`. |
-| `ktoml-file` | `commonMain` + `PathUtils.kt` | [ktoml-file is JVM/Native](https://github.com/akuleshov7/ktoml). `ktoml-core` already supports `wasmJs`; Ranko already parses from a `String` in `ConfigImporter.parseConfig`. Drop `ktoml-file` from `commonMain`. |
-| FileKit directory picker | `FileDialogs.kt` | FileKit 0.8.8 documents directory pick as missing on WASM/JS (file pick uses `<input type="file">`). Later FileKit rebuilds a virtual tree from `webkitdirectory`. Ranko is on **0.8.8**; a web port either upgrades FileKit or accepts file-only picks. |
+| `ktoml-file` | `commonMain` + `PathUtils.kt` | [ktoml-file is JVM/Native](https://github.com/akuleshov7/ktoml). `ktoml-core` already supports `wasmJs`; Chromatrix already parses from a `String` in `ConfigImporter.parseConfig`. Drop `ktoml-file` from `commonMain`. |
+| FileKit directory picker | `FileDialogs.kt` | FileKit 0.8.8 documents directory pick as missing on WASM/JS (file pick uses `<input type="file">`). Later FileKit rebuilds a virtual tree from `webkitdirectory`. Chromatrix is on **0.8.8**; a web port either upgrades FileKit or accepts file-only picks. |
 | `java.util.concurrent.atomic.*` | `TrainerIpcClient` | Replace with Kotlin atomics / a mutex; Wasm has no `java.util.concurrent`. |
 
 ### Libraries that already claim Wasm
@@ -235,10 +235,10 @@ Do this as its own sequence of PRs. A single "add wasmJs" commit that also rewri
 
 ## IPC: the process model does not travel
 
-Ranko's contract (AGENT.md §2, `doc/overview.md`):
+Chromatrix's contract (AGENT.md §2, `doc/overview.md`):
 
 ```
-Ranko (JVM / future wasm)  --WebSocket JSON-RPC-->  api.py  --spawns-->  trainer/main.py
+Chromatrix (JVM / future wasm)  --WebSocket JSON-RPC-->  api.py  --spawns-->  trainer/main.py
 ```
 
 The browser has no `ProcessBuilder`, no `setsid`, and no right to the machine's `/dev/kfd`. Three product shapes are available; pick one *before* writing a Wasm IPC client:
@@ -246,7 +246,7 @@ The browser has no `ProcessBuilder`, no `setsid`, and no right to the machine's 
 | Shape | What the browser talks to | Cost |
 | --- | --- | --- |
 | **View-only static site** | Nothing. Dashboard is a TensorBoard/sample browser of files the user dropped in. | Smallest. Training stays desktop. |
-| **Local companion** | Ranko desktop already speaks JSON-RPC on `ws://127.0.0.1:18765`. A `webApp` connects to the same helper (user starts `python -u api.py` if Ranko is not running). | Same methods, no second protocol. Bind stays loopback. |
+| **Local companion** | Chromatrix desktop already speaks JSON-RPC on `ws://127.0.0.1:18765`. A `webApp` connects to the same helper (user starts `python -u api.py` if Chromatrix is not running). | Same methods, no second protocol. Bind stays loopback. |
 | **Remote trainer** | A real HTTP API. | Out of scope unless explicitly asked (AGENT.md §13). |
 
 `TrainerIpcClient` should become an `expect class` or an interface with a JVM `Process` actual. The Wasm actual is empty until a shape is chosen. Do not silently add an HTTP server to `api.py` as a side effect of the Gradle target.
@@ -279,7 +279,7 @@ Compatibility mode (only if `js` and `wasmJs` both exist):
 # → webApp/build/dist/composeWebCompatibility/productionExecutable/
 ```
 
-(The wizard's path names `composeApp/...`; Ranko's module is `webApp`.)
+(The wizard's path names `composeApp/...`; Chromatrix's module is `webApp`.)
 
 Host the `productionExecutable` directory as a static site (GitHub Pages, nginx, …). Serve it with COOP/COEP headers if a future feature needs `SharedArrayBuffer`; the default Compose Wasm app does not require them.
 
@@ -304,4 +304,4 @@ Yarn/npm: the Kotlin/JS plugin writes `kotlin-js-store/`. The repo root `.gitign
 
 ## What this runbook does not decide
 
-Whether Ranko on the web is worth the IPC redesign, which of the three IPC shapes to take, and whether FileKit should be upgraded past 0.8.8. Those are product calls. The Gradle and source-set steps above stay the same regardless.
+Whether Chromatrix on the web is worth the IPC redesign, which of the three IPC shapes to take, and whether FileKit should be upgraded past 0.8.8. Those are product calls. The Gradle and source-set steps above stay the same regardless.

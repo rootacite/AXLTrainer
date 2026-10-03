@@ -38,8 +38,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import axlranko.shared.generated.resources.Res
-import axlranko.shared.generated.resources.app_icon
+import chromatrix.shared.generated.resources.Res
+import chromatrix.shared.generated.resources.app_icon
 import com.acite.axlranko.pages.AutomationScreen
 import com.acite.axlranko.pages.AutomationScreenViewModel
 import com.acite.axlranko.pages.DashboardScreen
@@ -234,7 +234,7 @@ private fun FloatingNavRail(
             ) {
                 Image(
                     painter = painterResource(Res.drawable.app_icon),
-                    contentDescription = "AxlRanko",
+                    contentDescription = "Chromatrix",
                     modifier = Modifier
                         .size(36.dp)
                         .clip(CircleShape),

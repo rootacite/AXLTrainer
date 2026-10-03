@@ -24,7 +24,7 @@ internal object JvmHelperProcess {
 
     private fun start(host: String, port: Int) {
         val root = TrainerRepo.findRoot()
-            ?: error("Could not locate api.py. Run AxlRanko from the trainer repo, or set the working directory to the repo root.")
+            ?: error("Could not locate api.py. Run Chromatrix from the trainer repo, or set the working directory to the repo root.")
         val python = System.getenv("AXL_PYTHON")?.takeIf { it.isNotBlank() } ?: "python3"
         val script = File(root, "api.py")
         val builder = ProcessBuilder(

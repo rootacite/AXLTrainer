@@ -139,7 +139,7 @@ class ResumeConfigTest {
 
     /**
      * The reserve row is a Kotlin `Double`, and ktoml refuses an integer literal for a `Double`:
-     * a bare `amdfq_vram_reserve_gib = 0` stops Ranko from parsing its own config.toml. Saving the
+     * a bare `amdfq_vram_reserve_gib = 0` stops Chromatrix from parsing its own config.toml. Saving the
      * row as 0 therefore has to leave a float literal behind.
      */
     @Test
@@ -158,7 +158,7 @@ class ResumeConfigTest {
         assertEquals("0", TrainingConfigForm.from(reloaded).amdfqVramReserveGib)
     }
 
-    /** A hand-written `0` in that row must not cost Ranko its startup. */
+    /** A hand-written `0` in that row must not cost Chromatrix its startup. */
     @Test
     fun integerLiteralInTheReserveRowStillParses() {
         val config = assertNotNull(loadTrainerConfig(writeConfigWithReserve("0").absolutePath.toPath()))

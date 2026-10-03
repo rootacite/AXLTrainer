@@ -34,7 +34,7 @@ ENV_URL = "AXL_COMFY_URL"
 
 
 class ComfyError(RuntimeError):
-    """A ComfyUI request failed, with a message Ranko can show as-is."""
+    """A ComfyUI request failed, with a message Chromatrix can show as-is."""
 
 
 class ComfyCancelled(RuntimeError):

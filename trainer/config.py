@@ -220,7 +220,7 @@ def run_config_mapping(log_dir: Union[str, Path]) -> tuple[dict[str, Any], str]:
     return mapping, source
 
 
-# Ranges shared with the Ranko Validation form; a value outside them is rejected
+# Ranges shared with the Chromatrix Validation form; a value outside them is rejected
 # in the GUI and again here, so a hand-edited config.toml fails at startup with
 # a message naming the offending entry.
 SAMPLE_SIZE_RANGE = (64, 4096)
@@ -232,7 +232,7 @@ SAMPLE_RESCALE_RANGE = (0.0, 1.0)
 SAMPLE_SEED_RANGE = (0, 2**32 - 1)
 SAMPLE_REPEAT_RANGE = (1, 32)
 
-# How many times one dataset folder is drawn inside a single epoch. Shared with the Ranko
+# How many times one dataset folder is drawn inside a single epoch. Shared with the Chromatrix
 # Environment form, which rejects a value outside it before saving.
 TRAIN_DATA_REPEAT_RANGE = (1, 512)
 
@@ -582,7 +582,7 @@ class TrainConfig:
     output_name: str = get_val("output_name", "kanae")
     output_dir: str = get_val("output_dir", "/home/acite/LLM/axltrainer/outputs")
     logging_dir: str = get_val("logging_dir", "/home/acite/LLM/axltrainer/logs")
-    # none | tail | vmm: LD_PRELOAD for start_train.sh (Ranko Utils → ROCm).
+    # none | tail | vmm: LD_PRELOAD for start_train.sh (Chromatrix Utils → ROCm).
     amdfq: str = get_val("amdfq", "none")
     # GiB of HIP-reported free VRAM the VMM hook will not consume. 0 disables.
     amdfq_vram_reserve_gib: float = get_val("amdfq_vram_reserve_gib", 1.0)

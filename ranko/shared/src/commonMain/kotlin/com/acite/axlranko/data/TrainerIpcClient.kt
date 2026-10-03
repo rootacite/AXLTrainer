@@ -107,7 +107,7 @@ class TrainerIpcClient {
      * this run's connections *its* connections — the helper serves one client and turns any other
      * instance away (`API.md`), and this is what tells the two apart.
      */
-    internal val instanceId: String = "axlranko-" + Random.nextInt(0, Int.MAX_VALUE).toString(16)
+    internal val instanceId: String = "chromatrix-" + Random.nextInt(0, Int.MAX_VALUE).toString(16)
 
     /**
      * This app's own resource locks (`IpcResources`). api.py takes none: it serves a single client
@@ -1172,7 +1172,7 @@ class TrainerIpcClient {
          * Say who we are before the connection is used.
          *
          * The helper admits one client session, so every lane introduces itself; a refusal means
-         * another Ranko (or the web companion) is on this helper, and the message says which and
+         * another Chromatrix (or the web companion) is on this helper, and the message says which and
          * since when. Nothing else is sent on a refused connection, and the socket is dropped.
          */
         private suspend fun handshake() {

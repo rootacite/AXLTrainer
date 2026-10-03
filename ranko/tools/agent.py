@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""AxlRanko dataset management CLI for AI agents.
+"""Chromatrix dataset management CLI for AI agents.
 
-Exposes the core functionality of the AxlRanko desktop app (dataset browsing,
+Exposes the core functionality of the Chromatrix desktop app (dataset browsing,
 caption editing, tag statistics, and bulk cleanup) as a non-interactive,
 machine-friendly command-line tool. It never reads or decodes image pixels;
 it only manages the caption (.txt) files next to the images.
@@ -374,9 +374,9 @@ def emit(result, fmt):
 # --------------------------------------------------------------------------
 
 HELP_DESCRIPTION = """\
-AxlRanko dataset management CLI for AI agents.
+Chromatrix dataset management CLI for AI agents.
 
-This script exposes the core functionality of the AxlRanko desktop app
+This script exposes the core functionality of the Chromatrix desktop app
 (browsing, caption editing, tag statistics, and bulk dataset cleanup) as a
 non-interactive command-line tool designed to be called by AI agents. It never
 reads or decodes image pixels - it only works with the caption (.txt) files.

@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 /**
  * ktoml refuses an integer literal for a Kotlin `Double`, so a hand-edited `key = 0` under a
- * double-typed key has to be read as `0.0` for Ranko to start at all.
+ * double-typed key has to be read as `0.0` for Chromatrix to start at all.
  */
 class TomlIntegerLiteralsTest {
 

@@ -64,27 +64,27 @@ class ClientSessionRulesTest(unittest.TestCase):
         self.session = api.ClientSession(grace=5.0, clock=self.clock)
 
     def test_the_first_client_owns_the_helper(self):
-        ok, payload = self.session.hello("axlranko-desktop", "a-1")
+        ok, payload = self.session.hello("chromatrix-desktop", "a-1")
         self.assertTrue(ok)
         self.assertTrue(payload["owner"])
         self.assertEqual("a-1", payload["instance"])
-        self.assertEqual("axlranko-desktop", payload["client"])
+        self.assertEqual("chromatrix-desktop", payload["client"])
         self.assertEqual(1, self.session.connections)
 
     def test_the_same_instance_may_open_many_connections(self):
         for expected in (1, 2, 3, 4):
-            ok, payload = self.session.hello("axlranko-desktop", "a-1")
+            ok, payload = self.session.hello("chromatrix-desktop", "a-1")
             self.assertTrue(ok, payload)
             self.assertEqual(expected, payload["connections"])
         self.assertEqual(4, self.session.connections)
 
     def test_a_second_client_is_refused_with_a_readable_reason(self):
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         self.clock.advance(30)
-        ok, payload = self.session.hello("axlranko-web", "b-1")
+        ok, payload = self.session.hello("chromatrix-web", "b-1")
         self.assertFalse(ok)
         self.assertEqual("CLIENT_BUSY", payload["code"])
-        self.assertIn("axlranko-desktop", payload["error"])
+        self.assertIn("chromatrix-desktop", payload["error"])
         self.assertIn("close it and retry", payload["error"])
         self.assertEqual("a-1", payload["holder"]["instance"])
         # The refused client did not become a second owner, and took no connection slot.
@@ -93,25 +93,25 @@ class ClientSessionRulesTest(unittest.TestCase):
 
     def test_asking_politely_does_not_take_the_helper_over(self):
         """No takeover path: extra parameters are ignored, however they are spelled."""
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         for extra in ({"force": True}, {"takeover": True}, {"instance": "b-1", "force": "yes"}):
             with self.subTest(extra=extra):
-                ok, payload = self.session.hello("axlranko-web", str(extra.get("instance", "b-1")))
+                ok, payload = self.session.hello("chromatrix-web", str(extra.get("instance", "b-1")))
                 self.assertFalse(ok)
                 self.assertEqual("CLIENT_BUSY", payload["code"])
 
     def test_a_second_client_is_refused_inside_the_grace_period(self):
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         self.session.released()
         self.clock.advance(4.0)
-        ok, _ = self.session.hello("axlranko-web", "b-1")
+        ok, _ = self.session.hello("chromatrix-web", "b-1")
         self.assertFalse(ok)
 
     def test_the_owner_is_replaced_once_its_connections_are_gone_and_the_grace_has_passed(self):
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         self.session.released()
         self.clock.advance(api._OWNER_GRACE_SECONDS + 0.5)
-        ok, payload = self.session.hello("axlranko-web", "b-1")
+        ok, payload = self.session.hello("chromatrix-web", "b-1")
         self.assertTrue(ok, payload)
         self.assertEqual("b-1", self.session.instance)
         self.assertEqual(1, self.session.connections)
@@ -121,9 +121,9 @@ class ClientSessionRulesTest(unittest.TestCase):
 
     def test_too_many_connections_are_refused(self):
         for _ in range(api._MAX_SESSION_CONNECTIONS):
-            ok, _ = self.session.hello("axlranko-desktop", "a-1")
+            ok, _ = self.session.hello("chromatrix-desktop", "a-1")
             self.assertTrue(ok)
-        ok, payload = self.session.hello("axlranko-desktop", "a-1")
+        ok, payload = self.session.hello("chromatrix-desktop", "a-1")
         self.assertFalse(ok)
         self.assertEqual("CLIENT_BUSY", payload["code"])
         self.assertIn("connections", payload["error"])
@@ -132,14 +132,14 @@ class ClientSessionRulesTest(unittest.TestCase):
         """A script's second connection is not a second client; a named one still is."""
         self.assertTrue(self.session.hello("", "")[0])
         self.assertTrue(self.session.hello("", "")[0])
-        ok, payload = self.session.hello("axlranko-desktop", "a-1")
+        ok, payload = self.session.hello("chromatrix-desktop", "a-1")
         self.assertFalse(ok)
         self.assertEqual("CLIENT_BUSY", payload["code"])
         self.assertIn("unnamed client", payload["error"])
 
     def test_releasing_counts_down_and_info_follows(self):
-        self.session.hello("axlranko-desktop", "a-1")
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         self.session.released()
         info = self.session.info()
         self.assertEqual(1, info["connections"])
@@ -172,7 +172,7 @@ class WsHandlerAdmissionTest(unittest.TestCase):
         self.run_handler([])
         self.assertEqual("", self.session.instance)
         self.assertEqual(0, self.session.connections)
-        conn = self.run_handler([self.hello(1, "axlranko-desktop", "a-1")])
+        conn = self.run_handler([self.hello(1, "chromatrix-desktop", "a-1")])
         self.assertTrue(conn.replies[0]["ok"], conn.replies)
 
     def test_a_first_request_without_hello_claims_a_free_helper(self):
@@ -181,35 +181,35 @@ class WsHandlerAdmissionTest(unittest.TestCase):
         self.assertEqual(0, self.session.connections, "the connection ended, so it is released")
 
     def test_a_request_before_an_owner_is_refused_and_closed(self):
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         conn = self.run_handler([request(1, "ping")])
         self.assertFalse(conn.replies[0]["ok"])
         self.assertEqual("CLIENT_BUSY", conn.replies[0]["code"])
         self.assertEqual(1, len(conn.replies), "the refused connection serves nothing else")
 
     def test_a_refused_hello_answers_with_the_holder_and_takes_no_slot(self):
-        self.run_handler([self.hello(1, "axlranko-desktop", "a-1")])
-        conn = self.run_handler([self.hello(1, "axlranko-web", "b-1", force=True)])
+        self.run_handler([self.hello(1, "chromatrix-desktop", "a-1")])
+        conn = self.run_handler([self.hello(1, "chromatrix-web", "b-1", force=True)])
         reply = conn.replies[0]
         self.assertFalse(reply["ok"])
         self.assertEqual("CLIENT_BUSY", reply["code"])
-        self.assertIn("axlranko-desktop", reply["error"])
+        self.assertIn("chromatrix-desktop", reply["error"])
         self.assertEqual("a-1", reply["holder"]["instance"])
         self.assertEqual(0, self.session.connections, "both connections ended")
 
     def test_hello_on_an_open_connection_answers_with_the_session(self):
         conn = self.run_handler([
-            self.hello(1, "axlranko-desktop", "a-1"),
-            self.hello(2, "axlranko-desktop", "a-1", lane="poll"),
+            self.hello(1, "chromatrix-desktop", "a-1"),
+            self.hello(2, "chromatrix-desktop", "a-1", lane="poll"),
         ])
         self.assertTrue(conn.replies[1]["ok"])
         self.assertEqual("a-1", conn.replies[1]["result"]["instance"])
         self.assertEqual(1, conn.replies[1]["result"]["connections"], "a second hello is not a lane")
 
     def test_the_connection_count_falls_when_a_connection_ends(self):
-        self.run_handler([self.hello(1, "axlranko-desktop", "a-1")])
+        self.run_handler([self.hello(1, "chromatrix-desktop", "a-1")])
         self.assertEqual(0, self.session.connections)
-        self.session.hello("axlranko-desktop", "a-1")
+        self.session.hello("chromatrix-desktop", "a-1")
         self.assertEqual(1, self.session.connections)
 
 
@@ -264,16 +264,16 @@ class RealSocketSessionTest(unittest.TestCase):
         a1 = self.connect()
         a2 = self.connect()
         try:
-            first = self.hello(a1, 1, "axlranko-desktop", "a-1")
+            first = self.hello(a1, 1, "chromatrix-desktop", "a-1")
             self.assertTrue(first["ok"], first)
             self.assertTrue(first["result"]["owner"])
-            self.assertTrue(self.hello(a2, 1, "axlranko-desktop", "a-1", lane="poll")["ok"])
+            self.assertTrue(self.hello(a2, 1, "chromatrix-desktop", "a-1", lane="poll")["ok"])
             self.assertEqual(2, self.session.connections, "both of the owner's lanes are open")
             with self.connect() as b:
-                refusal = self.hello(b, 1, "axlranko-web", "b-1")
+                refusal = self.hello(b, 1, "chromatrix-web", "b-1")
                 self.assertFalse(refusal["ok"])
                 self.assertEqual("CLIENT_BUSY", refusal["code"])
-                self.assertIn("axlranko-desktop", refusal["error"])
+                self.assertIn("chromatrix-desktop", refusal["error"])
                 # The helper closes a refused connection instead of serving it.
                 from websockets.exceptions import ConnectionClosed
 
@@ -284,7 +284,7 @@ class RealSocketSessionTest(unittest.TestCase):
             a2.close()
         time.sleep(0.5)
         with self.connect() as b2:
-            takeover = self.hello(b2, 1, "axlranko-web", "b-1")
+            takeover = self.hello(b2, 1, "chromatrix-web", "b-1")
             self.assertTrue(takeover["ok"], takeover)
             self.assertEqual("b-1", self.session.instance)
 

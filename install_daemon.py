@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the wasm Ranko site and one user systemd unit that serves it with api.py.
+"""Install the wasm Chromatrix site and one user systemd unit that serves it with api.py.
 
 The static site listens on 0.0.0.0:18766 and has no allowlist of its own: it is only a client.
 api.py listens on 0.0.0.0:18765 and admits 192.168.0.0/16 (loopback is always admitted on top).
@@ -96,7 +96,7 @@ def render_unit(python: str, repo: Path, web_root: Path) -> str:
     serve = command_line([python, "-u", str(repo / "install_daemon.py"), "--serve"])
     return (
         "[Unit]\n"
-        "Description=AxlRanko wasm site and api.py helper\n"
+        "Description=Chromatrix wasm site and api.py helper\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -305,7 +305,7 @@ def serve() -> int:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Install the wasm Ranko site and its user service")
+    parser = argparse.ArgumentParser(description="Install the wasm Chromatrix site and its user service")
     parser.add_argument("--uninstall", action="store_true", help="remove the unit and the copied site")
     parser.add_argument("--serve", action="store_true", help="run api.py and the static site (the unit)")
     args = parser.parse_args(argv)

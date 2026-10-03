@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — expose start_ui.sh (the AxlRanko launcher) as a desktop application.
+# install.sh — expose start_ui.sh (the Chromatrix launcher) as a desktop application.
 #
 #   ./install.sh        install / refresh for the current user
 #   ./install.sh -t     same, but keep a terminal window (build output stays visible)
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 APP_ID="axlranko"
-APP_NAME="AxlRanko"
+APP_NAME="Chromatrix"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER="$REPO_ROOT/start_ui.sh"
 ICON_SRC="$REPO_ROOT/ranko/desktopApp/icons/app_icon.png"
@@ -38,7 +38,7 @@ usage() {
     cat <<'EOF'
 Usage: install.sh [-t] [-u] [-h]
 
-  (no option)  Install or refresh the AxlRanko desktop entry for this user.
+  (no option)  Install or refresh the Chromatrix desktop entry for this user.
   -t           Install a version that opens in a terminal, so the Gradle
                packaging output and startup errors stay visible.
   -u           Remove the desktop entry, the icon and the generated launcher.
@@ -219,12 +219,12 @@ Type=Application
 Version=1.0
 Name=$APP_NAME
 GenericName=LoRA Trainer
-Comment=Local-first LoRA training dashboard for AxlTrainer
+Comment=Local-first LoRA training dashboard for Chromatrix
 Exec=$exec_cmd
 Icon=$APP_ID
 Terminal=$( [ "$terminal_mode" = yes ] && echo true || echo false )
 Categories=Graphics;2DGraphics;RasterGraphics;
-Keywords=LoRA;SDXL;diffusion;training;AxlTrainer;AxlRanko;
+Keywords=LoRA;SDXL;diffusion;training;Chromatrix;
 StartupNotify=true
 EOF
     chmod 755 "$DESKTOP_FILE"

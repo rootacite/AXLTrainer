@@ -3,7 +3,7 @@
     python -u trainer/generate_sample.py --spec <job.json>
 
 api.py writes the spec (a job record, see `trainer/genjob.py`), spawns this
-script detached, and Ranko follows the job file while it runs. A generated image
+script detached, and Chromatrix follows the job file while it runs. A generated image
 is written next to its spec under `{name}_samples/generated/`, so it sits beside
 the run's own samples without entering their `_<step>_<repeat>.png` namespace.
 

@@ -18,7 +18,7 @@ export MIOPEN_USER_DB_PATH="$HOME/.config/miopen"
 
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,garbage_collection_threshold:0.8"
 
-# [environment].amdfq: none | tail | vmm. Ranko Utils writes it; this is what actually preloads.
+# [environment].amdfq: none | tail | vmm. Chromatrix Utils writes it; this is what actually preloads.
 # Fail here if the chosen .so is missing rather than starting a run without the patch.
 amdfq_line=$(python -u -c "from trainer.amdfq_patch import launch_env_line; print(launch_env_line())")
 IFS='|' read -r amdfq_choice amdfq_so amdfq_va_status amdfq_vram_reserve amdfq_va_never_reuse amdfq_pool <<< "$amdfq_line"

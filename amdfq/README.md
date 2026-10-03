@@ -1,14 +1,14 @@
 # amdfq
 
 LD_PRELOAD interposers for HIP allocation on RDNA 4.
-`start_train.sh` preloads the release `.so` chosen by `[environment].amdfq` (`none` / `tail` / `vmm`; Ranko Utils → **ROCm**). `amdfq-*-rs/run.sh` is a manual override, and `./start_hook.sh` starts any other program under the same preload. Both are opt-in: nothing preloads them unless `[environment].amdfq` says so.
+`start_train.sh` preloads the release `.so` chosen by `[environment].amdfq` (`none` / `tail` / `vmm`; Chromatrix Utils → **ROCm**). `amdfq-*-rs/run.sh` is a manual override, and `./start_hook.sh` starts any other program under the same preload. Both are opt-in: nothing preloads them unless `[environment].amdfq` says so.
 
 | Path | What |
 | --- | --- |
 | [`amdfq-vmm-rs/`](amdfq-vmm-rs/) | **The hook** (Rust peralloc VMM). `bash amdfq/amdfq-vmm-rs/run.sh test` / `train`; self-check `bash amdfq/amdfq-vmm-rs/test.sh`. Design constraints: [`amdfq-vmm-rs/DESIGN.md`](amdfq-vmm-rs/DESIGN.md). What `hipPointerGetAttributes` / `hipMemGetInfo` answer under it: [`amdfq-vmm-rs/hip-calls.md`](amdfq-vmm-rs/hip-calls.md). |
 | [`amdfq-tail-rs/`](amdfq-tail-rs/) | **The tail hook** (Rust route 2). `hipMalloc` still allocates; one shared page is mapped behind a block the runtime does not already back. `bash amdfq/amdfq-tail-rs/run.sh test` / `train`; self-check `bash amdfq/amdfq-tail-rs/test.sh`. Design constraints: [`amdfq-tail-rs/DESIGN.md`](amdfq-tail-rs/DESIGN.md). |
 
-The VMM hook keeps two pre-fix workarounds as optional switches, both off by default — `amdfq_va_never_reuse` and `amdfq_vram_reserve_gib`, documented in [`../doc/configuration.md`](../doc/configuration.md) and settable from Ranko Utils → ROCm.
+The VMM hook keeps two pre-fix workarounds as optional switches, both off by default — `amdfq_va_never_reuse` and `amdfq_vram_reserve_gib`, documented in [`../doc/configuration.md`](../doc/configuration.md) and settable from Chromatrix Utils → ROCm.
 
 ## Sealed
 

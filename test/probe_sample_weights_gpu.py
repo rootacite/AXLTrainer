@@ -164,7 +164,7 @@ def run_job(rep: Report, *, name: str, job: dict[str, Any], generated: Path,
     """Write the job record, spawn `trainer/generate_sample.py` on it, wait, read the record back.
 
     The spawn is `api.py`'s (`cwd` = the repo root, `start_new_session`, stderr into the job log),
-    which means generator jobs run without the `amdfq` patch — exactly as they do when Ranko asks for
+    which means generator jobs run without the `amdfq` patch — exactly as they do when Chromatrix asks for
     them. A job that dies of the gfx1201 fault is retried once through `start_hook.sh`.
     """
     from trainer import genjob

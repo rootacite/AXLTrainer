@@ -8,11 +8,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import axlranko.shared.generated.resources.Res
-import axlranko.shared.generated.resources.nunito_bold
-import axlranko.shared.generated.resources.nunito_medium
-import axlranko.shared.generated.resources.nunito_regular
-import axlranko.shared.generated.resources.nunito_semibold
+import chromatrix.shared.generated.resources.Res
+import chromatrix.shared.generated.resources.nunito_bold
+import chromatrix.shared.generated.resources.nunito_medium
+import chromatrix.shared.generated.resources.nunito_regular
+import chromatrix.shared.generated.resources.nunito_semibold
 import org.jetbrains.compose.resources.Font
 
 val LocalRankoFontFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Default }

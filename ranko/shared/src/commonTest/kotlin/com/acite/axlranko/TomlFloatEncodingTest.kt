@@ -109,7 +109,7 @@ class TomlFloatEncodingTest {
         assertTrue("amdfq" in ConfigSection.Rocm.fieldKeys)
         assertEquals("0", base.amdfqVramReserveGib)
         // ktoml refuses an integer literal for a Double, so saving the reserve row as 0 has to
-        // leave `0.0` behind; a bare `0` stops Ranko from parsing its own config.toml.
+        // leave `0.0` behind; a bare `0` stops Chromatrix from parsing its own config.toml.
         assertEquals("0.0", base.toTomlSections()["environment"]!!["amdfq_vram_reserve_gib"])
         assertEquals(
             "1.5",

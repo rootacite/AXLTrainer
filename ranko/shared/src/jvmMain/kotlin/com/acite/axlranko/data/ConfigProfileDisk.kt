@@ -5,7 +5,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * Direct-disk profile helpers for unit tests. Production Ranko uses IPC `profile_*`.
+ * Direct-disk profile helpers for unit tests. Production Chromatrix uses IPC `profile_*`.
  */
 object ConfigProfileDisk {
     private const val EXTENSION = "toml"

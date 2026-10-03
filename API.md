@@ -1,6 +1,6 @@
 # Training Dashboard IPC
 
-`api.py` is a local helper process. Ranko talks to it over a WebSocket using JSON-RPC (`{id, method, params}` → `{id, ok, result|error}`). There is no HTTP API, no stdin/stdout control channel, and no generation pipeline. Default bind is loopback; LAN is an IP allowlist, not a token.
+`api.py` is a local helper process. Chromatrix talks to it over a WebSocket using JSON-RPC (`{id, method, params}` → `{id, ok, result|error}`). There is no HTTP API, no stdin/stdout control channel, and no generation pipeline. Default bind is loopback; LAN is an IP allowlist, not a token.
 
 Logs (TensorBoard, traceback, warnings) go to **stderr**.
 
@@ -18,7 +18,7 @@ Environment:
 
 | Variable | Meaning |
 |---|---|
-| `AXL_PYTHON` | Optional. Ranko uses this interpreter instead of `python3`. |
+| `AXL_PYTHON` | Optional. Chromatrix uses this interpreter instead of `python3`. |
 | `AXL_WS_HOST` | WebSocket bind (default `127.0.0.1`). |
 | `AXL_WS_PORT` | WebSocket port (default `18765`). |
 | `AXL_WS_ALLOW` | Comma-separated client IPs/CIDRs. Loopback is always allowed. When this and `--allow-ip` are both unset, the helper admits `192.168.0.0/16`. |
@@ -27,7 +27,7 @@ Environment:
 | `AXL_BLOB_CACHE_BYTES` | Cache cap in bytes (default 1/4 of `MemTotal`). |
 | `AXL_TRASH_DIR` | Drop destination (default `/tmp/axlranko/trash`). |
 
-Working directory must be the repo root so `config.toml` resolves. Desktop Ranko locates `api.py` by walking up from the executable / `user.dir`, then connects to `ws://127.0.0.1:18765` (spawning the helper if nothing is listening). The Java client disables HTTP proxies so `http_proxy` cannot intercept localhost. The wasm UI does not spawn the helper; host/port live in Utils → Helper (`localStorage` + `?host=` / `?port=`).
+Working directory must be the repo root so `config.toml` resolves. Desktop Chromatrix locates `api.py` by walking up from the executable / `user.dir`, then connects to `ws://127.0.0.1:18765` (spawning the helper if nothing is listening). The Java client disables HTTP proxies so `http_proxy` cannot intercept localhost. The wasm UI does not spawn the helper; host/port live in Utils → Helper (`localStorage` + `?host=` / `?port=`).
 
 `start_api.sh` is a debug wrapper that starts the same WebSocket helper.
 
@@ -55,15 +55,15 @@ Failure:
 
 `id` is echoed back. Match replies on `id`. Blank frames/lines are ignored.
 
-**One client at a time.** The helper serves a single client session and does **no locking of its own**: ordering its own calls is the client's job (Ranko does it with one read/write lock per resource, `IpcResources.kt`). A connection is admitted by its first request:
+**One client at a time.** The helper serves a single client session and does **no locking of its own**: ordering its own calls is the client's job (Chromatrix does it with one read/write lock per resource, `IpcResources.kt`). A connection is admitted by its first request:
 
-* `hello {client, instance, lane}` — who is asking. The first instance to say hello **owns** the helper; the same instance may open as many connections as it likes (one per lane, see below), which is how the desktop app runs its control, poll, blob and long-running traffic on separate sockets. `client` is a display name (`axlranko-desktop`, `axlranko-web`), `instance` identifies this run of that client, `lane` is free text for logs. The reply is `{owner, client, instance, since, connections}`.
+* `hello {client, instance, lane}` — who is asking. The first instance to say hello **owns** the helper; the same instance may open as many connections as it likes (one per lane, see below), which is how the desktop app runs its control, poll, blob and long-running traffic on separate sockets. `client` is a display name (`chromatrix-desktop`, `chromatrix-web`), `instance` identifies this run of that client, `lane` is free text for logs. The reply is `{owner, client, instance, since, connections}`.
 * **Any other instance is refused** and its connection closed:
 
   ```json
   {"id": 1, "ok": false, "code": "CLIENT_BUSY",
-   "error": "axlranko-desktop owns the training helper (since 12:01:44); close it and retry",
-   "holder": {"client": "axlranko-desktop", "instance": "axlranko-51e107b5", "since": 1790780504.1, "connections": 3}}
+   "error": "chromatrix-desktop owns the training helper (since 12:01:44); close it and retry",
+   "holder": {"client": "chromatrix-desktop", "instance": "chromatrix-51e107b5", "since": 1790780504.1, "connections": 3}}
   ```
 
   There is no takeover request: the helper is released when the owner's last connection has been gone for five seconds, and then the next `hello` owns it.
@@ -572,7 +572,7 @@ Result:
 }
 ```
 
-`run_id` and `file` are `null`, and `pins` empty, when no run resolves. Pins belong to one run — the file lives in the run's own log directory — so they survive Ranko closing and are never shared with another run. `pins` is in the order the checkpoints were pinned. A pin whose file is gone (Reset deleted the weights) stays in the file until it is unpinned; the Dashboard draws no card for it.
+`run_id` and `file` are `null`, and `pins` empty, when no run resolves. Pins belong to one run — the file lives in the run's own log directory — so they survive Chromatrix closing and are never shared with another run. `pins` is in the order the checkpoints were pinned. A pin whose file is gone (Reset deleted the weights) stays in the file until it is unpinned; the Dashboard draws no card for it.
 
 ### `checkpoint_pin_set`
 
@@ -597,7 +597,7 @@ Reads `$AXL_RUNTIME_DIR` or `$XDG_RUNTIME_DIR/axltrainer/` or `/tmp/axltrainer-$
 
 Params: `{}`
 
-Result: the on-disk state plus `alive` (is that PID running) and `log_path`. A process that has exited but was never waited on counts as gone: `api.py` does not `wait()` the trainer it spawns, so a finished run's trainer is a zombie — its `/proc` entry stays and `kill(pid, 0)` still succeeds — and calling that alive kept the dashboard's GPU-busy state (and the checkpoint panel's `Generate sample`) until Ranko was restarted. Relevant state keys: `run_id` (run directory created for this run), `output_name`, and `resume` — `null` for a fresh run, otherwise
+Result: the on-disk state plus `alive` (is that PID running) and `log_path`. A process that has exited but was never waited on counts as gone: `api.py` does not `wait()` the trainer it spawns, so a finished run's trainer is a zombie — its `/proc` entry stays and `kill(pid, 0)` still succeeds — and calling that alive kept the dashboard's GPU-busy state (and the checkpoint panel's `Generate sample`) until Chromatrix was restarted. Relevant state keys: `run_id` (run directory created for this run), `output_name`, and `resume` — `null` for a fresh run, otherwise
 
 ```json
 { "path": "/out/rein_…_final/rein.safetensors", "filename": "rein.safetensors", "step": 300, "epoch": 7, "loaded": 96, "skipped": 0 }
@@ -615,7 +615,7 @@ While sampling, `sampling` is `{active, repeat, repeats, denoise_step, denoise_s
 
 ### `train_start`
 
-Spawns `bash start_train.sh` in a new session (`setsid`) so closing Ranko does not stop training. Stdout/stderr append to `train.log` in the runtime dir.
+Spawns `bash start_train.sh` in a new session (`setsid`) so closing Chromatrix does not stop training. Stdout/stderr append to `train.log` in the runtime dir.
 
 Params: `{}`
 
@@ -830,7 +830,7 @@ range is refused and the file is left as it was. No run is `no run to store a ch
 
 ### `dataset_tag`
 
-Runs `tagger2/main.py` (the Pixai tagger v1: ViTDet, 30 877 Danbooru tags, PyTorch/ROCm) with the same interpreter as `api.py` (the `axl` env). Writes comma-separated captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call. The legacy WD14 ONNX script (`tagger/main.py`) still runs by hand; its `selected_tags.csv` is what `tag_lexicon` reads for the Chinese tag names.
+Runs `tagger2/main.py` (the Pixai tagger v1: ViTDet, 30 877 Danbooru tags, PyTorch/ROCm) with the same interpreter as `api.py` (the `axl` env). Writes comma-separated captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Chromatrix should reload Images / Statistics after a successful call. The legacy WD14 ONNX script (`tagger/main.py`) still runs by hand; its `selected_tags.csv` is what `tag_lexicon` reads for the Chinese tag names.
 
 Params:
 
@@ -897,7 +897,7 @@ Fails if the folder is missing, `threshold` is out of range, a training process 
 
 ### `tagger_info`
 
-Read-only, no GPU: what the tagger can write, straight from the model's own `config.json` (`tagger2/main.py --info`). Ranko's Auto-tag card uses it for the category switches and for the calibrated values it draws on the threshold slider.
+Read-only, no GPU: what the tagger can write, straight from the model's own `config.json` (`tagger2/main.py --info`). Chromatrix's Auto-tag card uses it for the category switches and for the calibrated values it draws on the threshold slider.
 
 Result:
 
@@ -956,7 +956,7 @@ the client's (`model/StepEstimate.kt`), so epoch / batch / GA edits need no roun
 
 ### `hardware_status`
 
-Read-only host snapshot for the Ranko Dashboard hardware panel. GPU fields come from `nvtop -s` (JSON snapshot mode in nvtop 3.3.2+). Process lists are dropped. AMD edge / junction / mem temperatures are filled from DRM hwmon when present. CPU util is a `/proc/stat` delta; CPU temp prefers `x86_pkg_temp` then `k10temp`; RAM comes from `/proc/meminfo`. CPU package power is omitted (RAPL / turbostat need root).
+Read-only host snapshot for the Chromatrix Dashboard hardware panel. GPU fields come from `nvtop -s` (JSON snapshot mode in nvtop 3.3.2+). Process lists are dropped. AMD edge / junction / mem temperatures are filled from DRM hwmon when present. CPU util is a `/proc/stat` delta; CPU temp prefers `x86_pkg_temp` then `k10temp`; RAM comes from `/proc/meminfo`. CPU package power is omitted (RAPL / turbostat need root).
 
 Params: `{}`
 
@@ -1006,11 +1006,11 @@ Result:
 }
 ```
 
-`available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Ranko keeps the training UI up if hardware collection fails.
+`available` is false when nvtop is missing, times out, or returns no GPUs; `error` then has a short reason. CPU fields are still filled when possible. This method does not fail the IPC call — Chromatrix keeps the training UI up if hardware collection fails.
 
 ### Config, dataset, masks, blobs
 
-After connect Ranko does not open trainer files. Paths in these methods are allowlisted (`config.toml`, `<repo>/configs/`, `[[environment.train_data]]` folders, `output_dir`, and — for images only — the `automation/` tree plus the automation `output_dir`).
+After connect Chromatrix does not open trainer files. Paths in these methods are allowlisted (`config.toml`, `<repo>/configs/`, `[[environment.train_data]]` folders, `output_dir`, and — for images only — the `automation/` tree plus the automation `output_dir`).
 
 - `config_get` `{}` → `{path, text}`. `config_save` `{text}` parse-checks then atomic-writes; a text whose `[environment].output_name` is not filename-safe (letters and digits, `-`, `_`, `.`) is refused, because the trainer would refuse to start with it.
 - `profile_list` / `profile_get` `{name}` / `profile_save` `{name, text, overwrite}` / `profile_delete` `{name}`.
@@ -1038,7 +1038,7 @@ State lives under the repo's `automation/` tree (gitignored): `settings.json`, `
 - `automation_discover` `{server?}` → `{found, url, version, queue_running, queue_pending, checked: [{url, ok, reason}], probed_all}`. With `server` it probes exactly that address; otherwise it walks the machine's loopback listeners (`/proc/net/tcp{,6}`, 8188 first) and accepts only an answer carrying `system.comfyui_version`. `$AXL_COMFY_URL` is used when no address is given. Every request bypasses `http_proxy` — this machine's session exports one, and through it a loopback call answers `502` instead of reaching ComfyUI.
 - `automation_workflow_list` `{}` → `{workflows: [{name, path, valid, error, node_count, save_image_nodes, batch_size_nodes, text_nodes: [{id, class_type, text}], positive_node, positive_node_guessed, missing_models}], default_workflow, model_check}`. `automation_workflow_validate` `{path, positive_node?}` reports the same shape for any file on the server. The model pre-check compares every literal enum input against the live `/object_info` and accepts both combo shapes ComfyUI 0.35 reports (`["COMBO", {"options": […]}]` and `[[names…], …]`). `automation_workflow_save` `{name, text}` refuses anything that is not API format (`{node_id: {class_type, inputs}}` — the editor format with `nodes`/`links` is rejected, as is a missing `SaveImage` or `CLIPTextEncode`); `automation_workflow_delete` `{name}`.
 - `automation_prompt_list` `{}` → `{prompts: [{name, path, count, text}]}`; `automation_prompt_get` `{name}`; `automation_prompt_save` `{name, text}` (a text block or a list; blank lines dropped, ≤400 prompts, ≤4000 chars each); `automation_prompt_delete` `{name}`.
-- `automation_job_start` `{prompts | prompt_set, server?, workflow?, positive_node?, count?, poll?, output_dir?}` → `{job, log_path}`. Writes `job.json` and spawns `trainer/run_automation.py --spec …` detached (`setsid`), so the batch survives Ranko closing; it returns immediately. Refuses while another job is running, without a workflow, or when `count > 1` and the workflow has no numeric `batch_size` input.
+- `automation_job_start` `{prompts | prompt_set, server?, workflow?, positive_node?, count?, poll?, output_dir?}` → `{job, log_path}`. Writes `job.json` and spawns `trainer/run_automation.py --spec …` detached (`setsid`), so the batch survives Chromatrix closing; it returns immediately. Refuses while another job is running, without a workflow, or when `count > 1` and the workflow has no numeric `batch_size` input.
 - `automation_job_list` `{}` → `{jobs: [{id, state, created_at, started_at, updated_at, finished_at, total, done, failed, images, preview_paths, recent_paths, workflow, positive_node, count, comfy_url, error}]}`, newest first, scoped to the configured `output_dir`. `preview_paths` is the first eight images; `recent_paths` is the last 24. A `running` job whose PID is gone is rewritten to `error` (the log explains).
 - `automation_job_get` `{id}` → the whole record plus `summary` and `log_tail` (last 40 lines): per-prompt `{index, text, state, seed, prompt_id, images, image_seeds, error}`.
 - `automation_job_cancel` `{id}` → SIGTERMs the runner's process group, waits briefly, marks the job `cancelled`; a half-finished job keeps its images. `automation_job_retry_failed` `{id}` respawns the runner with `--only-failed` (the prompts that already produced images are not queued again). `automation_job_delete` `{id}` removes the job directory (refused while it runs).
@@ -1047,7 +1047,7 @@ State lives under the repo's `automation/` tree (gitignored): `settings.json`, `
 - `automation_job_prompt_edit` `{id, prompt_index, text}` → rewrites one prompt's text in the record and nothing else. The `.txt` beside an already rendered image keeps what was actually sent; the next regeneration uses the new text. Refuses an empty or over-long (4000 char) text, but is allowed while the job runs (the runner never writes `text` back).
 - Every job writes one `.txt` next to each image with `seed`, `prompt_id`, `prompt` and ComfyUI's own file name; images are named by us (`p0003_01.png`) so the order never depends on the workflow's `filename_prefix`. Only `SaveImage` outputs are collected, `PreviewImage` nodes are ignored. `image_seeds` is one seed per name in `images` (a job from before this exists has no such list — use `seed`, the last pass's).
 
-`vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook holds — what it has mapped right now, or, with `never_reuse`, everything it has ever mapped — read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `never_reuse` is that file's mode when it is there (the running hook's own mode) and `[environment].amdfq_va_never_reuse` otherwise; Ranko titles the bar `GPU VA (live)` / `GPU VA (not returned)` from it. `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
+`vmm_va` is present only when `[environment].amdfq` is `"vmm"`. `used_bytes` is the GPU VA the VMM hook holds — what it has mapped right now, or, with `never_reuse`, everything it has ever mapped — read from `$AXL_RUNTIME_DIR/amdfq_vmm_va.<trainer-pid>.json` (0 if the trainer is not running or has not written yet). `never_reuse` is that file's mode when it is there (the running hook's own mode) and `[environment].amdfq_va_never_reuse` otherwise; Chromatrix titles the bar `GPU VA (live)` / `GPU VA (not returned)` from it. `total_bytes` is the GPU VM size: `journalctl -k` `vm size is N GB` first (no sudo), then `dmesg`, then `/sys/module/amdgpu/parameters/vm_size` when that value is positive, otherwise 256 TiB. `total_source` is `journal` / `dmesg` / `sysfs` / `default`. The module parameter is often `-1` (auto) and is not the live size.
 
 ## Example
 

@@ -4,7 +4,7 @@ This document explains what the project is made of and how the pieces talk to ea
 
 ## What this is
 
-AXLTrainer is a complete, local-first pipeline for training **SDXL LoRA** models on a custom image dataset:
+Chromatrix is a complete, local-first pipeline for training **SDXL LoRA** models on a custom image dataset:
 
 - a **Python training engine** (`trainer/`) that does the actual training,
 - a **desktop dashboard** (`ranko/`, Kotlin/Compose Multiplatform) that manages the dataset, edits `config.toml`, and controls training from a GUI,
@@ -18,7 +18,7 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 
 ```
 ┌─────────────────────────────┐         ┌──────────────────────────────┐
-│  Ranko (desktop GUI)        │         │  bash start_train.sh         │
+│  Chromatrix (desktop GUI)        │         │  bash start_train.sh         │
 │  ranko/  (Kotlin/JVM)       │         │  └─ python -u trainer/main.py│
 │                             │         │     (detached, setsid)       │
 │  ┌──────────────┐  WebSocket│         │     │                        │
@@ -32,8 +32,8 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 └─────────────────────────────┘
 ```
 
-- **Ranko** starts `api.py --websocket` if nothing is listening, then talks JSON-RPC on `ws://127.0.0.1:18765`. After connect it does not open trainer files itself. All control goes through `api.py`.
-- **Training** is spawned by `api.py` via `bash start_train.sh` in a new session (`setsid`). It is **detached**: closing Ranko does not stop training.
+- **Chromatrix** starts `api.py --websocket` if nothing is listening, then talks JSON-RPC on `ws://127.0.0.1:18765`. After connect it does not open trainer files itself. All control goes through `api.py`.
+- **Training** is spawned by `api.py` via `bash start_train.sh` in a new session (`setsid`). It is **detached**: closing Chromatrix does not stop training.
 - The running trainer publishes its state to a **runtime directory** (`$AXL_RUNTIME_DIR` → `$XDG_RUNTIME_DIR/axltrainer` → `/tmp/axltrainer-$UID`) as `state.json` (status + progress), `command.json` (one-shot pause/resume/stop commands), and `train.lock` (single-run lock). `api.py` reads `state.json` and writes `command.json` on the trainer's behalf.
 - Training metrics go to **TensorBoard** under `logging_dir/{run_id}/`, and sample images land in `output_dir/{run_id}/{output_name}_samples/`, where `run_id` is the `{output_name}_{YYYYMMDD_HHMMSS}` directory created for that run. `api.py` reads both to serve `dashboard` / `list_samples`, resolving the run id from the request, from `state.json`, or — for a request that names a run — from the newest run directory of that `output_name`.
 
@@ -47,7 +47,7 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 ├── environment.yml            # conda env manifest (env name: axl)
 ├── start_train.sh             # trainer launcher (AMD/ROCm env vars)
 ├── start_api.sh               # debug launcher for api.py
-├── start_ui.sh                # AxlRanko launcher (packages the jar, then runs it)
+├── start_ui.sh                # Chromatrix launcher (packages the jar, then runs it)
 ├── text_processing.py         # long-prompt chunking + dual CLIP encode (SDXL family)
 ├── ui.py                      # Streamlit read-only viewer
 ├── API.md                     # IPC protocol reference
@@ -73,13 +73,13 @@ There is no HTTP server and no inference/generation service — `api.py` is a lo
 │   ├── test_api_ipc.py …      # one file per suite, see AGENT.md §10
 │   ├── test_warm_latent_cache.py
 │   └── verify_mask_pipeline.py
-├── ranko/                     # Kotlin/Compose desktop app (AxlRanko)
+├── ranko/                     # Kotlin/Compose desktop app (Chromatrix)
 │   ├── desktopApp/            # window entry point
 │   ├── shared/                # UI, viewmodels, IPC client, config editing
 │   └── tools/agent.py         # machine-friendly dataset CLI (for scripts/agents)
 ├── tools/                     # dataset utility scripts (see doc/dataset-tools.md)
 ├── tagger/                    # ONNX caption generator (WD14, legacy; its selected_tags.csv feeds the Chinese tag names)
-├── tagger2/                   # Pixai tagger v1 caption generator (the one Ranko runs)
+├── tagger2/                   # Pixai tagger v1 caption generator (the one Chromatrix runs)
 └── archive/                   # sealed research bundles (encrypted); 涉及负责任披露流程，暂不公开
 ```
 
@@ -133,7 +133,7 @@ Pause/resume adds `pausing` and `paused` (GPU weights offloaded to CPU) and `res
 | --- | --- | --- |
 | `trainer/main.py` | `config.toml`, dataset images/captions, `.latents_cache/`, optional resume LoRA | `state.json`, `train.lock`, TensorBoard logs, checkpoints, samples |
 | `api.py` | TensorBoard logs, `{output_dir}/{run_id}/{name}_samples/`, `state.json` | `command.json` (on pause/resume/stop), spawned trainer process |
-| Ranko (dashboard) | `api.py` responses | `api.py` requests |
+| Chromatrix (dashboard) | `api.py` responses | `api.py` requests |
 | `ui.py` (Streamlit, deprecated) | TensorBoard logs, sample PNGs (old flat layout only) | — (read-only) |
 | `clean.py` | one run's output/log dirs | deletes run artifacts |
 
@@ -141,5 +141,5 @@ Pause/resume adds `pausing` and `paused` (GPU weights offloaded to CPU) and `res
 
 - **Configuration is TOML-only.** `trainer/main.py` takes no command-line arguments; `config.toml` at the repo root (with hardcoded fallbacks in `trainer/config.py`) is the single source of truth. The file is read relative to the working directory, which every entry point keeps at the repo root. The TOML file always wins over the Python defaults.
 - **Checkpoints are ComfyUI-ready.** PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` keys, converted to bf16, and saved with `modelspec.*` + `ss_*` metadata.
-- **The dashboard never touches your GPU.** All GPU work happens in the detached trainer process; Ranko only spawns `api.py` and renders what it returns.
+- **The dashboard never touches your GPU.** All GPU work happens in the detached trainer process; Chromatrix only spawns `api.py` and renders what it returns.
 - **Safety rails:** a run lock prevents two concurrent runs; a dead-PID reconciliation marks stale `state.json` as `error`; dataset scans abort on orphan caption files; Reset confirms the run it is about to clear and deletes nothing at all.

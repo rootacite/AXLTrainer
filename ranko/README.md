@@ -1,6 +1,6 @@
-# AxlRanko
+# Chromatrix
 
-AxlRanko is a tool for managing AI model training datasets, built with Kotlin Multiplatform and Compose Multiplatform. It targets Desktop (JVM) and a wasmJs browser companion that talks to the same `api.py` helper.
+Chromatrix is a tool for managing AI model training datasets, built with Kotlin Multiplatform and Compose Multiplatform. It targets Desktop (JVM) and a wasmJs browser companion that talks to the same `api.py` helper.
 
 It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training datasets: browsing and editing image captions, analyzing tag distribution, and cleaning up datasets in bulk based on tags.
 
@@ -19,8 +19,8 @@ It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training dat
 - Dataset integrity check: aborts with an error if an orphan caption file (with no matching image) is found
 
 ### Training dashboard (Dashboard)
-- Ranko starts `api.py --websocket` as a local helper (JSON-RPC on loopback) and polls TensorBoard metrics plus training sample images
-- Start / pause / resume / early-stop / reset controls. Pause offloads GPU weights to CPU; the trainer process is detached so closing Ranko does not stop it. Reset clears Finished state and deletes this run's samples + TensorBoard logs (optional checkpoint wipe), same targets as `clean.py`
+- Chromatrix starts `api.py --websocket` as a local helper (JSON-RPC on loopback) and polls TensorBoard metrics plus training sample images
+- Start / pause / resume / early-stop / reset controls. Pause offloads GPU weights to CPU; the trainer process is detached so closing Chromatrix does not stop it. Reset clears Finished state and deletes this run's samples + TensorBoard logs (optional checkpoint wipe), same targets as `clean.py`
 - Progress bars for latent encoding, training steps, and sample generation
 - Live step / loss / LR cards, interactive training charts, and sample previews grouped by step
 - Auto-refresh every 3s (1s while a run is live), with a curve-smoothing slider
@@ -39,7 +39,7 @@ It focuses on the day-to-day maintenance of Stable Diffusion / LoRA training dat
 
 - JDK 17+ and Gradle (the project ships a wrapper)
 - On startup the app locates its config automatically: it walks up from the executable and working directory until it finds the trainer repo root (`api.py`, or a `config.toml` next to the `trainer/` package)
-- The Dashboard helper is `api.py --websocket` at the trainer repo root. Desktop Ranko uses the same upward search, then connects to `ws://127.0.0.1:18765` (spawning the helper if needed). The wasm UI does not spawn: set host/port in Utils → Helper (or `?host=` / `?port=`). LAN: `python -u api.py --host 0.0.0.0 --allow-ip <client>`. After connect, dataset and config IO go through that socket.
+- The Dashboard helper is `api.py --websocket` at the trainer repo root. Desktop Chromatrix uses the same upward search, then connects to `ws://127.0.0.1:18765` (spawning the helper if needed). The wasm UI does not spawn: set host/port in Utils → Helper (or `?host=` / `?port=`). LAN: `python -u api.py --host 0.0.0.0 --allow-ip <client>`. After connect, dataset and config IO go through that socket.
 - The config is a TOML file; `[environment].train_data_dir` points to the training dataset directory
 - Dataset layout: image files and same-named `.txt` caption files stored side by side; caption content is a comma-separated list of tags
 

@@ -47,8 +47,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import axlranko.shared.generated.resources.Res
-import axlranko.shared.generated.resources.app_icon
+import chromatrix.shared.generated.resources.Res
+import chromatrix.shared.generated.resources.app_icon
 import coil3.compose.AsyncImage
 import com.acite.axlranko.Screen
 import com.acite.axlranko.changelog.ChangelogEntry
@@ -216,7 +216,7 @@ private fun BrandCard(version: String, gitHash: String, modifier: Modifier = Mod
         ) {
             Image(
                 painter = painterResource(Res.drawable.app_icon),
-                contentDescription = "AxlRanko",
+                contentDescription = "Chromatrix",
                 modifier = Modifier
                     .size(64.dp)
                     .clip(CircleShape)
@@ -224,7 +224,7 @@ private fun BrandCard(version: String, gitHash: String, modifier: Modifier = Mod
             )
             Column {
                 Text(
-                    "AxlRanko",
+                    "Chromatrix",
                     color = colors.text,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.SemiBold,

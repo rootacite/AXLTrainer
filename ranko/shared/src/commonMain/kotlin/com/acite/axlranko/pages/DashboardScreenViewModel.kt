@@ -881,7 +881,7 @@ class DashboardScreenViewModel(
 
     /**
      * Pin or unpin one checkpoint of the run the page shows. Pins are the run's own state: the
-     * helper writes them into `checkpoint_pins.json` inside that run's log directory, and Ranko
+     * helper writes them into `checkpoint_pins.json` inside that run's log directory, and Chromatrix
      * never touches the file itself.
      */
     fun toggleCheckpointPin(checkpoint: CheckpointItem) {
@@ -964,7 +964,7 @@ class DashboardScreenViewModel(
      * "Save As" for one checkpoint: pick a destination in the OS save dialog, then copy the LoRA
      * off the run directory. The Ctrl+click panel and the Checkpoints section's cards share it —
      * there is one save dialog and one copy in flight, so a second request is ignored until the
-     * first lands. Ranko only asks the helper to copy; the file bytes never pass through here.
+     * first lands. Chromatrix only asks the helper to copy; the file bytes never pass through here.
      */
     fun saveCheckpointAs(checkpoint: CheckpointItem) {
         if (_uiState.value.exportInFlightPath != null) return

@@ -4,7 +4,7 @@
 
 - **Python 3.11+** (3.14 recommended; `config.toml` parsing uses `tomllib` and `ranko/tools/agent.py` requires 3.11+).
 - **A GPU with enough VRAM for SDXL LoRA training.** The shipped environment targets **AMD ROCm** (MIOpen/MIGraphX). CUDA works too if you install a CUDA build of PyTorch instead (see below).
-- **JDK 17+** only if you want to build/run the Ranko desktop dashboard (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver).
+- **JDK 17+** only if you want to build/run the Chromatrix desktop dashboard (the Gradle wrapper auto-provisions a JDK 21 toolchain via the foojay resolver).
 
 > There is **no `requirements.txt`** and no `pyproject.toml`. The only dependency manifest is `environment.yml`, whose `name:` is the environment to use — currently `axl`.
 
@@ -64,7 +64,7 @@ Open `config.toml` (repo root) and set at least:
 
 **The shipped values are the author's local machine** (`/home/acite/...`, `/opt/models/...`) and will fail on any other machine. There are commented-out alternative dataset examples in the file.
 
-See [Configuration](configuration.md) for the complete reference, or edit the file from the Ranko dashboard's **Utils** tab (validated, no hand-editing of TOML required).
+See [Configuration](configuration.md) for the complete reference, or edit the file from the Chromatrix dashboard's **Utils** tab (validated, no hand-editing of TOML required).
 
 ## 3. Prepare your dataset
 
@@ -103,7 +103,7 @@ python -m unittest discover -s test -p 'test_api_ipc.py'   # one file
 python test/test_warm_latent_cache.py          # mock VAE
 python test/test_warm_latent_cache.py --real   # + real SDXL VAE smoke test
 
-# Kotlin: Ranko unit tests (IPC request/response models)
+# Kotlin: Chromatrix unit tests (IPC request/response models)
 cd ranko && ./gradlew :shared:jvmTest
 ```
 
@@ -124,4 +124,4 @@ cd ranko
 ./gradlew :desktopApp:packageDmg   # or packageMsi / packageDeb
 ```
 
-Ranko finds the trainer repo automatically by walking up from the executable and the working directory looking for `api.py` (or a `config.toml` next to the `trainer/` package), so either run it from inside the repo, or place it so the trainer repo is an ancestor. See [Dashboard](dashboard.md).
+Chromatrix finds the trainer repo automatically by walking up from the executable and the working directory looking for `api.py` (or a `config.toml` next to the `trainer/` package), so either run it from inside the repo, or place it so the trainer repo is an ancestor. See [Dashboard](dashboard.md).

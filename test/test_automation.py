@@ -833,7 +833,7 @@ def run_module_seed_targets(workflow):
 
 
 class AutomationApiTest(unittest.TestCase):
-    """The IPC handlers, through `api.dispatch` exactly like Ranko calls them."""
+    """The IPC handlers, through `api.dispatch` exactly like Chromatrix calls them."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

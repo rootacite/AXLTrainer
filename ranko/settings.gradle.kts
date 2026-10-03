@@ -1,4 +1,4 @@
-rootProject.name = "AxlRanko"
+rootProject.name = "Chromatrix"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {

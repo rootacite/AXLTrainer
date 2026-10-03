@@ -1,10 +1,10 @@
-# Process model — AXLTrainer
+# Process model — Chromatrix
 
 > Detail behind `AGENT.md` §2. `AGENT.md` keeps the condensed rules; this file carries the full text.
 
 
 ```
-Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, datasets, TB, samples
+Chromatrix (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, datasets, TB, samples
                                       |  writes command.json
                                       |  spawns (setsid) bash start_train.sh
                                       v
@@ -19,12 +19,12 @@ Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, dataset
 
 Hard rules:
 
-- Training is **detached**. `api.py` `train_start` uses `start_new_session=True` (`setsid`). Closing Ranko must not kill the run.
-- Ranko **never** talks to the GPU. After connect, `commonMain` does not read or write trainer files; it only speaks JSON-RPC. Desktop `jvmMain` may spawn `api.py --websocket` and pick paths with FileKit.
+- Training is **detached**. `api.py` `train_start` uses `start_new_session=True` (`setsid`). Closing Chromatrix must not kill the run.
+- Chromatrix **never** talks to the GPU. After connect, `commonMain` does not read or write trainer files; it only speaks JSON-RPC. Desktop `jvmMain` may spawn `api.py --websocket` and pick paths with FileKit.
 - The trainer is `exec`'d by `start_train.sh`, so that shell's PID and **session** become the trainer's. A GPU fault aborts the trainer from inside HIP (see `doc/troubleshooting.md`) without running Python's `atexit`; its DataLoader forkserver then keeps the workers it forked alive, reparented to init, each holding `/dev/kfd` and ~0.5 GB. `start_train.sh` therefore starts `trainer/orphans.py` first, detached, to reap that session once the trainer is gone — keep it, and keep it unable to touch a session that is not the trainer's.
-- Ranko uses `python -u api.py --websocket` (default `127.0.0.1:18765`). LAN bind is `--host 0.0.0.0` plus `--allow-ip` / `AXL_WS_ALLOW`; loopback is always admitted. When neither is set the allowlist is `192.168.0.0/16`. WebSocket is the only control channel; there is no stdin NDJSON fallback. Logs / tracebacks go to stderr. The helper serves **one client session**: the first instance to `hello` owns it, its own later connections join it, and any other client is refused with `CLIENT_BUSY` (who owns it, since when) and closed — so the LAN web companion and the desktop cannot drive the same helper at once, and a second Ranko shows the refusal instead of interleaving calls with the first.
+- Chromatrix uses `python -u api.py --websocket` (default `127.0.0.1:18765`). LAN bind is `--host 0.0.0.0` plus `--allow-ip` / `AXL_WS_ALLOW`; loopback is always admitted. When neither is set the allowlist is `192.168.0.0/16`. WebSocket is the only control channel; there is no stdin NDJSON fallback. Logs / tracebacks go to stderr. The helper serves **one client session**: the first instance to `hello` owns it, its own later connections join it, and any other client is refused with `CLIENT_BUSY` (who owns it, since when) and closed — so the LAN web companion and the desktop cannot drive the same helper at once, and a second Chromatrix shows the refusal instead of interleaving calls with the first.
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (directory that contains `api.py` and `trainer/`).
-- Ranko finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited. That walk is desktop bootstrap only.
+- Chromatrix finds that root by walking up from the executable / `user.dir` until a directory looks like one: `api.py` present, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`). A lone `config.toml` must not qualify — a stranger's file would otherwise be edited. That walk is desktop bootstrap only.
 
 Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
@@ -34,5 +34,5 @@ Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
 Files: `state.json`, `command.json`, `settings.json`, `train.lock`, `train.log`. Tests **must** set `AXL_RUNTIME_DIR` to a temp dir (see `test_train_control.py`).
 
-Interpreter override: Ranko uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl` (torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`). There is **no** `requirements.txt`.
+Interpreter override: Chromatrix uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl` (torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`). There is **no** `requirements.txt`.
 

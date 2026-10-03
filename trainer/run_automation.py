@@ -6,7 +6,7 @@
                                          | --append-all --images 4]
 
 `api.py` writes the job record (see `trainer/automation.py`) and spawns this detached,
-so a long batch survives Ranko closing. Progress, seeds and ComfyUI's own file names go
+so a long batch survives Chromatrix closing. Progress, seeds and ComfyUI's own file names go
 back into the job file; the images land in `<job>/images/` under our own names
 (`p0003_01.png`) so the order never depends on ComfyUI's `filename_prefix`.
 

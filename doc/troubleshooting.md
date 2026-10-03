@@ -32,7 +32,7 @@ The HIP toolchain notes for this stack (the wheel layout, the four environment f
 | Symptom | Cause / fix |
 | --- | --- |
 | `FileNotFoundError` or permission errors at startup | The shipped `config.toml` (repo root) contains the author's local paths. Edit `[environment]` paths (see [Configuration](configuration.md)). |
-| Dashboard says another client owns the helper | The helper serves **one client at a time**: the first Ranko (or web companion) to connect owns it, and every other one is told who has it. Close the other session, or wait five seconds after it disconnects, then Retry. |
+| Dashboard says another client owns the helper | The helper serves **one client at a time**: the first Chromatrix (or web companion) to connect owns it, and every other one is told who has it. Close the other session, or wait five seconds after it disconnects, then Retry. |
 | `RuntimeError: ... another run is holding the lock` (or similar) | A previous run didn't exit cleanly. Check `train.lock` in the runtime dir; the trainer releases it on `end_run`. Use `train_reset` / the dashboard Reset, or remove the stale lock file. |
 | Dashboard shows "training process is no longer running" / status flips to `error` | The trainer PID died. Read `train.log` in the runtime dir for the traceback, then Reset to clear the state. |
 | Dashboard can't start / "set AXL_PYTHON" | The trainer deps aren't on `PATH` as `python3`. Point `AXL_PYTHON` at your environment's interpreter, e.g. `AXL_PYTHON=$CONDA_PREFIX/bin/python ./gradlew :desktopApp:run`. |
@@ -56,10 +56,10 @@ The HIP toolchain notes for this stack (the wheel layout, the four environment f
 
 | Variable | Where it matters | Meaning |
 | --- | --- | --- |
-| `AXL_PYTHON` | Ranko | Interpreter used to run `api.py` / the trainer (default `python3` on `PATH`). |
+| `AXL_PYTHON` | Chromatrix | Interpreter used to run `api.py` / the trainer (default `python3` on `PATH`). |
 | `AXL_RUNTIME_DIR` | `api.py`, trainer | Overrides the runtime dir for `state.json` / `command.json` / `train.lock` / `train.log`. |
 | `XDG_RUNTIME_DIR` | `api.py`, trainer | Used for the default runtime dir (`$XDG_RUNTIME_DIR/axltrainer`). |
-| `PYTHONUNBUFFERED` | launchers | Set to `1` by `start_*.sh` and Ranko so logs flush immediately. |
+| `PYTHONUNBUFFERED` | launchers | Set to `1` by `start_*.sh` and Chromatrix so logs flush immediately. |
 | `AMD_LOG_LEVEL`, `CK_LOG_LEVEL`, `MIOPEN_*` | `start_*.sh`, `tagger2/` | Suppress ROCm/MIOpen driver log noise and pin the MIOpen cache (`~/.cache/miopen`, or the repo's `tagger2/miopen_cache/` for the tagger). |
 | `PYTORCH_CUDA_ALLOC_CONF` | `start_train.sh` | `max_split_size_mb:128,garbage_collection_threshold:0.8` — reduces fragmentation. |
 | `HSA_SVM_GUARD_PAGES` | trainer (workaround) | ROCr's SVM guard pages (default `1`). Setting `0` stops the gfx1201 Tensile over-read from faulting, at the price of hiding any other SVM over-read in that process. See [Known issue: gfx1201](#known-issue-gfx1201-tensile-page-fault-not-the-bucket-step-bug). |
@@ -91,4 +91,4 @@ cat "${XDG_RUNTIME_DIR:-/tmp}/axltrainer/state.json"   # current status
 - **Trainer tracebacks** → `<runtime_dir>/train.log`.
 - **Run status / progress** → `<runtime_dir>/state.json`.
 - **Metrics** → TensorBoard: `tensorboard --logdir <logging_dir>`.
-- **IPC traffic** → Ranko inherits `api.py`'s stderr to its console; `start_api.sh` starts the same loopback WebSocket helper.
+- **IPC traffic** → Chromatrix inherits `api.py`'s stderr to its console; `start_api.sh` starts the same loopback WebSocket helper.

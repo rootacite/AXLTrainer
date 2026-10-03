@@ -144,4 +144,4 @@ internal actual fun stopSpawnedHelper() {
     JvmHelperProcess.stopSpawned()
 }
 
-internal actual val clientName: String = "axlranko-desktop"
+internal actual val clientName: String = "chromatrix-desktop"

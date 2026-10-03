@@ -12,7 +12,7 @@ bash start_train.sh
 
 Equivalent to `python -u trainer/main.py` with stdout filtered of noisy driver lines. The working directory must be the repo root so `config.toml` resolves.
 
-The dashboard starts it the same way — `api.py`'s `train_start` spawns `bash start_train.sh` detached (`setsid`), so **closing the GUI does not stop training**. `[environment].amdfq` (`none` / `tail` / `vmm`) is applied here as `LD_PRELOAD` (Ranko Utils → ROCm). A missing patch `.so` fails the start.
+The dashboard starts it the same way — `api.py`'s `train_start` spawns `bash start_train.sh` detached (`setsid`), so **closing the GUI does not stop training**. `[environment].amdfq` (`none` / `tail` / `vmm`) is applied here as `LD_PRELOAD` (Chromatrix Utils → ROCm). A missing patch `.so` fails the start.
 
 ## What a run does, phase by phase
 

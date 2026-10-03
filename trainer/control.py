@@ -206,7 +206,7 @@ def is_pid_alive(pid: Optional[int]) -> bool:
     entry, answers signals, and holds nothing. `api.py` never `wait()`s the trainer — or a generator
     — it spawns, so a finished run's trainer sits in exactly that state, and the dashboard (which
     reads `alive` from `state.json`) would keep believing training is still on the GPU until api.py
-    itself exits, which only happens when Ranko closes: the checkpoint panel's "Generate sample"
+    itself exits, which only happens when Chromatrix closes: the checkpoint panel's "Generate sample"
     stayed disabled in a session where the run had already finished. The process state is the
     arbiter (`orphans.is_running`: `Z` means gone), with the signal check as the fallback for a
     machine without `/proc`.

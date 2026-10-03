@@ -51,7 +51,7 @@ kohya Standard (LoRA-LierLa) is every Linear and Conv2d 1×1 under `Transformer2
 `Upsample2D`. SDXL uses `use_linear_projection=True`, so Transformer 1×1 convs are Linear
 (`proj_in` / `proj_out`); the 1×1 tensors LoCon actually adds are ResNet `conv_shortcut`.
 
-AxlTrainer Standard is narrower than kohya LierLa: attention Q/K/V/Out only.
+Chromatrix Standard is narrower than kohya LierLa: attention Q/K/V/Out only.
 
 ### v1 locon (locked)
 
@@ -79,7 +79,7 @@ Script: `/tmp/axl_locon_probe.py`.
 
 | Layout | Modules | LoRA params | bf16 weights |
 | --- | --- | --- | --- |
-| Current AxlTrainer | 736 | 29.6 M | 56.5 MiB |
+| Current Chromatrix | 736 | 29.6 M | 56.5 MiB |
 | kohya Standard (LierLa) | 986 | 57.0 M | 108.7 MiB |
 | Kohya LoCon (C3Lier, TE = kohya Standard) | 1052 | 63.6 M | 121.4 MiB |
 
@@ -116,7 +116,7 @@ max_token_length = 225
 Conv2d (`conv1`, `conv2`, `conv_shortcut`, downsample/upsample `conv`) take `conv_dim`. Both
 adapters are active in the forward (`base_model.set_adapter(["default", "conv"])`).
 
-Four-place add (or the GUI drifts): `config.toml`, `TrainConfig`, Ranko `NetworkConfig` +
+Four-place add (or the GUI drifts): `config.toml`, `TrainConfig`, Chromatrix `NetworkConfig` +
 `TrainingConfigForm` + `NetworkFields`, [configuration.md](configuration.md). Kotlin defaults so an
 old TOML still parses.
 
@@ -166,7 +166,7 @@ Do not emit `lora_mid` (LyCORIS tucker). ComfyUI `LoRAAdapter.calculate_weight` 
 
 ComfyUI SDXL CLIP aliases are `lora_te{1,2}_text_model_encoder_layers_{b}_{self_attn_*|mlp_fc*}`.
 
-A real AxlTrainer file
+A real Chromatrix file
 (`…/konomi_20260927_080807/konomi_s000300/konomi.safetensors`, 736 modules):
 
 | Prefix | Count | ComfyUI alias |
@@ -242,12 +242,12 @@ Alpha mismatch stays a warning (current behaviour). Type mismatch never warns-an
 | `trainer/family_sdxl.py` `load_lora` | type check, locon MLP keys, `conv_dim` |
 | `api.py` `train_start` | type check on `resume_lora_path` |
 | `trainer/generate_sample.py` | copy type + conv args from checkpoint metadata into `cfg` |
-| `trainer/checkpoints.py` `discover_checkpoints` | optional later: surface `network_type` for Ranko |
+| `trainer/checkpoints.py` `discover_checkpoints` | optional later: surface `network_type` for Chromatrix |
 
 Leave alone: `device_swap` (adapters live on `modules.denoise` / TEs), dataloader, loss, pause
 offload, `family.py` protocol (`apply_lora(cfg, modules)` is enough), `family_sd35.py`.
 
-### Ranko
+### Chromatrix
 
 No new IPC method. `config_get` / `config_save` already ship the whole TOML.
 
@@ -269,7 +269,7 @@ v1; a type badge is optional.
 | `test_family.py` | Standard targets unchanged; locon Linear+Conv adapters and TE `fc1`/`fc2`; conv 4D round-trip; ldm names for `conv1`; TE1 `text_model_encoder_layers`; load accepts old `encoder_layers` |
 | `test_family.py` resume | `ss_network_type` mismatch raises before any `load_state_dict`; missing type + no `conv_dim` loads as standard; `ss_network_args conv_dim>0` without type is locon |
 | config | flatten + `__post_init__`: locon with `conv_dim=0` fails; `conv_dim != network_dim` is allowed |
-| Ranko `jvmTest` | TOML patch of the new keys; Network form validation |
+| Chromatrix `jvmTest` | TOML patch of the new keys; Network form validation |
 | `test_api_ipc.py` | `train_start` rejects a locon-tagged resume while config is standard (metadata-only file) |
 
 GPU step rate / peak VRAM for locon is a separate experiment, not a unit test.
@@ -282,7 +282,7 @@ GPU step rate / peak VRAM for locon is a separate experiment, not a unit test.
    Standard UNet keys already in ldm form; TE1 new files become ComfyUI-loadable.
 3. `apply_lora` locon branch + `conv_dim` / `conv_alpha` + `ss_network_args`. Config accepts
    `network_type = "locon"` only once this branch exists.
-4. Ranko Network dropdown and conv fields.
+4. Chromatrix Network dropdown and conv fields.
 5. [configuration.md](configuration.md) / [training.md](training.md) user-facing rows.
 
 Stop at the end of the requested step when implementing; this list is ordering, not a licence to

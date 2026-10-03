@@ -10,10 +10,10 @@ plugins {
 kotlin {
     @OptIn(ExperimentalWasmDsl::class)
     wasmJs {
-        outputModuleName.set("axlranko")
+        outputModuleName.set("chromatrix")
         browser {
             commonWebpackConfig {
-                outputFileName = "axlranko.js"
+                outputFileName = "chromatrix.js"
             }
         }
         binaries.executable()

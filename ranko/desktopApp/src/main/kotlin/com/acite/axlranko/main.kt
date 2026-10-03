@@ -6,8 +6,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import axlranko.desktopapp.generated.resources.Res
-import axlranko.desktopapp.generated.resources.app_icon
+import chromatrix.desktopapp.generated.resources.Res
+import chromatrix.desktopapp.generated.resources.app_icon
 import com.acite.axlranko.util.DesktopAppWindow
 import com.acite.axlranko.util.ProcessExitGuard
 import dev.zacsweers.metro.createGraph
@@ -29,7 +29,7 @@ fun main() {
         }
         Window(
             onCloseRequest = quit,
-            title = "AxlRanko",
+            title = "Chromatrix",
             icon = painterResource(Res.drawable.app_icon),
             state = rememberWindowState(size = DpSize(1600.dp, 900.dp))
         ) {

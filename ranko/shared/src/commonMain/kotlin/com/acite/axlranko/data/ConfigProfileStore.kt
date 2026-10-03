@@ -28,7 +28,7 @@ object ConfigProfileStore {
     private const val MAX_NAME_LENGTH = 64
     private val ILLEGAL_NAME_CHARS = charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|')
     private const val PROFILE_HEADER =
-        "Ranko config profile (Utils -> Profiles). Applying it patches config.toml in place."
+        "Chromatrix config profile (Utils -> Profiles). Applying it patches config.toml in place."
 
     /** Null when the name is usable, otherwise the message to show next to the field. */
     fun validateName(name: String): String? {

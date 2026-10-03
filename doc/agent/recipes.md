@@ -1,4 +1,4 @@
-# Recipes — AXLTrainer
+# Recipes — Chromatrix
 
 > Detail behind `AGENT.md` §9. `AGENT.md` keeps the condensed rules; this file carries the full text.
 
@@ -14,7 +14,7 @@
 
 ### Add a base family
 
-1. Catalog row in `trainer/family.py` `CATALOG` **and** Ranko `ModelSpecCatalog.kt` (same strings).
+1. Catalog row in `trainer/family.py` `CATALOG` **and** Chromatrix `ModelSpecCatalog.kt` (same strings).
 2. Implement `trainer/family_<id>.py` (load / unpack / LoRA / encode / loss / save / sample).
 3. Register it in `resolve_family`. Set `trainable=True` only when the methods work.
 4. Tests in `test_family.py` + Kotlin catalog test.

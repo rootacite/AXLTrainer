@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="axltrainer.png" alt="AXLTrainer logo" width="168"/>
+  <img src="axltrainer.png" alt="Chromatrix logo" width="168"/>
 </p>
 
-<h1 align="center">AXLTrainer</h1>
+<h1 align="center">Chromatrix</h1>
 
 <p align="center">
   <strong>Local LoRA training · AMD first</strong><br/>
@@ -14,9 +14,9 @@
   SDXL LoRA + Kohya LoCon today · SD 3.5 catalogued · Desktop JVM + wasmJs web companion · ROCm
 </p>
 
-## System Capabilities & What AXLTrainer Can Do
+## System Capabilities & What Chromatrix Can Do
 
-AXLTrainer is a local, end-to-end SDXL LoRA training system designed to handle the entire lifecycle of model creation on a single personal machine. Rather than treating training as merely running a script, it provides a complete ecosystem for dataset preparation, execution, real-time control, and downstream generation.
+Chromatrix is a local, end-to-end SDXL LoRA training system designed to handle the entire lifecycle of model creation on a single personal machine. Rather than treating training as merely running a script, it provides a complete ecosystem for dataset preparation, execution, real-time control, and downstream generation.
 
 ### Core Capabilities
 
@@ -28,14 +28,14 @@ AXLTrainer is a local, end-to-end SDXL LoRA training system designed to handle t
 - **Automated Checkpoint Evaluation**: Benchmark and score generated LoRA checkpoints against dataset prompt expectations with micro precision, recall, F1 metrics, and tag coverage reports.
 - **Prompt Generation & ComfyUI Automation Batching**: Generate prompts using a 16-step matrix wizard, dispatch jobs directly to local ComfyUI instances, track progress, and manage result galleries with individual image actions (redraw, append variations, edit prompt, delete).
 
-## Highlights: Designed Around Ranko & Creator Workflow
+## Highlights: Designed Around Chromatrix & Creator Workflow
 
-Mainstream LoRA training stacks often force creators to jump between separate tools: command-line scripts for captioning, external web UIs for TensorBoard, manual file managers for sample inspection, and ComfyUI for testing. **Ranko**, the Kotlin/Compose Multiplatform control center, unifies this entire workflow into a single, cohesive desktop or web application.
+Mainstream LoRA training stacks often force creators to jump between separate tools: command-line scripts for captioning, external web UIs for TensorBoard, manual file managers for sample inspection, and ComfyUI for testing. **Chromatrix**, the Kotlin/Compose Multiplatform control center, unifies this entire workflow into a single, cohesive desktop or web application.
 
 ### Human-Centric Interface & Unified Dataset Curation
 - **Integrated Dataset Studio**: Browse thumbnails, paint per-pixel loss masks with feathering and invert options, edit `.txt` captions, and run the automated dataset tagger, without leaving the application.
 - **Tag Analytics & Cleaning**: Inspect tag frequency charts (with English label matching and Chinese dictionary translations), perform AND/OR logic filtering, batch add or remove tags, and safely renumber/shuffle datasets without breaking image-mask pairings.
-- **No-GPU UI Overhead**: Ranko acts purely as a controller. It speaks JSON-RPC over a loopback WebSocket to the `api.py` helper, which drives the detached training process, so the UI itself holds no VRAM and never touches the GPU.
+- **No-GPU UI Overhead**: Chromatrix acts purely as a controller. It speaks JSON-RPC over a loopback WebSocket to the `api.py` helper, which drives the detached training process, so the UI itself holds no VRAM and never touches the GPU.
 
 ### Live Tuning & Dynamic Run Control
 - **On-the-Fly Adjustments**: Change `save_every_n_steps` or toggle sample rendering while training is running — the trainer adopts those at its next optimizer step. Rewrite the validation prompts too: a live run reads them before every sample point. Neither touches the baseline `config.toml`.
@@ -48,32 +48,32 @@ Mainstream LoRA training stacks often force creators to jump between separate to
 
 ## What this is
 
-AXLTrainer trains LoRAs on your own machine, and it treats the whole loop as the product rather than just the training step: curating images, writing and cleaning captions, painting loss masks, picking the hyperparameters, watching a run, inspecting samples, comparing and scoring checkpoints, and pushing prompts through a ComfyUI workflow when you want more pictures of what you just trained.
+Chromatrix trains LoRAs on your own machine, and it treats the whole loop as the product rather than just the training step: curating images, writing and cleaning captions, painting loss masks, picking the hyperparameters, watching a run, inspecting samples, comparing and scoring checkpoints, and pushing prompts through a ComfyUI workflow when you want more pictures of what you just trained.
 
 It consists of four primary components:
 
 - **The training engine** (`trainer/`) — a headless Python process driven by one TOML file. `trainer/main.py` takes no CLI arguments.
 - **The control plane** (`api.py`) — a JSON-RPC helper over a loopback WebSocket. It reads TensorBoard scalars, sample images, and checkpoints, writes configs and datasets, and manages run lifecycle operations (start, pause, resume, stop, reset).
-- **Ranko** (`ranko/`, product name **AxlRanko**) — the Kotlin/Compose app you interact with. Five tabs: Images, Statistics, Utils, Dashboard, Automation. Ships as a desktop JVM application and a Kotlin/Wasm web companion.
+- **Chromatrix** (`ranko/`) — the Kotlin/Compose app you interact with. Five tabs: Images, Statistics, Utils, Dashboard, Automation. Ships as a desktop JVM application and a Kotlin/Wasm web companion.
 - **Dataset and prompt tooling** (`tools/`, `tagger2/`, `tagger/`, `ranko/tools/agent.py`) — command-line utilities for scripting and dataset automation.
 
-There is no HTTP API, no inference server, and no kohya `sd-scripts` fork. Training runs in a detached process; Ranko serves strictly as a controller.
+There is no HTTP API, no inference server, and no kohya `sd-scripts` fork. Training runs in a detached process; Chromatrix serves strictly as a controller.
 
 ### Core Architecture Decisions
 
 - **TOML-Only Configuration**: `config.toml` at the repository root is the single source of truth. Form values in the Utils tab patch the file in place while preserving comments and layout.
-- **Detached Execution**: `api.py` launches training via `bash start_train.sh` in a detached session (`setsid`). Closing Ranko does not interrupt training. Communication occurs via `command.json` and live `settings.json` channels.
+- **Detached Execution**: `api.py` launches training via `bash start_train.sh` in a detached session (`setsid`). Closing Chromatrix does not interrupt training. Communication occurs via `command.json` and live `settings.json` channels.
 - **Run-Centric Isolation**: Every run creates a unique `{output_name}_{YYYYMMDD_HHMMSS}` folder in `output_dir` and `logging_dir`. Historical runs retain verbatim copies of their initial `config.toml`, samples, and checkpoints.
 - **Full VRAM Offloading**: Pausing offloads the UNet, text encoders, optimizers (including Schedule-Free states), and VAE to system memory, followed by GPU memory cache clearing.
 - **ComfyUI-Compatible Checkpoints**: PEFT state dicts are remapped to kohya `lora_unet_*` / `lora_te1_*` / `lora_te2_*` format in bf16 with `modelspec.*` and `ss_*` metadata for direct loading in ComfyUI or kohya scripts.
 
-## Ranko — The Control Center
+## Chromatrix — The Control Center
 
 The visual theme uses an amber night palette (warm near-black, logo amber `#F8A818`) with Nunito typography and porcelain cards. The application opens on a Home page and keeps a floating navigation rail that snaps to window edges and collapses when idle.
 
 Appearance settings live under Utils -> Appearance: backdrop styles (Solid, Glow-orbs, Image), blur effects, text/icon scaling, and thumbnail quality settings, all stored in Java Preferences.
 
-Below is a detailed walkthrough of Ranko's five core tabs.
+Below is a detailed walkthrough of Chromatrix's five core tabs.
 
 ### Images — Captioning & Loss Mask Painter
 
@@ -201,7 +201,7 @@ Provides prompt generation tools, batch ComfyUI dispatching, and output gallery 
 
 ### Web Companion Target
 
-The `:webApp` target compiles the Ranko interface to Kotlin/Wasm, allowing control over local networks via a web browser. Communicates with `api.py` via WebSockets without requiring local JVM execution on the client device.
+The `:webApp` target compiles the Chromatrix interface to Kotlin/Wasm, allowing control over local networks via a web browser. Communicates with `api.py` via WebSockets without requiring local JVM execution on the client device.
 
 ## Training Engine Technical Specifications
 
@@ -244,13 +244,13 @@ Datasets consist of images (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`) paired wit
 
 ## Architecture & IPC Protocol
 
-Ranko operates independently from GPU execution by communicating with `api.py` over WebSockets using JSON-RPC frame formats.
+Chromatrix operates independently from GPU execution by communicating with `api.py` over WebSockets using JSON-RPC frame formats.
 
 
 ```
 
 ┌─────────────────────────────┐         ┌──────────────────────────────┐
-│  Ranko (desktop / web)      │         │  bash start_train.sh         │
+│  Chromatrix (desktop / web)      │         │  bash start_train.sh         │
 │  ranko/ (Kotlin)            │         │  └─ python -u trainer/main.py│
 │                             │         │     (detached, setsid)       │
 │  ┌──────────────┐  WebSocket│         │     │                        │
@@ -275,7 +275,7 @@ Full IPC details are documented in [API.md](API.md).
 
 - Python 3.11+ (Python 3.14 recommended).
 - GPU with sufficient VRAM for SDXL training (NVIDIA CUDA or AMD ROCm).
-- JDK 17+ for building or running the Ranko desktop app.
+- JDK 17+ for building or running the Chromatrix desktop app.
 
 ### Installation
 
@@ -294,7 +294,7 @@ conda activate axl
 # Headless engine execution
 bash start_train.sh
 
-# Launch Ranko desktop UI
+# Launch Chromatrix desktop UI
 cd ranko && ./gradlew :desktopApp:run
 
 ```

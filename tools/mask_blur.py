@@ -19,7 +19,7 @@ extension set, the alpha rule). That module imports torch, so this helper keeps
 its own copy rather than importing the training stack.
 
 A sidecar written by this tool carries an `axl_mask_blur` PNG text chunk holding
-the radius. An existing sidecar without that chunk - a mask painted in Ranko, or
+the radius. An existing sidecar without that chunk - a mask painted in Chromatrix, or
 anything else - is left untouched unless `--overwrite` is given.
 """
 

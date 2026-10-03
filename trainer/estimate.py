@@ -6,7 +6,7 @@ and the helper process must not pay for a torch import to answer a form question
 The count is the number of images the trainer's dataset would draw in one epoch, and it mirrors
 `trainer/utils.list_images` for that: the same extensions, the same `*.mask.png` exclusion and the
 same recursive walk over each `[[environment.train_data]]` folder — a hand-written mirror, not an
-import, because `utils.py` pulls torch in. The step arithmetic lives on the Ranko side
+import, because `utils.py` pulls torch in. The step arithmetic lives on the Chromatrix side
 (`model/StepEstimate.kt`), which is what makes epoch / batch / GA edits cost no IPC at all.
 """
 

@@ -3,7 +3,7 @@
 One generation is one JSON file plus one PNG under
 `{output_dir}/{run_id}/{output_name}_samples/generated/`. api.py writes the file
 before spawning the generator, the generator rewrites it as it progresses, and
-Ranko lists the directory to follow a job that outlives the dashboard.
+Chromatrix lists the directory to follow a job that outlives the dashboard.
 
 Torch-free (like `runs.py`) so the format and the validation can be tested
 without a GPU.
@@ -47,7 +47,7 @@ PHASE_SCORING = "scoring"
 PHASE_DONE = "done"
 PHASES = (PHASE_RENDERING, PHASE_TAGGING, PHASE_SCORING, PHASE_DONE)
 
-# Launch limits, mirrored by Ranko's form validation so a rejected click costs no GPU time.
+# Launch limits, mirrored by Chromatrix's form validation so a rejected click costs no GPU time.
 MIN_CFG = 1.0
 MAX_CFG = 30.0
 MIN_STEPS = 1
@@ -186,7 +186,7 @@ def _number(params: Mapping[str, Any], key: str, default: Any) -> Any:
 def normalize_request(params: Mapping[str, Any], defaults: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and normalize one generation request.
 
-    Raises ValueError with a message Ranko can show as-is. `defaults` carries the config's sample
+    Raises ValueError with a message Chromatrix can show as-is. `defaults` carries the config's sample
     settings, so a client that sends nothing still gets the run's usual prompt and CFG.
     """
     prompt = str(_number(params, "prompt", defaults.get("prompt", "")) or "").strip()

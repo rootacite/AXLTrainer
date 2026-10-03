@@ -4,7 +4,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 
 /**
  * ktoml reads `0` as a Long and refuses to decode an integer literal into a Kotlin `Double`, so a
- * `key = 0` someone typed by hand makes the whole config.toml unreadable and Ranko fails at
+ * `key = 0` someone typed by hand makes the whole config.toml unreadable and Chromatrix fails at
  * startup. The trainer's Python side has no such rule: `float(0)` is 0.0 there.
  *
  * [normalize] rewrites those literals as floats before decoding. The keys come from

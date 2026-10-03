@@ -167,7 +167,7 @@ actual fun Modifier.maskPaintInput(
         // AWT coalesces motion events; poll the real pointer so fast strokes
         // stay continuous instead of landing as separate dots.
         val poller = Executors.newSingleThreadScheduledExecutor { runnable ->
-            Thread(runnable, "axlranko-mask-pointer").apply { isDaemon = true }
+            Thread(runnable, "chromatrix-mask-pointer").apply { isDaemon = true }
         }
         poller.scheduleAtFixedRate(
             {

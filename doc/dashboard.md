@@ -1,6 +1,6 @@
-# Dashboard (Ranko)
+# Dashboard (Chromatrix)
 
-Ranko ("AxlRanko") is the desktop GUI, built with Kotlin Multiplatform + Compose Multiplatform (JVM desktop target). It is a **controller, not a trainer**: it manages the dataset, edits the config, and drives the detached Python training process through the IPC helper (`api.py`).
+Chromatrix is the desktop GUI, built with Kotlin Multiplatform + Compose Multiplatform (JVM desktop target). It is a **controller, not a trainer**: it manages the dataset, edits the config, and drives the detached Python training process through the IPC helper (`api.py`).
 
 The chrome follows KataHana's porcelain cards and Nunito, on an amber night palette: warm near-black surfaces and the logo amber `#F8A818` as the brand accent (`ui/theme/Color.kt`). Utils → **Appearance** can switch the backdrop (solid / glow orbs / a local image), **card blur** vs **background blur** (independent; cards/nav vs the wallpaper in the gaps), font scale (text only), icon scale (icons, padding, component size), and **thumbnail quality** (JPEG 1–100 for dataset/sample thumbs over IPC). Those prefs live in Java Preferences, not `config.toml`.
 
@@ -10,7 +10,7 @@ The chrome follows KataHana's porcelain cards and Nunito, on an amber night pale
 
 - JDK 17+ (the Gradle wrapper auto-provisions a JDK 21 toolchain through the foojay resolver if needed).
 - Python with the trainer deps on `PATH` as `python3`, or set `AXL_PYTHON` to the interpreter to use (recommended when using the `axl` conda env).
-- The trainer repo must be discoverable: Ranko walks up from the executable and from the working directory looking for a folder containing `api.py` (or `config.toml` next to the `trainer/` package). Running `./gradlew :desktopApp:run` from inside the repo satisfies this.
+- The trainer repo must be discoverable: Chromatrix walks up from the executable and from the working directory looking for a folder containing `api.py` (or `config.toml` next to the `trainer/` package). Running `./gradlew :desktopApp:run` from inside the repo satisfies this.
 
 ## Build and run
 
@@ -28,7 +28,7 @@ The app opens on **Home**, with a floating, draggable navigation rail (Home / Im
 
 ### Home — brand, recent runs, module cards
 
-Wide windows put a brand card at the top left (logo, AxlRanko, version, commit) with a changelog under it, and on the right a scrolling list of recent training runs with the module cards underneath. A run row opens the Dashboard on that run. Each card shows a short status: Dashboard (phase, step/total, GPU/VRAM/temperature/RAM, a mini Avg Loss chart, the newest samples), Automation (the job in progress or the latest one, and up to two rows of its newest images), Utils (named config fields), Statistics (folder, image and caption counts, a short tag-frequency bar chart), Images (folder counts, plus up to two rows of pictures drawn from every dataset). Narrow windows stack the same blocks. The page polls only while it is open.
+Wide windows put a brand card at the top left (logo, Chromatrix, version, commit) with a changelog under it, and on the right a scrolling list of recent training runs with the module cards underneath. A run row opens the Dashboard on that run. Each card shows a short status: Dashboard (phase, step/total, GPU/VRAM/temperature/RAM, a mini Avg Loss chart, the newest samples), Automation (the job in progress or the latest one, and up to two rows of its newest images), Utils (named config fields), Statistics (folder, image and caption counts, a short tag-frequency bar chart), Images (folder counts, plus up to two rows of pictures drawn from every dataset). Narrow windows stack the same blocks. The page polls only while it is open.
 
 ### Images — dataset caption editor
 
@@ -83,7 +83,7 @@ The heart of the app. It spawns `api.py` on first use and polls it (every 1 s wh
   - Buttons: **Start** (enabled only when terminal: idle/finished/error), **Pause** / **Resume** (with in-flight spinner states), **Early Stop** (phase-aware confirmation dialog — warns whether a checkpoint will be saved), and **Reset** (clears the Finished/Error state so Start can launch a new run). Reset deletes **nothing**: the dialog lists what stays — the run's LoRA checkpoints, its TensorBoard logs and its sample images — so that run remains in the history list with its charts, its cards and its pictures. `python clean.py` is the only tool that wipes a run's artifacts.
   - **Live settings**: `Save every N steps` (a field + **Apply**) and the **Sampling** switch, under the three phase bars. They act on the run in progress — the request goes to the runtime `settings.json`, the trainer adopts it at its next optimizer step, and the line underneath reads what is actually in force (`Save every 100 steps · next at step 250 · sampling on`). The field and the switch follow what you asked for the moment the reply lands, and while the trainer has not adopted it yet a second line says so and when it lands: `Pending (applies at the next step)` while training, `Pending (applies from the next sample pass)` while a sample pass is rendering (that pass is not interrupted — the next one follows the new setting), `Pending (applies when the run resumes)` while paused. The line clears itself once the trainer adopts the change. A cadence change restarts the countdown from the step that adopted it, so "every N steps" means "N steps from now" and no save point is silently skipped; the sampling switch does not touch the schedule. Nothing is written back to `config.toml`: the file stays what the **next** run starts from (Utils → Training). The controls are shown only while the card may act on the run being viewed (see the pinning rule below) and that run is live — a paused one counts. A failed request (e.g. no live trainer) shows its message in place. With **no** live run the row has nothing to retune and reads the next run instead: `Next run · save every 100 steps · sampling on`, straight from `config.toml` (Utils → Training is where those are edited). The `settings` block in `state.json` describes the run that published it, and a runtime directory no run has touched carries the placeholder `0` — which means "no checkpoints", not "the configuration says so" — so a stopped card never shows it.
   - All five buttons are off while a past run is pinned in the run history: they act on the run `state.json` is on, and the card says so. Charts, hardware, sample images and the checkpoint panel keep working for the run being viewed. The live settings row follows the same rule, so a pinned past run shows its values read-only.
-- **Hardware**: live GPU / CPU panel under Training Control. GPU numbers come from `nvtop -s` (JSON snapshot); AMD edge/junction temps from DRM hwmon; CPU util/temp from `/proc` and thermal zones; RAM from `/proc/meminfo`. When `[environment].amdfq` is `vmm`, a separate VA bar shows used / total GPU virtual address space: **GPU VA (live)** while the hook gives a freed range's address back (the default, and what the 2026-09 kernel allows), or **GPU VA (not returned)** while `amdfq_va_never_reuse` keeps it for the process lifetime (the pre-fix workaround). Info line + current-value cards + four charts in two rows: **GPU** (util / VRAM), **Temp** (edge / junction / CPU), **Power** (GPU watts), **CPU** (util / RAM). Ranko keeps a ~6 minute ring buffer. Missing nvtop shows an error on this section only — training controls and TensorBoard charts keep working.
+- **Hardware**: live GPU / CPU panel under Training Control. GPU numbers come from `nvtop -s` (JSON snapshot); AMD edge/junction temps from DRM hwmon; CPU util/temp from `/proc` and thermal zones; RAM from `/proc/meminfo`. When `[environment].amdfq` is `vmm`, a separate VA bar shows used / total GPU virtual address space: **GPU VA (live)** while the hook gives a freed range's address back (the default, and what the 2026-09 kernel allows), or **GPU VA (not returned)** while `amdfq_va_never_reuse` keeps it for the process lifetime (the pre-fix workaround). Info line + current-value cards + four charts in two rows: **GPU** (util / VRAM), **Temp** (edge / junction / CPU), **Power** (GPU watts), **CPU** (util / RAM). Chromatrix keeps a ~6 minute ring buffer. Missing nvtop shows an error on this section only — training controls and TensorBoard charts keep working.
 - **Path chips**: current run id, `{logging_dir}/{run_id}`, `{output_dir}/{run_id}` — `—` when no run directory resolves yet.
 - **Metric cards**: Current Step, Latest Loss, UNet LR, TE Effective LR.
 - **Training charts**: Train/Avg_Loss, Train/Loss and Learning Rate (UNet LR on the left axis, TE LR on the right, one curve each) — interactive line charts with an always-on hover readout (see interactions below). On **Train / Avg Loss**, `Ctrl` + left click or a left double click opens the checkpoint panel described below.
@@ -99,7 +99,7 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
     badge — visibly a different card, not just a reordered one — with a labelled divider between the
     pinned cards and the rest (`2 pinned · 3 more`). A line above the cards names the file the state
     lives in: `<logging_dir>/<run_id>/checkpoint_pins.json`, one file per run — so pins survive
-    Ranko closing and a run shows its own pins only. The pinned cards keep the section's
+    Chromatrix closing and a run shows its own pins only. The pinned cards keep the section's
     newest-step-first order, so a pinned card does not move when training saves another checkpoint,
     and pinning again is the same as pinning once. The button fills in while the pin is on; pressing
     it again unpins. Reset does not delete checkpoints, so only `python clean.py` (or deleting the
@@ -110,8 +110,8 @@ Clicking a thumbnail opens the same fullscreen preview as everywhere else (Esc c
     without picking a step on the chart. The OS asks for the destination, then the helper copies the
     file server-side; the card shows `Saving…` while it runs and `Saved → <path> (<size>)` — or the
     failure — when it is done. One save runs at a time (there is one dialog), so every other card's
-    button is off until it finishes. Ranko never reads the file: `config.toml`'s relative
-    `output_dir` is not a path Ranko could open anyway, which is why the copy is the helper's job.
+    button is off until it finishes. Chromatrix never reads the file: `config.toml`'s relative
+    `output_dir` is not a path Chromatrix could open anyway, which is why the copy is the helper's job.
   - **Sample range**: above the cards, `from` / `to` step fields (prefilled with the run's own
     steps, so "all of them" is one click), the **Sample range** button, and how many checkpoints the
     range covers. Pressing it renders that whole pass for every checkpoint whose step is inside the
@@ -277,7 +277,7 @@ of the app uses, so no new image path exists.
   settings** writes `settings.json`, **Start** queues the job, and while one runs the card shows its
   progress with **Cancel**. `Save as prompt set` stores the current list under `automation/prompts/`
   for reuse. The log card shows the tail of the job's `log.txt`.
-- Generation runs detached (`trainer/run_automation.py`), so closing Ranko does not stop it. Each
+- Generation runs detached (`trainer/run_automation.py`), so closing Chromatrix does not stop it. Each
   prompt gets its own random seed (written into every numeric seed input, including one that is
   fed through a linked seed node), the positive node's text is replaced, and `batch_size` is set on
   every numeric one. One bad prompt is recorded and the batch continues; three failures in a row
@@ -343,11 +343,11 @@ of the app uses, so no new image path exists.
 ## How it talks to the trainer
 
 1. **Discovery** — `TrainerRepo.findRoot()` walks up from the app's executable and `user.dir` looking for `api.py` or a `config.toml` that sits next to the `trainer/` package.
-2. **Spawn** — Ranko connects to `ws://127.0.0.1:18765`. If nothing is listening it runs `$AXL_PYTHON` (if set) or `python3 -u api.py --websocket` with the working directory at the repo root, stderr inherited, `PYTHONUNBUFFERED=1`. A JVM shutdown hook kills the helper **this process spawned**.
+2. **Spawn** — Chromatrix connects to `ws://127.0.0.1:18765`. If nothing is listening it runs `$AXL_PYTHON` (if set) or `python3 -u api.py --websocket` with the working directory at the repo root, stderr inherited, `PYTHONUNBUFFERED=1`. A JVM shutdown hook kills the helper **this process spawned**.
 3. **Protocol** — JSON-RPC on that WebSocket: requests are `{"id": n, "method": "...", "params": {...}}`, responses are `{"id": n, "ok": true, "result": {...}}` or `{"id": n, "ok": false, "error": "..."}`. Replies match on `id`. Dataset images travel as resized JPEG blobs (`blob_batch`), not `java.io.File`.
 4. **Methods** — train control plus `config_*`, `dataset_*`, `blob_*`, `mask_*`, `profile_*`, `prompt_*` and `automation_*`. Full reference: [API.md](../API.md).
 
-**Important**: `train_start` spawns the trainer **detached** (`setsid`). Closing Ranko does not stop training; use Pause/Early Stop (or the runtime `command.json`) to control it.
+**Important**: `train_start` spawns the trainer **detached** (`setsid`). Closing Chromatrix does not stop training; use Pause/Early Stop (or the runtime `command.json`) to control it.
 
 ## Chart interactions
 
@@ -384,7 +384,7 @@ not sample (or to re-render one after changing the prompts in `config.toml`).
 
 - Prompt handling, CFG, step count, seed (`0` = random, the seed actually used is written back), scheduler and CLIP settings mirror the run's own sampling (the first prompt set), so a generated image is comparable with the training samples. `clip_skip`, `max_token_length`, `network_dim`/`network_alpha` and the base model come from the checkpoint's kohya metadata, not from today's `config.toml` — sampling an old checkpoint uses the settings it was trained with. If the checkpoint was trained on a different `base_model_version` than `[model_spec]` says, the job fails with that message instead of producing a mismatched image.
 - Files land in `{output_dir}/{run_id}/{output_name}_samples/generated/` — one PNG plus one JSON job record (prompt, CFG, steps, seed, checkpoint, mode, state, error) per generation. The directory is *inside* the sample dir, so the training sample strip and Images tab ignore it, and it stays with the run's samples when the run is reset. This one-image form belongs to no prompt set, so it never carries a `Pn` badge; the whole-set pass of the Checkpoints section does (its files are named `_p{set}_{repeat}.png`, and its job record lists them in `files`).
-- Generation needs the GPU to itself: while a live trainer is using it — `starting`, `encoding`, `training`, `sampling`, or a swap in flight — the button is disabled and `generate_sample` refuses, naming the reason. A **paused** run is allowed (`pause` has offloaded the UNet, both text encoders, the optimizers and the VAE), and so is a run that is stopped or over; `train_resume` refuses while a generation is running so the two can never share the card. Only one generation runs at a time, whichever run it belongs to. The generator is a detached process (`trainer/generate_sample.py`), so closing Ranko does not kill it; it never touches `state.json`, the lock or the training loop.
+- Generation needs the GPU to itself: while a live trainer is using it — `starting`, `encoding`, `training`, `sampling`, or a swap in flight — the button is disabled and `generate_sample` refuses, naming the reason. A **paused** run is allowed (`pause` has offloaded the UNet, both text encoders, the optimizers and the VAE), and so is a run that is stopped or over; `train_resume` refuses while a generation is running so the two can never share the card. Only one generation runs at a time, whichever run it belongs to. The generator is a detached process (`trainer/generate_sample.py`), so closing Chromatrix does not kill it; it never touches `state.json`, the lock or the training loop.
 - Failures (a rank mismatch, a dead base model, an OOM) are reported in the panel and in the job's `.log` next to the PNG.
 
 ## Keyboard shortcuts

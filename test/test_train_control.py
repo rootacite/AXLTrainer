@@ -368,7 +368,7 @@ class ProcessIdentityTest(unittest.TestCase):
     def test_a_child_nobody_waited_on_is_not_alive(self):
         """The reported bug: api.py never `wait()`s the trainer it spawns, so after a normal finish
         the trainer is a zombie — `kill(pid, 0)` still succeeds on it, and the dashboard kept
-        `alive` true (and the panel's Generate button disabled) until Ranko was restarted."""
+        `alive` true (and the panel's Generate button disabled) until Chromatrix was restarted."""
         child = subprocess.Popen([sys.executable, "-c", "pass"])
         try:
             self.assertEqual(self._state_of(child.pid, "Z"), "Z")

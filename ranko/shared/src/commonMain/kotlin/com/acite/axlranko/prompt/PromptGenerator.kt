@@ -7,7 +7,7 @@ import kotlin.random.Random
 /**
  * Prompt assembly, ported from `tools/gen_prompts.py`.
  *
- * The draws use Kotlin's [Random], so a seed reproduces within Ranko; the script's own sequence is
+ * The draws use Kotlin's [Random], so a seed reproduces within Chromatrix; the script's own sequence is
  * not reproduced (that was a deliberate choice, see the plan).
  */
 object PromptGenerator {

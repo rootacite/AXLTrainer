@@ -135,7 +135,7 @@ compute VM 的 TLB，同址复用会把陈旧翻译读出来，所以 free 只 u
 `hipMemCreate` 在 reserve 之前：物理 OOM 不占 VA。从未 Map 成功的 reserve（map 失败）在两种模式下
 都仍然 `hipMemAddressFree`。hook 把 `MAPPED_SPANS` 累计的字节数、跨度数与当前模式写到
 `<stem>.<pid>.json`（`AMDFQ_VA_STATUS`，缺省则与 `trainer/control.py` 同一 runtime 目录下的
-`amdfq_vmm_va`），字段为 `used_bytes` / `spans` / `never_reuse`；Ranko Dashboard 用它画「已用 /
+`amdfq_vmm_va`），字段为 `used_bytes` / `spans` / `never_reuse`；Chromatrix Dashboard 用它画「已用 /
 总 VA」，并按模式换文案（never-reuse 下这个数是累计占用过的，复用模式下是当前占用的）。
 
 这里曾有一条例外：「fork 继承来的块什么都不做」（旧的 `Outcome::Inherited`），已删。理由不是它多余，
@@ -195,7 +195,7 @@ fork 之后定义任何行为（HIP 的 `hipInit` note 就是这条界线；那�
    保留水位拒绝建池时回落到直连路线，让这笔小请求按它自己的大小重新判定——与池关闭时一致。
 
 代价写在明处：池是别人拿不到的**已提交**显存（OOM 与碎片化的来源），能省的每步驱动调用次数有上界（边际
-收益递减）。这就是 Ranko 与 `doc/configuration.md` 上那句「池并非越大越好」的来由，也是 hook 一侧在变量
+收益递减）。这就是 Chromatrix 与 `doc/configuration.md` 上那句「池并非越大越好」的来由，也是 hook 一侧在变量
 未设时默认关闭的来由。同一把尺子下，`(PoolSize/2, PoolSize]` 区间的请求仍会做一次小于 `PoolSize` 的
 Create：本方案的不变量是「被池化的 MemCreate 恒为 `PoolSize`」，不是「任何 MemCreate 都不得小于
 `PoolSize`」。

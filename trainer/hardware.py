@@ -1,4 +1,4 @@
-"""Host hardware snapshot for Ranko: nvtop JSON + sysfs temps + /proc CPU.
+"""Host hardware snapshot for Chromatrix: nvtop JSON + sysfs temps + /proc CPU.
 
 nvtop 3.3.2 has no Unix socket; `-s/--snapshot` prints a JSON array of GPUs.
 Process lists are dropped (cmdlines are huge). Edge/junction come from DRM

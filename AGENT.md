@@ -1,10 +1,10 @@
-# AGENT.md — AXLTrainer
+# AGENT.md — Chromatrix
 
 Working notes for coding agents. Human-facing docs live under `doc/` and `README.md`.
 
 **This file is the entry point.** It keeps the working agreement, the rules a change has to respect, and the macro architecture. The detail behind each section — rationale, measurements, module-by-module text — lives in `doc/agent/`, one file per topic (§1 lists them).
 
-**What this is:** a local-first **LoRA** training stack (SDXL implemented; SD 3.5 catalogued but not trainable): Python engine (`trainer/`) + JSON-RPC helper (`api.py`) + Kotlin/Compose desktop dashboard (`ranko/`, product name **AxlRanko**) + dataset scripts (`tools/`, `tagger2/`, `tagger/`, `ranko/tools/agent.py`).
+**What this is:** a local-first **LoRA** training stack (SDXL implemented; SD 3.5 catalogued but not trainable): Python engine (`trainer/`) + JSON-RPC helper (`api.py`) + Kotlin/Compose desktop dashboard (`ranko/`) + dataset scripts (`tools/`, `tagger2/`, `tagger/`, `ranko/tools/agent.py`).
 
 **What this is not:** an HTTP API, a generation/inference server, or a kohya `sd-scripts` fork. There is no network control plane.
 
@@ -17,7 +17,7 @@ The maintainer drives this repo one step at a time. Do exactly what the current 
 - No unrelated fixes, refactors, cleanups or "while I'm here" edits — not even small ones.
 - Stop at the end of the requested step. Do not run ahead into the step after it.
 - Work beyond the request is a proposal, not an action: report it (what it would touch, why it seems useful) and leave it undone until asked.
-- **Never drive Ranko's window with `xdotool`** (or any other synthetic-input tool): the maintainer runs the app and verifies its interface by hand. What has to be checked automatically belongs in the test suites (`ranko/shared/src/jvmTest/`), which compose the real components in a window rather than clicking a running app.
+- **Never drive Chromatrix's window with `xdotool`** (or any other synthetic-input tool): the maintainer runs the app and verifies its interface by hand. What has to be checked automatically belongs in the test suites (`ranko/shared/src/jvmTest/`), which compose the real components in a window rather than clicking a running app.
 - Terminology: **"the hook"** means `amdfq/amdfq-vmm-rs/` in its peralloc mode — the Rust `LD_PRELOAD` interposer that serves `hipMalloc` from address ranges it reserves itself (`amdfq/amdfq-vmm-rs/DESIGN.md`). Say **"the tail hook"** (or `amdfq/amdfq-tail-rs/`) when the tail-guard implementation is meant (`amdfq/amdfq-tail-rs/DESIGN.md`). The original C tail tree is `amdfq/amdfq-tail/`. The older C VMM tree (`amdfq-vmm/`) was deleted.
 - Two of the hook's behaviours are **optional workarounds for driver bugs the 2026-09 kernel fixed**, and both default to off: `amdfq_va_never_reuse` (a freed range keeps its VA forever) and `amdfq_vram_reserve_gib` (the hook leaves that many GiB of the amdgpu free counter untouched). They travel config.toml → `trainer/amdfq_patch.py` → `AMDFQ_VA_NEVER_REUSE` / `AMDFQ_VRAM_RESERVE` → the hook, and the Dashboard's VA bar changes meaning with the first one. Changing either default is a behaviour change: say why, and touch the config row, the Python default, the hook default and the Dashboard text together.
 - The hook's third knob, `amdfq_pool_mib` (`0`, off, or `16`–`512` MiB; the shipped config asks for `64`), is **not** a workaround but an allocation pool (DESIGN.md D12): one `hipMemCreate` builds a pool of that size, a request of at most half of it is carved out of one without any driver call, and a pool is released once the upper layer has freed everything carved out of it. It travels the same path (`trainer/amdfq_patch.py` → `AMDFQ_POOL_SIZE`, in bytes), and the hook itself stays off when that variable is unset — a hand-preload is not given a pool. It is on in the shipped config because that is what the maintainer chose, *not* because it is faster: `test/bench_alloc_pool.py` measured the pool off vs 16/32/64/128 MiB on this repo's own workload and found step rate flat to 1 % slower, with a pool-free run aborting 1 time in 9 against 2 out of 2 at 256 MiB. Re-run that script, in the env `environment.yml` names, before repeating or contradicting those numbers; the reasons it cannot help much (a per-allocation cost worth ≤0.2 % of a step, and pool create/teardown work of its own) are in the report it writes.
@@ -36,7 +36,7 @@ Topic detail, one file per AGENT.md section:
 | §4 Configuration contract — flattening, run snapshot, prompt sets, train-data entries, bucketing | `doc/agent/config-contract.md` |
 | §5 Python trainer — module map, resume mechanics | `doc/agent/trainer.md` |
 | §6 IPC — handler table, job records, client lanes and resource locks | `doc/agent/ipc.md` |
-| §7 Ranko — screens, Dashboard/Checkpoints rules, masking, prompt port | `doc/agent/ranko.md` |
+| §7 Chromatrix — screens, Dashboard/Checkpoints rules, masking, prompt port | `doc/agent/ranko.md` |
 | §8 Dataset contract — captions, masks, latent cache, taggers | `doc/agent/dataset.md` |
 | §9 Recipes — add an IPC method / a base family, change training math, pause, cleanup, resume | `doc/agent/recipes.md` |
 | §10 Tests — what each suite covers | `doc/agent/tests.md` |
@@ -48,7 +48,7 @@ Human-facing docs:
 | Architecture / data flow | `doc/overview.md` |
 | Every TOML key | `doc/configuration.md` |
 | Pause / resume / stop / artifacts | `doc/training.md` |
-| Ranko tabs and IPC usage | `doc/dashboard.md` |
+| Chromatrix tabs and IPC usage | `doc/dashboard.md` |
 | Wire protocol (methods, shapes) | `API.md` |
 | Dataset CLIs | `doc/dataset-tools.md` |
 | Mask verification status + restart runbook | `doc/mask-verification.md` |
@@ -65,7 +65,7 @@ python -m unittest discover -s test -p 'test_validation.py'   # one file only
 # Latent-cache pipeline (mock VAE)
 python test/test_warm_latent_cache.py
 
-# Ranko serialization / IPC models
+# Chromatrix serialization / IPC models
 cd ranko && ./gradlew :shared:jvmTest
 ```
 
@@ -76,7 +76,7 @@ Do **not** start a real training run to “see if it compiles” unless the task
 ## 2. Process model (do not invent a new one)
 
 ```
-Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, datasets, TB, samples
+Chromatrix (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, datasets, TB, samples
                                       |  writes command.json
                                       |  spawns (setsid) bash start_train.sh
                                       v
@@ -91,12 +91,12 @@ Ranko (JVM)  --WebSocket JSON-RPC-->  api.py  --reads/writes-->  config, dataset
 
 Hard rules:
 
-- Training is **detached** (`train_start` uses `start_new_session=True`). Closing Ranko must not kill the run.
-- Ranko **never** talks to the GPU. After connect, `commonMain` only speaks JSON-RPC; desktop `jvmMain` may spawn `api.py --websocket` and pick paths with FileKit.
+- Training is **detached** (`train_start` uses `start_new_session=True`). Closing Chromatrix must not kill the run.
+- Chromatrix **never** talks to the GPU. After connect, `commonMain` only speaks JSON-RPC; desktop `jvmMain` may spawn `api.py --websocket` and pick paths with FileKit.
 - `start_train.sh` `exec`s the trainer, so that shell's PID and session become the trainer's; a HIP abort leaves forked DataLoader workers behind. Keep `trainer/orphans.py` started first and detached, and keep it unable to touch a session that is not the trainer's.
 - Working directory for `api.py` and `start_train.sh` is the **repo root** (the directory holding `api.py` and `trainer/`).
 - WebSocket is the only control channel (default `127.0.0.1:18765`; LAN bind is `--host 0.0.0.0` plus `--allow-ip` / `AXL_WS_ALLOW`, loopback always admitted; when neither is set the allowlist is `192.168.0.0/16`). Logs and tracebacks go to stderr. The helper serves **one client session**: the first instance to `hello` owns it, its own later connections join it, and any other client is refused with `CLIENT_BUSY` and closed.
-- Ranko finds the repo root by walking up for `api.py`, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`); a lone `config.toml` does not qualify.
+- Chromatrix finds the repo root by walking up for `api.py`, or `config.toml` next to the `trainer/` package (`TrainerRepo.looksLikeRepoRoot`); a lone `config.toml` does not qualify.
 
 Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
@@ -106,7 +106,7 @@ Runtime dir resolution (same in `trainer/control.py` and `api.py`):
 
 Files: `state.json`, `command.json`, `settings.json`, `train.lock`, `train.log`. Tests **must** set `AXL_RUNTIME_DIR` to a temp dir (see `test_train_control.py`).
 
-Interpreter override: Ranko uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl` (torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`). There is **no** `requirements.txt`.
+Interpreter override: Chromatrix uses `$AXL_PYTHON` if set, else `python3`. Training deps live in the conda env `environment.yml` names — currently `axl` (torch `2.13.0+rocm10.0.0`, HIP `7.15.26333`). There is **no** `requirements.txt`.
 
 Detail (rationale and the measured numbers): `doc/agent/process-model.md`.
 
@@ -114,7 +114,7 @@ Detail (rationale and the measured numbers): `doc/agent/process-model.md`.
 
 ## 3. Status machine
 
-Defined in `trainer/control.py`. Do not add statuses without updating `API.md`, Ranko `TrainStatus`, and tests.
+Defined in `trainer/control.py`. Do not add statuses without updating `API.md`, Chromatrix `TrainStatus`, and tests.
 
 ```
 idle → starting → encoding → training → sampling → finished
@@ -155,7 +155,7 @@ Detail: `doc/agent/status-machine.md`.
 Load path:
 
 - Python: `trainer/config.py` flattens **all TOML tables into one dict**; section names do not exist at runtime on the Python side, only keys. `TrainConfig` fields default via `get_val(key, hardcoded)`, and **TOML wins** over Python defaults.
-- Kotlin: `AxlTrainerConfig` is **sectional** (`environment`, `model_spec`, `training`, …). Utils saves through `TomlDocumentPatcher` (in-place replace of uncommented `key = value` inside named tables — comments, blank lines and unknown tables stay intact; do not rewrite the whole file). `TomlIntegerLiterals` rewrites `key = 0` to `0.0` for the keys the model declares `Double`, so a hand-edited `amdfq_vram_reserve_gib = 0` cannot cost Ranko its startup.
+- Kotlin: `AxlTrainerConfig` is **sectional** (`environment`, `model_spec`, `training`, …). Utils saves through `TomlDocumentPatcher` (in-place replace of uncommented `key = value` inside named tables — comments, blank lines and unknown tables stay intact; do not rewrite the whole file). `TomlIntegerLiterals` rewrites `key = 0` to `0.0` for the keys the model declares `Double`, so a hand-edited `amdfq_vram_reserve_gib = 0` cannot cost Chromatrix its startup.
 
 Adding a hyperparameter (all four, or the GUI will drift):
 
@@ -228,7 +228,7 @@ Layout (`lora_checkpoint_file`, rooted at `artifact_root(cfg)` = `cfg.run_dir` o
 
 Samples: `{output_dir}/{run_id}/{output_name}_samples/` filenames matching `_(\d+)_(\d+)\.png$` → `(step, repeat_idx)`. `api.scan_samples` uses that regex; unmatched files go under step `"-1"`.
 
-Cleanup treats every child dir of the run dir whose name **starts with** `output_name` except `{name}_samples` as a weight dir, and removes the run dir once it is empty. Flat artifacts from before the run-directory layout are no longer resolved by the API/Ranko — `clean.py --legacy-flat` still cleans them.
+Cleanup treats every child dir of the run dir whose name **starts with** `output_name` except `{name}_samples` as a weight dir, and removes the run dir once it is empty. Flat artifacts from before the run-directory layout are no longer resolved by the API/Chromatrix — `clean.py --legacy-flat` still cleans them.
 
 ### Resume (weights only)
 
@@ -256,7 +256,7 @@ The handler table, the job-record shapes (`single` / `sets` / `batch` / `evaluat
 
 ---
 
-## 7. Ranko (`ranko/`)
+## 7. Chromatrix (`ranko/`)
 
 Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style follows KataHana's porcelain cards and Nunito, on an amber night palette (`RankoPalette.Amber` in `ui/theme/Color.kt`; the brand accent is the logo amber `#F8A818`). Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`.
 
@@ -277,10 +277,10 @@ Detail (file map, run history and control rules, Checkpoints / Sampling Prompts 
 
 ## 8. Dataset contract
 
-Sidecar captions are comma-separated tags; extensions jpg/jpeg/png/webp/bmp. The dataset is the list of `[[environment.train_data]]` folders (`train_data_dir` alone when there is no list). The optional loss mask `{stem}.mask.png` (always PNG) weights the MSE (white=train, black=ignore); a missing sidecar falls back to the image's alpha, and the letterbox pad is weight 0 either way, so `load_loss_mask` returns a full-bucket mask for every sample. **Exclude** `*.mask.png` from every image listing (`list_images`, Ranko Images/Statistics, `agent.py`, `tagger/`), and move it with the pair on drop/trash.
+Sidecar captions are comma-separated tags; extensions jpg/jpeg/png/webp/bmp. The dataset is the list of `[[environment.train_data]]` folders (`train_data_dir` alone when there is no list). The optional loss mask `{stem}.mask.png` (always PNG) weights the MSE (white=train, black=ignore); a missing sidecar falls back to the image's alpha, and the letterbox pad is weight 0 either way, so `load_loss_mask` returns a full-bucket mask for every sample. **Exclude** `*.mask.png` from every image listing (`list_images`, Chromatrix Images/Statistics, `agent.py`, `tagger/`), and move it with the pair on drop/trash.
 
 - Latent cache: one per dataset folder, `<folder>/.latents_cache/{sha1(abs_path::bucket_w x bucket_h::left,top,fit_w x fit_h)}.pt`. Only a file holding the keyed bucket's latent counts as a hit (anything else is a miss, warned about and re-encoded over). The posterior sample is drawn from a generator seeded by `sha1(f"{cfg.seed}:{key}")`, so the global generator is untouched. Changing the scheme changes the values it writes without changing any key — bump the key if a cache has to be rebuilt. Do not hand-edit cache files.
-- `tagger2/` is the captioner Ranko runs (Pixai tagger v1, resolved cache-only; `--categories` defaults to `general`, `--only-tags` is the partial add-only pass). `tagger/` is the legacy ONNX tagger, reachable from the CLI only, and its `selected_tags.csv` is what `tag_lexicon` and the Statistics tag card read.
+- `tagger2/` is the captioner Chromatrix runs (Pixai tagger v1, resolved cache-only; `--categories` defaults to `general`, `--only-tags` is the partial add-only pass). `tagger/` is the legacy ONNX tagger, reachable from the CLI only, and its `selected_tags.csv` is what `tag_lexicon` and the Statistics tag card read.
 - `tools/` scripts are mostly **in-place / destructive** (`tools/vpred_reference.py` is the read-only exception); prefer `ranko/tools/agent.py --dry-run` for agent-driven edits. `ui.py` is a deprecated Streamlit viewer — do not extend it.
 
 Detail (mask blur, the cache verdict, tagger flags, `tag_directory` / `tag_paths`): `doc/agent/dataset.md`.
@@ -321,7 +321,7 @@ What each suite covers — Python and Kotlin, one row per suite — is in `doc/a
 - Comments: short, only for non-obvious constraints (ROCm alignment, stdout vs stderr, TOML flatten). Do not narrate the change.
 - Do not add `requirements.txt`, HTTP servers, extra config formats, or a second control protocol.
 - Do not format/rewrite unrelated Kotlin/Python files. Do not commit `ranko/build/`, `__pycache__/`, `tagger/migraphx_cache/`, or local `config.toml` path churn.
-- License: MIT (`LICENSE`). Ranko still contains Compose template leftovers (`Greeting.kt`); ignore unless the task is cleanup.
+- License: MIT (`LICENSE`). Chromatrix still contains Compose template leftovers (`Greeting.kt`); ignore unless the task is cleanup.
 
 ---
 
@@ -329,14 +329,14 @@ What each suite covers — Python and Kotlin, one row per suite — is in `doc/a
 
 | Var | Who | Meaning |
 | --- | --- | --- |
-| `AXL_PYTHON` | Ranko | Interpreter for `api.py` |
-| `AXL_WS_HOST` / `AXL_WS_PORT` | api.py / Ranko | WebSocket bind (default `127.0.0.1:18765`) |
+| `AXL_PYTHON` | Chromatrix | Interpreter for `api.py` |
+| `AXL_WS_HOST` / `AXL_WS_PORT` | api.py / Chromatrix | WebSocket bind (default `127.0.0.1:18765`) |
 | `AXL_WS_ALLOW` | api.py | Comma-separated client IPs/CIDRs; loopback always allowed. Unset, and no `--allow-ip`, defaults to `192.168.0.0/16` |
 | `AXL_BLOB_WORKERS` | api.py | Blob encode pool size (`0` = inline) |
 | `AXL_BLOB_CACHE_DIR` / `AXL_BLOB_CACHE_BYTES` | api.py | Processed-image cache |
 | `AXL_RUNTIME_DIR` | trainer + api | Override runtime dir (required in tests) |
 | `XDG_RUNTIME_DIR` | trainer + api | Default parent for `axltrainer/` |
-| `PYTHONUNBUFFERED` | launchers / Ranko | Set to `1` |
+| `PYTHONUNBUFFERED` | launchers / Chromatrix | Set to `1` |
 | `MIOPEN_*` / `AMD_LOG_LEVEL` | `start_train.sh` | Quiet ROCm, pin cache |
 
 Python: 3.14, PyTorch `2.13.0+rocm10.0.0` (HIP `7.15.26333`) per `environment.yml` (CUDA torch also works if you swap the wheel). That is also the stack on which the gfx1201 Tensile page fault reproduces most readily, and the pin that preceded it, `2.12.0+rocm7.14.1`, faults as well under other configurations: the pin changes which shapes and allocator layouts lose the guard-page lottery, not whether the kernels over-read (`doc/troubleshooting.md`). The measurements behind that sentence are sealed in `archive/` — 涉及负责任披露流程，暂不公开. Desktop: JDK 17+; Gradle wrapper provisions JDK 21.
@@ -347,7 +347,7 @@ Author reference GPU: AMD RX 9070 XT 16 GB, ROCm 7.2. Primary target is **AMD RO
 
 ## 13. Out of scope unless explicitly asked
 
-- Publishing Ranko as a public site, TLS, and auth tokens. LAN with an IP allowlist is in. Process: `doc/ranko-web-target.md`.
+- Publishing Chromatrix as a public site, TLS, and auth tokens. LAN with an IP allowlist is in. Process: `doc/ranko-web-target.md`.
 - Replacing PEFT/diffusers with kohya sd-scripts internals.
 - Serving checkpoints, Civitai upload, or remote training.
 - Changing default `bucket_reso_steps` away from 128.

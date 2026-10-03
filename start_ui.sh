@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Launch the AxlRanko desktop UI with the trainer's conda env on PATH.
+# Launch the Chromatrix desktop UI with the trainer's conda env on PATH.
 #
 # Runs the packaged fat jar directly. Gradle is only invoked to repackage when
-# the jar is missing or older than the Ranko sources, and it runs with
+# the jar is missing or older than the Chromatrix sources, and it runs with
 # --no-daemon so no Gradle/Kotlin daemon is left behind afterwards.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +48,7 @@ fi
 source "$CONDA_SH"
 conda activate axl
 
-# Ranko spawns api.py itself (and api.py spawns the trainer). Point it at this
+# Chromatrix spawns api.py itself (and api.py spawns the trainer). Point it at this
 # env's interpreter instead of whatever `python3` resolves to on PATH.
 export AXL_PYTHON="${CONDA_PREFIX}/bin/python"
 export PYTHONUNBUFFERED=1

@@ -379,7 +379,7 @@ fn publish_spans() {
     publish_va_status(used, spans);
 }
 
-/* Ranko reads `<stem>.<pid>.json`. Stem is `AMDFQ_VA_STATUS` if set, otherwise the same
+/* Chromatrix reads `<stem>.<pid>.json`. Stem is `AMDFQ_VA_STATUS` if set, otherwise the same
  * runtime dir as trainer/control.py (`AXL_RUNTIME_DIR` / `$XDG_RUNTIME_DIR/axltrainer` /
  * `/tmp/axltrainer-$UID`) plus `amdfq_vmm_va`. `used_bytes` is what the map holds now, whose
  * meaning the mode decides, and `never_reuse` says which mode it is. Throttled. */

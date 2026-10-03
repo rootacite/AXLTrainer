@@ -5,7 +5,7 @@ import java.io.File
 /**
  * Locates the trainer repo root (the directory that contains `api.py` and the root `config.toml`).
  *
- * Desktop bootstrap only: after the WebSocket is up, Ranko commonMain does not walk the disk.
+ * Desktop bootstrap only: after the WebSocket is up, Chromatrix commonMain does not walk the disk.
  */
 object TrainerRepo {
     /**

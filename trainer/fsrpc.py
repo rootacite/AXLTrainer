@@ -1,4 +1,4 @@
-"""Filesystem operations Ranko used to do itself. Torch-free.
+"""Filesystem operations Chromatrix used to do itself. Torch-free.
 
 Handlers here are called from `api.dispatch`. Paths are allowlisted against
 `config.toml` (train-data folders, repo `config.toml` / `configs/`, `output_dir`).
@@ -483,7 +483,7 @@ def prompt_profile_dir() -> Path:
 
 
 def prompt_matrix() -> dict[str, Any]:
-    """The prompt wizard's input matrix, so Ranko and tools/gen_prompts.py read one file."""
+    """The prompt wizard's input matrix, so Chromatrix and tools/gen_prompts.py read one file."""
     path = prompt_matrix_path()
     if not path.is_file():
         raise ValueError(f"Could not locate {PROMPT_MATRIX_NAME} at {path}")
