@@ -218,6 +218,36 @@ class AvgLossTest(unittest.TestCase):
         finally:
             api._get_tensorboard_metrics = orig
 
+    def test_dashboard_cadence_is_the_run_snapshot_not_the_repo(self):
+        # The repo file is whatever this checkout has. A run with its own snapshot must not
+        # answer with that, and a run with no snapshot must not answer with it either.
+        bare = api.handle_dashboard(
+            {"name": "__no_snapshot__", "run_id": "__no_snapshot___20260101_000000"}
+        )
+        self.assertIsNone(bare["save_every_n_steps"])
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log_dir = Path(tmp.name) / "logs" / "rein_20260101_000000"
+        log_dir.mkdir(parents=True)
+        (log_dir / "config.toml").write_text(
+            "[training]\nsave_every_n_steps = 40\n",
+            encoding="utf-8",
+        )
+        orig = api._train_config_dict
+        api._train_config_dict = lambda: {
+            "logging_dir": str(Path(tmp.name) / "logs"),
+            "output_dir": str(Path(tmp.name) / "out"),
+            "output_name": "rein",
+            "save_every_n_steps": 999,
+        }
+        try:
+            result = api.handle_dashboard({"run_id": "rein_20260101_000000"})
+        finally:
+            api._train_config_dict = orig
+        self.assertEqual(result["save_every_n_steps"], 40)
+        self.assertEqual(result["config"]["save_every_n_steps"], 999)
+
 
 class RunScopedIpcTest(unittest.TestCase):
     """dashboard / list_samples / list_checkpoints / train_reset are run-scoped."""

@@ -141,7 +141,7 @@ Provides real-time training telemetry, dynamic run management, interactive loss 
 
 #### Interactive Charts & Checkpoint Inspection
 
-- **Rendered Metrics**: Three interactive canvas charts — `Train/Avg_Loss`, `Train/Loss`, and a dual-axis `Learning Rate` chart (`UNet/LR/Effective_Actual_LR` on the left axis, `TE/LR/Effective_Actual_LR` on the right). Supports EMA smoothing adjustments, zooming (`Ctrl`+wheel for the X axis, `Shift`+wheel for Y), panning, and a default window of the newest 1200 steps.
+- **Rendered Metrics**: Three interactive canvas charts — `Train/Avg_Loss`, `Train/Loss`, and a dual-axis `Learning Rate` chart (`UNet/LR/Effective_Actual_LR` on the left axis, `TE/LR/Effective_Actual_LR` on the right). Supports EMA smoothing (including Avg Loss), zooming (`Ctrl`+wheel for the X axis, `Shift`+wheel for Y), panning, and a default window of the newest 800 steps. Sliders above the charts change that window and the y-axis clip.
 - **Checkpoint Selection**: Double-clicking or `Ctrl`-clicking a point on the loss curve locates the nearest checkpoint, displaying its step details, parameters, loss values, and associated sample outputs.
 - **On-Demand Sample Generation**: Renders new test images directly from selected historical checkpoints using metadata extracted from the checkpoint itself.
 
@@ -321,6 +321,8 @@ cd ranko
 ```
 
 Host the output directory (`ranko/webApp/build/dist/wasmJs/productionExecutable/`) on any static web server and point it to a running `api.py` helper instance.
+
+`python install_daemon.py` builds that wasm site, copies it into the current user's data directory, and installs a `systemctl --user` unit that serves the site on `0.0.0.0:18766` together with `api.py` on `0.0.0.0:18765` (allowlist `192.168.0.0/16`). The static site has no allowlist of its own. `--uninstall` removes the unit and the copy.
 
 ## Documentation Reference
 

@@ -17,7 +17,7 @@ from models import artifact_root
 from cache import warm_latent_cache
 from env import flush_memory
 from loop import optimizers_eval, save_stopped_lora, train_one_epoch
-from runs import create_run_dirs
+from runs import create_run_dirs, write_steps_per_epoch
 from setup import build_train_objects
 
 try:
@@ -159,6 +159,10 @@ def main() -> None:
             1,
             (len(artifacts.dataloader) + cfg.gradient_accumulation_steps - 1) // cfg.gradient_accumulation_steps,
         )
+        # The Avg Loss chart marks epoch boundaries from this. It is known only once the dataloader
+        # exists, and a later config edit must not move the lines of a run already on disk.
+        if accelerator.is_main_process:
+            write_steps_per_epoch(Path(cfg.logging_dir) / run_id, steps_per_epoch)
         total_train_steps = steps_per_epoch * cfg.epoch
         control.set_training(
             step=0,

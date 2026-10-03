@@ -12,7 +12,7 @@ python -u api.py --host 127.0.0.1 --port 18765
 python -u api.py --host 0.0.0.0 --port 18765 --allow-ip 192.168.1.20 --allow-ip 192.168.1.0/24
 ```
 
-`--host` defaults to `127.0.0.1`. A non-loopback bind is allowed; clients are gated by `--allow-ip` / `AXL_WS_ALLOW` (IPv4/IPv6 or CIDR). Loopback (`127.0.0.1`, `::1`) is always admitted. An empty allowlist never means "allow the world".
+`--host` defaults to `127.0.0.1`. A non-loopback bind is allowed; clients are gated by `--allow-ip` / `AXL_WS_ALLOW` (IPv4/IPv6 or CIDR). Loopback (`127.0.0.1`, `::1`) is always admitted. When neither the flag nor the env is set, the allowlist is `192.168.0.0/16`. An explicit value replaces that default, so `--allow-ip 127.0.0.1` admits loopback only. `parse_allow_networks([])` is still no extra networks — the default is applied before that parse.
 
 Environment:
 
@@ -21,7 +21,7 @@ Environment:
 | `AXL_PYTHON` | Optional. Ranko uses this interpreter instead of `python3`. |
 | `AXL_WS_HOST` | WebSocket bind (default `127.0.0.1`). |
 | `AXL_WS_PORT` | WebSocket port (default `18765`). |
-| `AXL_WS_ALLOW` | Comma-separated client IPs/CIDRs. Loopback is always allowed. |
+| `AXL_WS_ALLOW` | Comma-separated client IPs/CIDRs. Loopback is always allowed. When this and `--allow-ip` are both unset, the helper admits `192.168.0.0/16`. |
 | `AXL_BLOB_WORKERS` | Encode process-pool size. Default `nproc`. `0` encodes in-process. |
 | `AXL_BLOB_CACHE_DIR` | Processed-image cache (default `/tmp/axlranko/blob-cache`). |
 | `AXL_BLOB_CACHE_BYTES` | Cache cap in bytes (default 1/4 of `MemTotal`). |
@@ -122,6 +122,7 @@ Result:
       { "step": 0, "value": 0.0, "wall_time": 0.0 }
     ]
   },
+  "steps_per_epoch": 120,
   "sample_sets": [
     {
       "name": "classroom",
@@ -143,6 +144,10 @@ Result:
 `run_id` alone is enough to read any run: every run-scoped method falls back to the name the run id was built from when `name` is omitted, which is how a client opens a run from `list_runs` that was created with a different `output_name` than the config now says.
 
 `sample_sets` is `resolve_sample_sets` over that config: one entry per `[[validation.samples]]` block, or a single entry built from the flat `sample_*` scalars when the file has none. The flat `sample_prompts` / `sample_negative` / `sample_width` / `sample_height` / `sample_steps` / `sample_seed` / `sample_repeat` / `guidance_scale` keys in `config` mirror the first entry, so a client that only reads those keeps working. A block that fails validation is reported on stderr and yields `[]` rather than an IPC error, so the dashboard keeps rendering.
+
+`steps_per_epoch` is the optimizer steps in one epoch of that run, from `{logging_dir}/{run_id}/steps_per_epoch.json`. When the file is missing it is filled from `state.json` only if that file names the same run and `total_steps` divides evenly by `epochs`; otherwise it is `null` (a run from before the file, or a different run). The Avg Loss chart uses it for epoch boundary lines.
+
+`save_every_n_steps` is that same run's own snapshot (`{logging_dir}/{run_id}/config.toml`, else the hparams it recorded at startup), an integer or `null`. It is `null` when the run has neither, rather than the repo `config.toml` the rest of `config` is read from. The checkpoint card's mini Avg Loss chart uses it as the half-width of its step window (`± 2 ×` this value).
 
 Training logs `Train/Loss` (per-step) and `Train/Avg_Loss` (Kohya-style epoch-window mean). If TensorBoard only has `Train/Loss` (older runs), `dashboard` synthesizes `Train/Avg_Loss` as a Kohya `LossRecorder` over a window of `min(n, 100)` points.
 
@@ -780,6 +785,48 @@ stderr.
 Refused while a live trainer is using the GPU (`pause` the run, or stop it) and while another
 generation is running, because both write the directory being cleaned.
 
+### `clear_unpinned_checkpoints`
+
+Deletes every checkpoint weight directory of one run that is not pinned. A directory that holds a
+pinned `.safetensors` is kept whole, whether or not the checkpoint has sample images. Sample images,
+the pin file, logs and every other run are left in place. A deleted weight directory shows up as the
+existing `samples only` card when that step still has images.
+
+Params: `name` / `run_id`, resolved like `dashboard`.
+
+Result:
+
+```json
+{
+  "run_id": "rein_20260911_120000",
+  "removed": ["/out/rein_20260911_120000/rein_s000200"],
+  "kept": ["/out/rein_20260911_120000/rein_s000100/rein.safetensors"],
+  "errors": []
+}
+```
+
+`removed` is the directories deleted. `kept` is the pinned files whose directories stayed. `errors`
+is a per-directory failure that did not abort the rest. Refused while a live trainer is using the
+GPU (`paused` is free) and while a generation is running (`still using this card`). Refused when no
+run resolves.
+
+### `chart_view` / `chart_view_set`
+
+The Dashboard chart sliders that belong to one run: how much thicker the smoothed stroke is, in dp,
+and the y-axis clip fraction. They live in `{logging_dir}/{run_id}/chart_view.json`, not in
+`config.toml`. A missing file is the defaults, and the read never fails.
+
+| Field | Default | Range |
+|---|---|---|
+| `smooth_extra_dp` | `1.2` | `0`–`6` |
+| `outlier_clip` | `0.15` (15%) | `0`–`0.40` |
+| `step_span` | `800` | `100`–`8000`, a whole number of steps |
+
+`chart_view` `{name?, run_id?}` reads them (`run_id` null and both defaults when no run resolves).
+`chart_view_set` writes them, `step_span` included. A field the request omits keeps the stored value, so moving one slider
+does not reset the other. The log directory is created when the run's is gone. A value outside its
+range is refused and the file is left as it was. No run is `no run to store a chart view for`.
+
 ### `dataset_tag`
 
 Runs `tagger2/main.py` (the Pixai tagger v1: ViTDet, 30 877 Danbooru tags, PyTorch/ROCm) with the same interpreter as `api.py` (the `axl` env). Writes comma-separated captions next to every image in a folder (non-recursive). Overwrites existing `.txt` files. Ranko should reload Images / Statistics after a successful call. The legacy WD14 ONNX script (`tagger/main.py`) still runs by hand; its `selected_tags.csv` is what `tag_lexicon` reads for the Chinese tag names.
@@ -977,7 +1024,7 @@ After connect Ranko does not open trainer files. Paths in these methods are allo
 - `tag_lexicon` `{}` → `{text}` of `tagger/selected_tags.csv`.
 - `tagger_info` `{}` → the tagger's `{available, engine, model, model_path, cache_dir, categories, default_categories, reason}` (see the method above). Read-only and never failing.
 - `evaluation_prompts` `{checkpoint, name?, run_id?}` → the prompts and prompt-tag frequencies an evaluation of that checkpoint would score against (see the method above). Read-only and never failing.
-- `sample_prompts` `{name?, run_id?}` → one run's effective prompt sets, the file they were resolved from (`edited` / `file` when the Dashboard saved sets for it), and whether it is the live run. Read-only and never failing. `sample_prompts_set` `{sets, name?, run_id?}` saves them for that run (`sets: null` drops them again) and answers with the same shape. `clear_checkpoint_samples` `{checkpoint, name?, run_id?}` removes one card's images and the pass records that produced them (see the three methods above — its params and reply are documented there).
+- `sample_prompts` `{name?, run_id?}` → one run's effective prompt sets, the file they were resolved from (`edited` / `file` when the Dashboard saved sets for it), and whether it is the live run. Read-only and never failing. `sample_prompts_set` `{sets, name?, run_id?}` saves them for that run (`sets: null` drops them again) and answers with the same shape. `clear_checkpoint_samples` `{checkpoint, name?, run_id?}` removes one card's images and the pass records that produced them (see the three methods above — its params and reply are documented there). `clear_unpinned_checkpoints` `{name?, run_id?}` deletes that run's unpinned checkpoint weight directories and leaves samples, pins and other runs. `chart_view` `{name?, run_id?}` reads the run's chart sliders (`smooth_extra_dp` default `1.2`, `outlier_clip` default `0.15`, `step_span` default `800`); `chart_view_set` writes them to `{logging_dir}/{run_id}/chart_view.json`.
 - `checkpoint_export` `{source, dest}` server-local copy. `dest` must end `.safetensors`; refuse `source == dest`.
 - `fs_listdir` `{path}` → `{path, parent, entries: [{name, path, is_dir, size, mtime_ms}]}`. Lists one directory after `Path.resolve()` (so `..` cannot escape). A file path errors. Unreadable children are skipped. No file bytes.
 - `fs_roots` `{}` → `{roots: [{name, path}]}` with Home, Repo, each train-data folder, Output, Logs.

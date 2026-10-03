@@ -16,6 +16,7 @@ import com.acite.axlranko.model.HardwareHistory
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleClearResult
+import com.acite.axlranko.model.UnpinnedClearResult
 import com.acite.axlranko.model.SampleItem
 import com.acite.axlranko.model.SampleSetForm
 import com.acite.axlranko.model.TrainStatus
@@ -51,6 +52,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 @Inject
@@ -78,6 +80,7 @@ class DashboardScreenViewModel(
 
     /** True while a pin is being written, so a poll that started before it cannot undo it. */
     private var pinsWriteInFlight = false
+    private var chartViewWriteInFlight = false
 
     fun onEnter() {
         if (!entered) {
@@ -135,6 +138,14 @@ class DashboardScreenViewModel(
                 samplePromptsEditorOpen = false,
                 clearingSamplesPath = null,
                 clearSamplesResult = null,
+                stepsPerEpoch = null,
+                runSaveEveryNSteps = null,
+                outlierClip = DashboardUiState().outlierClip,
+                smoothExtraDp = DashboardUiState().smoothExtraDp,
+                stepSpan = DashboardUiState().stepSpan,
+                chartViewError = null,
+                clearingUnpinned = false,
+                unpinnedClearResult = null,
                 samples = emptyMap(),
                 checkpointPins = emptyList(),
                 checkpointPinsFile = null,
@@ -167,6 +178,91 @@ class DashboardScreenViewModel(
 
     fun setSampleThumbSize(value: Float) {
         _uiState.update { it.copy(sampleThumbSize = value.coerceIn(80f, 360f)) }
+    }
+
+    /** Newest steps a step-axis chart opens on. Stored as a whole number of steps. */
+    fun setStepSpan(value: Float) {
+        _uiState.update {
+            it.copy(stepSpan = value.roundToInt().coerceIn(100, 8000).toFloat(), chartViewError = null)
+        }
+    }
+
+    /** Tail fraction dropped when fitting Avg Loss and Train/Loss. 0.40 is 40%. */
+    fun setOutlierClip(value: Float) {
+        _uiState.update { it.copy(outlierClip = value.coerceIn(0f, 0.40f), chartViewError = null) }
+    }
+
+    /** Extra thickness of the smoothed stroke, in dp, stored to one decimal. */
+    fun setSmoothExtraDp(value: Float) {
+        val tenths = (value * 10f).roundToInt().coerceIn(0, 60)
+        _uiState.update { it.copy(smoothExtraDp = tenths / 10f, chartViewError = null) }
+    }
+
+    /**
+     * The displayed run's chart sliders, from its log directory. A poll does not call this: only a
+     * run change does, and a save that is still in flight keeps the value the user just set.
+     */
+    fun loadChartView() {
+        val state = _uiState.value
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+        val runId = shown?.runId ?: state.runId
+        if (runId.isNullOrBlank() || chartViewWriteInFlight) return
+        viewModelScope.launch {
+            try {
+                val response = withContext(IoDispatcher) {
+                    ipc.chartView(name = shown?.outputName, runId = runId)
+                }
+                _uiState.update { current ->
+                    if (chartViewWriteInFlight) return@update current
+                    val now = displayedRun(current.runs, current.selectedRun, current.runId)
+                    if ((now?.runId ?: current.runId) != runId) return@update current
+                    current.copy(
+                        smoothExtraDp = response.smoothExtraDp,
+                        outlierClip = response.outlierClip,
+                        stepSpan = response.stepSpan.coerceIn(100, 8000).toFloat(),
+                        chartViewError = null,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(chartViewError = e.message ?: e.toString()) }
+            }
+        }
+    }
+
+    /** Write the sliders into the displayed run's log directory. No run means nothing is stored. */
+    fun saveChartView() {
+        val state = _uiState.value
+        val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+        val runId = shown?.runId ?: state.runId
+        if (runId.isNullOrBlank()) return
+        chartViewWriteInFlight = true
+        viewModelScope.launch {
+            try {
+                val response = withContext(IoDispatcher) {
+                    ipc.setChartView(
+                        smoothExtraDp = state.smoothExtraDp,
+                        outlierClip = state.outlierClip,
+                        stepSpan = state.stepSpan.roundToInt(),
+                        name = shown?.outputName,
+                        runId = runId,
+                    )
+                }
+                _uiState.update { current ->
+                    val now = displayedRun(current.runs, current.selectedRun, current.runId)
+                    if ((now?.runId ?: current.runId) != runId) return@update current
+                    current.copy(
+                        smoothExtraDp = response.smoothExtraDp,
+                        outlierClip = response.outlierClip,
+                        stepSpan = response.stepSpan.coerceIn(100, 8000).toFloat(),
+                        chartViewError = null,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(chartViewError = e.message ?: e.toString()) }
+            } finally {
+                chartViewWriteInFlight = false
+            }
+        }
     }
 
     fun openPreview(sample: SampleItem) {
@@ -649,6 +745,36 @@ class DashboardScreenViewModel(
         }
     }
 
+    /**
+     * Deletes every unpinned checkpoint weight directory of the run on screen. Samples, pins and
+     * other runs stay. One at a time; api.py refuses it while the GPU is busy or a generation runs.
+     */
+    fun clearUnpinnedWeights() {
+        if (_uiState.value.clearingUnpinned) return
+        _uiState.update { it.copy(clearingUnpinned = true, unpinnedClearResult = null) }
+        viewModelScope.launch {
+            try {
+                val state = _uiState.value
+                val shown = displayedRun(state.runs, state.selectedRun, state.runId)
+                val cleared = withContext(IoDispatcher) {
+                    ipc.clearUnpinnedCheckpoints(
+                        name = shown?.outputName,
+                        runId = shown?.runId ?: state.runId,
+                    )
+                }
+                _uiState.update { it.copy(clearingUnpinned = false, unpinnedClearResult = cleared) }
+                fetchOnce()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        clearingUnpinned = false,
+                        unpinnedClearResult = UnpinnedClearResult(error = e.message ?: e.toString()),
+                    )
+                }
+            }
+        }
+    }
+
     /** Adds or removes one prompt tag from the scorable selection. */
     fun toggleEvaluationTag(tag: String) {
         _uiState.update { state ->
@@ -1095,6 +1221,8 @@ class DashboardScreenViewModel(
                     selectedRun = selected,
                     latestStats = dashboard.latestStats,
                     metrics = dashboard.metrics,
+                    stepsPerEpoch = dashboard.stepsPerEpoch,
+                    runSaveEveryNSteps = dashboard.saveEveryNSteps,
                     samples = samples.samples,
                     checkpoints = shownCheckpoints,
                     checkpointPins = pins?.pins ?: state.checkpointPins,

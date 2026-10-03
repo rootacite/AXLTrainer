@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import tempfile
 import unittest
@@ -11,15 +13,22 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from trainer.runs import (
+    chart_view_path,
     create_run_dirs,
+    default_chart_view,
     find_latest_run,
     find_samples_dir,
     list_runs,
     make_run_id,
+    read_chart_view,
+    read_steps_per_epoch,
     run_id_re,
     run_output_name,
     safe_name,
+    steps_per_epoch_path,
     validate_output_name,
+    write_chart_view,
+    write_steps_per_epoch,
 )
 
 
@@ -289,6 +298,261 @@ class ListAllRunsTest(unittest.TestCase):
         run_info = list_runs(self.out, self.logs, None)[0]
         self.assertEqual(run_info["samples"], 1)
         self.assertEqual(run_info["last_step"], 100)
+
+
+class StepsPerEpochFileTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log = Path(self.tmp.name) / "logs" / "rein_20260911_120000"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_path_is_inside_the_run_log_directory(self):
+        self.assertEqual(steps_per_epoch_path(self.log), self.log / "steps_per_epoch.json")
+
+    def test_missing_file_reads_as_none(self):
+        self.assertIsNone(read_steps_per_epoch(self.log))
+
+    def test_write_creates_the_directory_and_leaves_no_temp(self):
+        path = write_steps_per_epoch(self.log, 12)
+        self.assertEqual(path, self.log / "steps_per_epoch.json")
+        self.assertEqual(read_steps_per_epoch(self.log), 12)
+        self.assertEqual(path.read_text(encoding="utf-8"), '{"steps_per_epoch": 12}')
+        self.assertEqual(list(self.log.glob(".steps_per_epoch.json.*.tmp")), [])
+
+    def test_corrupt_or_non_positive_reads_as_none(self):
+        self.log.mkdir(parents=True)
+        path = self.log / "steps_per_epoch.json"
+        path.write_text("{", encoding="utf-8")
+        self.assertIsNone(read_steps_per_epoch(self.log))
+        path.write_text('{"steps_per_epoch": 0}', encoding="utf-8")
+        self.assertIsNone(read_steps_per_epoch(self.log))
+        path.write_text('{"steps_per_epoch": -4}', encoding="utf-8")
+        self.assertIsNone(read_steps_per_epoch(self.log))
+        path.write_text('{"steps_per_epoch": "nope"}', encoding="utf-8")
+        self.assertIsNone(read_steps_per_epoch(self.log))
+        path.write_text("[]", encoding="utf-8")
+        self.assertIsNone(read_steps_per_epoch(self.log))
+
+    def test_a_non_positive_write_is_refused(self):
+        with self.assertRaises(ValueError):
+            write_steps_per_epoch(self.log, 0)
+
+
+class StepsPerEpochDashboardTest(unittest.TestCase):
+    """`dashboard` reports the file, else this run's state.json when it divides evenly."""
+
+    RUN_ID = "rein_20260911_120000"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        import api
+        from trainer import control
+
+        self.api = api
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+        self.control = control
+        self.logs = Path(self.tmp.name) / "logs"
+        self.cfg = {
+            "output_dir": str(Path(self.tmp.name) / "out"),
+            "logging_dir": str(self.logs),
+            "output_name": "rein",
+        }
+        self._orig = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+
+    def tearDown(self):
+        self.api._train_config_dict = self._orig
+        self.control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def test_the_file_wins(self):
+        write_steps_per_epoch(self.logs / self.RUN_ID, 15)
+        self.control.write_state(
+            {
+                "status": "finished",
+                "pid": None,
+                "output_name": "rein",
+                "run_id": self.RUN_ID,
+                "training": {"epochs": 2, "total_steps": 40},
+            },
+            force=True,
+        )
+        result = self.api.dispatch("dashboard", {"run_id": self.RUN_ID})
+        self.assertEqual(result["steps_per_epoch"], 15)
+
+    def test_state_json_fills_in_only_for_the_run_it_names(self):
+        self.control.write_state(
+            {
+                "status": "training",
+                "pid": None,
+                "output_name": "rein",
+                "run_id": self.RUN_ID,
+                "training": {"epochs": 4, "total_steps": 40},
+            },
+            force=True,
+        )
+        self.assertEqual(
+            self.api.dispatch("dashboard", {"run_id": self.RUN_ID})["steps_per_epoch"],
+            10,
+        )
+        self.assertIsNone(
+            self.api.dispatch("dashboard", {"run_id": "rein_20260101_000000"})["steps_per_epoch"]
+        )
+
+    def test_an_uneven_total_and_a_missing_record_draw_nothing(self):
+        self.control.write_state(
+            {
+                "status": "finished",
+                "pid": None,
+                "output_name": "rein",
+                "run_id": self.RUN_ID,
+                "training": {"epochs": 3, "total_steps": 40},
+            },
+            force=True,
+        )
+        self.assertIsNone(self.api.dispatch("dashboard", {"run_id": self.RUN_ID})["steps_per_epoch"])
+        self.control.reset_to_idle()
+        self.assertIsNone(self.api.dispatch("dashboard", {})["steps_per_epoch"])
+
+
+class ChartViewFileTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log = Path(self.tmp.name) / "logs" / "rein_20260911_120000"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_file_is_the_defaults(self):
+        self.assertEqual(
+            read_chart_view(self.log),
+            {"smooth_extra_dp": 1.2, "outlier_clip": 0.15, "step_span": 800},
+        )
+        self.assertEqual(default_chart_view()["outlier_clip"], 0.15)
+        self.assertEqual(default_chart_view()["step_span"], 800)
+        self.assertFalse(chart_view_path(self.log).exists())
+
+    def test_write_round_trips_and_leaves_no_temp(self):
+        path = write_chart_view(self.log, 2.5, 0.0)
+        self.assertEqual(path, self.log / "chart_view.json")
+        self.assertEqual(
+            read_chart_view(self.log),
+            {"smooth_extra_dp": 2.5, "outlier_clip": 0.0, "step_span": 800},
+        )
+        self.assertEqual(list(self.log.glob(".chart_view.json.*.tmp")), [])
+
+    def test_a_bad_field_falls_back_on_its_own(self):
+        self.log.mkdir(parents=True)
+        (self.log / "chart_view.json").write_text(
+            '{"smooth_extra_dp": 80, "outlier_clip": 0.2}',
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            read_chart_view(self.log),
+            {"smooth_extra_dp": 1.2, "outlier_clip": 0.2, "step_span": 800},
+        )
+
+    def test_a_corrupt_file_is_the_defaults(self):
+        self.log.mkdir(parents=True)
+        (self.log / "chart_view.json").write_text("{", encoding="utf-8")
+        self.assertEqual(read_chart_view(self.log), default_chart_view())
+
+    def test_a_value_outside_its_range_is_refused(self):
+        with self.assertRaises(ValueError):
+            write_chart_view(self.log, 1.2, 0.5)
+        with self.assertRaises(ValueError):
+            write_chart_view(self.log, -0.1, 0.15)
+        with self.assertRaises(ValueError):
+            write_chart_view(self.log, 1.2, 0.15, 50)
+
+
+class ChartViewIpcTest(unittest.TestCase):
+    RUN_ID = "rein_20260911_120000"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AXL_RUNTIME_DIR"] = self.tmp.name
+        import api
+        from trainer import control
+
+        self.api = api
+        control._state = {}
+        control._last_cmd_seq = 0
+        control._ended = False
+        control._last_write_mono = 0.0
+        control.release_lock()
+        control.reset_to_idle()
+        self.control = control
+        self.logs = Path(self.tmp.name) / "logs"
+        self.cfg = {
+            "output_dir": str(Path(self.tmp.name) / "out"),
+            "logging_dir": str(self.logs),
+            "output_name": "rein",
+        }
+        self._orig = api._train_config_dict
+        api._train_config_dict = lambda: dict(self.cfg)
+        control.write_state(
+            {"status": "finished", "pid": None, "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+
+    def tearDown(self):
+        self.api._train_config_dict = self._orig
+        self.control.release_lock()
+        self.tmp.cleanup()
+        os.environ.pop("AXL_RUNTIME_DIR", None)
+
+    def test_a_run_with_no_file_answers_the_defaults(self):
+        result = self.api.dispatch("chart_view", {"run_id": self.RUN_ID})
+        self.assertEqual(result["smooth_extra_dp"], 1.2)
+        self.assertEqual(result["outlier_clip"], 0.15)
+        self.assertEqual(result["step_span"], 800)
+        self.assertEqual(result["file"], str(self.logs / self.RUN_ID / "chart_view.json"))
+        self.assertFalse((self.logs / self.RUN_ID / "chart_view.json").exists())
+
+    def test_setting_one_slider_keeps_the_other(self):
+        self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "smooth_extra_dp": 3})
+        result = self.api.dispatch(
+            "chart_view_set",
+            {"run_id": self.RUN_ID, "outlier_clip": 0.05},
+        )
+        self.assertEqual(result["smooth_extra_dp"], 3)
+        self.assertEqual(result["outlier_clip"], 0.05)
+        self.assertEqual(result["step_span"], 800)
+        stored = json.loads((self.logs / self.RUN_ID / "chart_view.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored, {"smooth_extra_dp": 3.0, "outlier_clip": 0.05, "step_span": 800})
+
+    def test_another_run_is_left_alone(self):
+        other = "rein_20260101_000000"
+        self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "outlier_clip": 0.1})
+        other_view = self.api.dispatch("chart_view", {"run_id": other})
+        self.assertEqual(other_view["outlier_clip"], 0.15)
+        self.assertFalse((self.logs / other / "chart_view.json").exists())
+
+    def test_no_run_refuses_the_write_and_reads_the_defaults(self):
+        self.control.reset_to_idle()
+        self.assertIsNone(self.api.dispatch("chart_view", {})["run_id"])
+        self.assertEqual(self.api.dispatch("chart_view", {})["outlier_clip"], 0.15)
+        with self.assertRaises(ValueError):
+            self.api.dispatch("chart_view_set", {"outlier_clip": 0.1})
+
+    def test_an_out_of_range_value_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "smooth_extra_dp": 9})
+        self.assertFalse((self.logs / self.RUN_ID / "chart_view.json").exists())
+        self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "step_span": 1200})
+        with self.assertRaises(ValueError):
+            self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "step_span": 9000})
+        self.assertEqual(self.api.dispatch("chart_view", {"run_id": self.RUN_ID})["step_span"], 1200)
 
 
 if __name__ == "__main__":

@@ -269,10 +269,15 @@ internal object IpcResources {
         // Read-only: the prompts the displayed run samples with (its own saved config, or the sets
         // the editor wrote for it) — resolved the same way `evaluation_prompts` is.
         "sample_prompts" to { _ -> emptyList() },
+        // The chart sliders live in the run's log directory. The read is not on the poll, and the
+        // write is one small file, so it waits with the other run stores.
+        "chart_view" to { _ -> emptyList() },
+        "chart_view_set" to { params -> listOf(run(params, ResourceMode.Write)) },
         // A write, and one that also switches the GPU: a sample pass in flight renders into the
         // very directory being cleaned, so the two must not overlap.
         "sample_prompts_set" to { params -> listOf(run(params, ResourceMode.Write)) },
         "clear_checkpoint_samples" to { params -> listOf(run(params, ResourceMode.Write), gpu()) },
+        "clear_unpinned_checkpoints" to { params -> listOf(run(params, ResourceMode.Write), gpu()) },
 
         // --- config.toml and the preset stores are small files rewritten in place ---
         "config_get" to { _ -> listOf(config(read = true)) },

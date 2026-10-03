@@ -72,11 +72,8 @@ private class BrowserWsConnection : WsConnection {
     }
 }
 
-internal actual fun defaultWsHost(): String {
-    queryParam("host")?.let { return it }
-    window.localStorage.getItem(HOST_KEY)?.takeIf { it.isNotBlank() }?.let { return it }
-    return "127.0.0.1"
-}
+internal actual fun defaultWsHost(): String =
+    wasmHelperHost(queryParam("host"), window.localStorage.getItem(HOST_KEY), window.location.hostname)
 
 internal actual fun defaultWsPort(): Int {
     queryParam("port")?.toIntOrNull()?.let { return it }

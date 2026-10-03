@@ -533,7 +533,7 @@ private fun HelperFields(
                 color = colors.text,
             )
             Text(
-                text = "WebSocket address of api.py. Defaults 127.0.0.1:18765. Saved in this browser. LAN needs --host 0.0.0.0 and --allow-ip on the helper.",
+                text = "WebSocket address of api.py. This page uses the host it was opened from unless you set one (saved in this browser). The helper admits LAN clients from its allowlist.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.textDim,
             )

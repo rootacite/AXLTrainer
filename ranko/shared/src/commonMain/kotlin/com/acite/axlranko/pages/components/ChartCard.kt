@@ -44,6 +44,7 @@ import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -88,7 +89,43 @@ private const val WHEEL_ZOOM_INTENSITY = 2.5f
 private const val JUMP_REJECT_FRACTION = 0.5f
 
 /** A chart whose x axis counts steps opens on its newest [DEFAULT_STEP_SPAN] steps. */
-internal const val DEFAULT_STEP_SPAN = 1200f
+internal const val DEFAULT_STEP_SPAN = 800f
+
+/** Fraction of each tail dropped when fitting a non-normalized y axis. 0.15 is 15%. */
+internal const val DEFAULT_OUTLIER_CLIP = 0.15f
+
+/** How much thicker the smoothed stroke is than the raw one, in dp. */
+internal const val DEFAULT_SMOOTH_EXTRA_DP = 1.2f
+
+internal const val SMOOTH_EXTRA_DP_MAX = 6f
+
+/** Smoothed stroke width in pixels: the raw width plus [extraDp] at [density] (px per dp). */
+internal fun smoothStrokeWidthPx(strokeWidthPx: Float, extraDp: Float, density: Float): Float =
+    strokeWidthPx + extraDp.coerceAtLeast(0f) * density
+
+/**
+ * One epoch boundary on Avg Loss. [epoch] is the epoch to the right of [step] (1-based, the
+ * trainer's `epoch` counter), so a line at `k * stepsPerEpoch` is labelled with the number `k+1`.
+ */
+data class EpochMark(val step: Float, val epoch: Int)
+
+/**
+ * Dashed epoch lines. Nothing is drawn at step 0, and nothing is drawn on the last logged step
+ * itself: a mark exists only while it is strictly inside `(0, lastStep)`.
+ */
+internal fun epochBoundaries(stepsPerEpoch: Int?, lastStep: Float): List<EpochMark> {
+    val perEpoch = stepsPerEpoch ?: return emptyList()
+    if (perEpoch < 1 || !lastStep.isFinite() || lastStep <= 0f) return emptyList()
+    val marks = ArrayList<EpochMark>()
+    var k = 1
+    while (k < 100_000) {
+        val step = k.toLong() * perEpoch.toLong()
+        if (step <= 0L || step.toFloat() >= lastStep) break
+        marks += EpochMark(step.toFloat(), k + 1)
+        k += 1
+    }
+    return marks
+}
 
 /** Room the right-hand labels of a dual-axis chart need, mirroring the left padding. */
 internal const val PLOT_RIGHT_PADDING = 52f
@@ -148,6 +185,44 @@ private fun List<Float>.percentile(p: Float): Float {
     val lo = idx.toInt()
     val hi = min(lo + 1, size - 1)
     return this[lo] + (idx - lo) * (this[hi] - this[lo])
+}
+
+/**
+ * Y range for a non-normalized chart. Percentiles are taken from [values] (the smoothed points
+ * inside the x window). [include] is then expanded in — the newest raw and smoothed points — and
+ * only after that is the range padded, so the latest point is not clipped by the percentile.
+ */
+internal fun fittedYRange(
+    values: List<Float>,
+    outlierClip: Float,
+    include: List<Float>,
+    padFraction: Float = 0.05f,
+): Pair<Float, Float>? {
+    val finite = values.filter { it.isFinite() }
+    val extras = include.filter { it.isFinite() }
+    if (finite.isEmpty() && extras.isEmpty()) return null
+    var lo: Float
+    var hi: Float
+    if (finite.isEmpty()) {
+        lo = extras.min()
+        hi = extras.max()
+    } else {
+        val sorted = finite.sorted()
+        val half = (outlierClip / 2f).coerceIn(0f, 0.49f)
+        lo = sorted.percentile(half)
+        hi = sorted.percentile(1f - half)
+        if (hi < lo) {
+            val swap = lo
+            lo = hi
+            hi = swap
+        }
+    }
+    for (y in extras) {
+        if (y < lo) lo = y
+        if (y > hi) hi = y
+    }
+    val yPad = ((hi - lo) * padFraction).coerceAtLeast(abs(hi) * 0.01f)
+    return (lo - yPad) to (hi + yPad)
 }
 
 private fun formatAxisValue(v: Float): String {
@@ -268,6 +343,9 @@ fun ChartCard(
     onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
     showHoverStep: Boolean = false,
     pickMarkers: ChartPickMarkers? = null,
+    epochMarks: List<EpochMark> = emptyList(),
+    /** Extra thickness of the smoothed stroke, in dp. */
+    smoothExtraDp: Float = DEFAULT_SMOOTH_EXTRA_DP,
 ) {
     MultiSeriesChartCard(
         title = title,
@@ -282,6 +360,8 @@ fun ChartCard(
         onPickStep = onPickStep,
         showHoverStep = showHoverStep,
         pickMarkers = pickMarkers,
+        epochMarks = epochMarks,
+        smoothExtraDp = smoothExtraDp,
     )
 }
 
@@ -305,6 +385,9 @@ fun MultiSeriesChartCard(
     onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
     showHoverStep: Boolean = false,
     pickMarkers: ChartPickMarkers? = null,
+    epochMarks: List<EpochMark> = emptyList(),
+    /** Extra thickness of the smoothed stroke, in dp. */
+    smoothExtraDp: Float = DEFAULT_SMOOTH_EXTRA_DP,
 ) {
     val hasData = series.any { it.points.isNotEmpty() }
     val colors = rankoColors
@@ -371,6 +454,8 @@ fun MultiSeriesChartCard(
                     onPickStep = onPickStep,
                     showHoverStep = showHoverStep,
                     pickMarkers = pickMarkers,
+                    epochMarks = epochMarks,
+                    smoothExtraDp = smoothExtraDp,
                 )
             } else {
                 Box(
@@ -428,6 +513,8 @@ private fun InteractiveLineChart(
     onPickStep: ((step: Float, anchorInRoot: Offset) -> Unit)? = null,
     showHoverStep: Boolean = false,
     pickMarkers: ChartPickMarkers? = null,
+    epochMarks: List<EpochMark> = emptyList(),
+    smoothExtraDp: Float = DEFAULT_SMOOTH_EXTRA_DP,
 ) {
     val rawSeries = remember(series) {
         series.mapNotNull { item ->
@@ -493,23 +580,30 @@ private fun InteractiveLineChart(
         )
     }
 
-    // The y range is fitted to the points the window actually shows, so an early spike the window
-    // has scrolled past cannot flatten the curve that is on screen.
-    val initialViewport = remember(allMapped, windowX, outlierClip, normalized) {
+    // Percentiles come from the smoothed points inside the window. The newest raw and smoothed
+    // point of each series is then forced inside, so a monotone curve's last point is not the
+    // tail the percentile drops. fullBounds stays the raw min/max, so a pan can still reach a
+    // spike this fit clipped.
+    val initialViewport = remember(prepared, windowX, outlierClip, normalized) {
         if (normalized) {
             Viewport(xMin = windowX.first, xMax = windowX.second, yMin = 0f, yMax = 100f)
         } else {
-            val inWindow = allMapped.filter { it.step >= windowX.first && it.step <= windowX.second }
-            val sortedY = (if (inWindow.isEmpty()) allMapped else inWindow).map { it.value }.sorted()
-            val half = (outlierClip / 2f).coerceIn(0f, 0.49f)
-            val yLo = sortedY.percentile(half)
-            val yHi = sortedY.percentile(1f - half)
-            val yPad = ((yHi - yLo) * 0.05f).coerceAtLeast(abs(yHi) * 0.01f)
+            val smoothed = prepared.flatMap { series ->
+                series.smooth.filter { it.step >= windowX.first && it.step <= windowX.second }
+            }
+            val include = prepared.flatMap { series ->
+                listOfNotNull(series.raw.lastOrNull()?.value, series.smooth.lastOrNull()?.value)
+            }
+            val fitted = fittedYRange(
+                values = smoothed.map { it.value },
+                outlierClip = outlierClip,
+                include = include,
+            )
             Viewport(
                 xMin = windowX.first,
                 xMax = windowX.second,
-                yMin = yLo - yPad,
-                yMax = yHi + yPad,
+                yMin = fitted?.first ?: 0f,
+                yMax = fitted?.second ?: 1f,
             )
         }
     }
@@ -548,9 +642,12 @@ private fun InteractiveLineChart(
         return all.subList(first, last + 1)
     }
 
-    val visibleSeries by remember(prepared) {
+    // Keyed on the state holder, not only the points. A wider Steps window replaces that holder;
+    // a slice still reading the previous one draws the old curve into the new range and leaves
+    // the left of the plot empty.
+    val visibleSeries by remember(prepared, viewportState) {
         derivedStateOf {
-            val vp = viewport
+            val vp = viewportState.value
             prepared.map { item ->
                 item.copy(
                     raw = lttbDownsample(visibleSlice(item.raw, vp), MAX_DRAW_POINTS),
@@ -707,6 +804,7 @@ private fun InteractiveLineChart(
             }
         }
 
+    val strokeDensity = LocalDensity.current.density
     Canvas(
         modifier = gestureModifier
             .onGloballyPositioned {
@@ -769,7 +867,28 @@ private fun InteractiveLineChart(
         )
 
         clipRect(left = leftPad, top = 0f, right = leftPad + plotW, bottom = plotH) {
-            val rawStroke = (strokeWidth * 0.5f).coerceAtLeast(0.8f)
+            for (mark in epochMarks) {
+                val markX = stepToScreenX(mark.step, vp, leftPad, plotW) ?: continue
+                drawLine(
+                    colors.textDim.copy(alpha = 0.45f),
+                    Offset(markX, 0f),
+                    Offset(markX, plotH),
+                    strokeWidth = 1.1f,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)),
+                )
+                drawMarkerLabel(
+                    text = mark.epoch.toString(),
+                    centerX = markX,
+                    topY = 2f,
+                    plotLeft = leftPad,
+                    plotRight = w,
+                    textMeasurer = textMeasurer,
+                    style = labelStyle.copy(color = colors.text),
+                    background = colors.bgCard.copy(alpha = 0.88f),
+                )
+            }
+            val rawStroke = strokeWidth
+            val smoothStroke = smoothStrokeWidthPx(strokeWidth, smoothExtraDp, strokeDensity)
             for (item in visibleSeries) {
                 if (item.raw.isEmpty() && item.smooth.isEmpty()) continue
                 drawPath(
@@ -780,7 +899,7 @@ private fun InteractiveLineChart(
                 drawPath(
                     buildPath(item.smooth, ::dataToScreen),
                     item.color,
-                    style = Stroke(width = strokeWidth),
+                    style = Stroke(width = smoothStroke),
                 )
                 item.smooth.lastOrNull()?.let { last ->
                     val pt = dataToScreen(last.step, last.value)

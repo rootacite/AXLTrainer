@@ -2,6 +2,7 @@ package com.acite.axlranko
 
 import com.acite.axlranko.data.IpcRequest
 import com.acite.axlranko.data.IpcResponse
+import com.acite.axlranko.model.ChartViewResponse
 import com.acite.axlranko.model.CheckpointPinsResponse
 import com.acite.axlranko.model.CheckpointsResponse
 import com.acite.axlranko.model.DashboardResponse
@@ -16,6 +17,7 @@ import com.acite.axlranko.model.EvaluationPromptsResponse
 import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.TaggerInfoResult
 import com.acite.axlranko.model.TrainStatus
+import com.acite.axlranko.model.UnpinnedClearResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -69,6 +71,19 @@ class DashboardIpcTest {
         assertEquals(1, parsed.metrics["Train/Loss"]?.size)
         assertEquals(0.5f, parsed.metrics["Train/Loss"]?.first()?.value)
         assertEquals(0.4f, parsed.metrics["Train/Avg_Loss"]?.first()?.value)
+        assertNull(parsed.stepsPerEpoch)
+
+        val withEpoch = json.decodeFromString(
+            DashboardResponse.serializer(),
+            """{"steps_per_epoch": 12, "metrics": {}}""",
+        )
+        assertEquals(12, withEpoch.stepsPerEpoch)
+        assertNull(parsed.saveEveryNSteps)
+        val withCadence = json.decodeFromString(
+            DashboardResponse.serializer(),
+            """{"save_every_n_steps": 40, "metrics": {}}""",
+        )
+        assertEquals(40, withCadence.saveEveryNSteps)
     }
 
     @Test
@@ -1038,5 +1053,43 @@ class DashboardIpcTest {
         )
         assertEquals(100, reply.step)
         assertEquals(7, reply.images)
+    }
+
+    @Test
+    fun clearUnpinnedCheckpointsRoundTrips() {
+        val request = json.encodeToString(
+            IpcRequest.serializer(),
+            IpcRequest(
+                id = 33,
+                method = "clear_unpinned_checkpoints",
+                params = buildJsonObject { put("run_id", "rein_20260911_120000") },
+            ),
+        )
+        assertEquals(
+            "clear_unpinned_checkpoints",
+            json.decodeFromString(IpcRequest.serializer(), request).method,
+        )
+        val reply = json.decodeFromString(
+            UnpinnedClearResult.serializer(),
+            """{"run_id": "rein_20260911_120000", "removed": ["/out/rein_s000200"], "kept": ["/out/a.safetensors"], "errors": []}""",
+        )
+        assertEquals(listOf("/out/rein_s000200"), reply.removed)
+        assertEquals(listOf("/out/a.safetensors"), reply.kept)
+        assertNull(reply.error)
+    }
+
+    @Test
+    fun chartViewRoundTrips() {
+        val view = json.decodeFromString(
+            ChartViewResponse.serializer(),
+            """{"run_id": "rein_20260911_120000", "file": "/logs/rein/chart_view.json", "smooth_extra_dp": 2.5, "outlier_clip": 0.15, "step_span": 1600}""",
+        )
+        assertEquals(2.5f, view.smoothExtraDp)
+        assertEquals(0.15f, view.outlierClip)
+        assertEquals(1600, view.stepSpan)
+        val defaults = json.decodeFromString(ChartViewResponse.serializer(), """{"run_id": null}""")
+        assertEquals(1.2f, defaults.smoothExtraDp)
+        assertEquals(0.15f, defaults.outlierClip)
+        assertEquals(800, defaults.stepSpan)
     }
 }

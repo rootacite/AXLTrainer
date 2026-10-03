@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -107,6 +108,7 @@ import com.acite.axlranko.model.GeneratedSampleJob
 import com.acite.axlranko.model.MetricPoint
 import com.acite.axlranko.model.SampleClearResult
 import com.acite.axlranko.model.SampleItem
+import com.acite.axlranko.model.UnpinnedClearResult
 import com.acite.axlranko.pages.components.ChartCard
 import com.acite.axlranko.pages.components.ChartPickMarkers
 import com.acite.axlranko.pages.components.ChartSeries
@@ -114,7 +116,7 @@ import com.acite.axlranko.pages.components.CheckpointRow
 import com.acite.axlranko.pages.components.ClearedSamplesStatus
 import com.acite.axlranko.pages.components.CompactMetric
 import com.acite.axlranko.pages.components.DashboardSectionHeader
-import com.acite.axlranko.pages.components.DEFAULT_STEP_SPAN
+import com.acite.axlranko.pages.components.epochBoundaries
 import com.acite.axlranko.pages.components.EvaluationDialog
 import com.acite.axlranko.pages.components.PAGE_PANEL_MARGIN
 import com.acite.axlranko.pages.components.evaluationRecallHeadline
@@ -138,7 +140,12 @@ import com.acite.axlranko.pages.components.SampleSlot
 import com.acite.axlranko.pages.components.TrainControlCard
 import com.acite.axlranko.pages.components.batchProgressLabel
 import com.acite.axlranko.pages.components.batchRangeError
+import com.acite.axlranko.pages.components.CheckpointLossSpark
+import com.acite.axlranko.pages.components.CheckpointSparkMinHeight
+import com.acite.axlranko.pages.components.CheckpointSparkWidth
+import com.acite.axlranko.pages.components.SparkPoint
 import com.acite.axlranko.pages.components.checkpointPanelWidth
+import com.acite.axlranko.pages.components.smoothAvgLoss
 import com.acite.axlranko.pages.components.checkpointRowKey
 import com.acite.axlranko.pages.components.checkpointSteps
 import com.acite.axlranko.pages.components.checkpointsInRange
@@ -235,6 +242,10 @@ fun DashboardScreen(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             val listState = rememberLazyListState()
+            // One smooth of the run's Avg Loss. Every checkpoint card marks its own step on it.
+            val avgLossSpark = remember(uiState.metrics) {
+                smoothAvgLoss(uiState.metrics["Train/Avg_Loss"].orEmpty())
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp),
@@ -293,9 +304,15 @@ fun DashboardScreen(
                 item {
                     DashboardSectionHeader("Training Charts")
                     Spacer(Modifier.height(4.dp))
+                    val chartRun = displayedRun(uiState.runs, uiState.selectedRun, uiState.runId)
+                    LaunchedEffect(chartRun?.runId) { viewModel.loadChartView() }
                     ChartsSection(
                         uiState = uiState,
                         onPickStep = viewModel::pickCheckpointAt,
+                        onStepSpan = viewModel::setStepSpan,
+                        onOutlierClip = viewModel::setOutlierClip,
+                        onSmoothExtra = viewModel::setSmoothExtraDp,
+                        onChartViewFinished = viewModel::saveChartView,
                     )
                 }
 
@@ -333,6 +350,73 @@ fun DashboardScreen(
                 val showSetBadges = showsSampleSetBadges(uiState.samples)
 
                 item {
+                    val unpinnedCount = checkpointCards.count { it.checkpoint != null && !it.pinned }
+                    var confirmClearUnpinned by remember { mutableStateOf(false) }
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            CapsuleButton(
+                                text = if (uiState.clearingUnpinned) {
+                                    "Clearing weights…"
+                                } else {
+                                    "Clear unpinned weights"
+                                },
+                                onClick = { confirmClearUnpinned = true },
+                                enabled = unpinnedCount >= 1 && !uiState.clearingUnpinned && gpuFree,
+                                danger = true,
+                                compact = true,
+                            )
+                            Text(
+                                text = if (unpinnedCount == 1) {
+                                    "1 unpinned checkpoint"
+                                } else {
+                                    "$unpinnedCount unpinned checkpoints"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = rankoColors.textDim,
+                            )
+                        }
+                        uiState.unpinnedClearResult?.let { result ->
+                            Text(
+                                text = unpinnedClearLabel(result),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (result.error != null || result.errors.isNotEmpty()) {
+                                    rankoColors.qualityRed
+                                } else {
+                                    rankoColors.textDim
+                                },
+                            )
+                        }
+                    }
+                    if (confirmClearUnpinned) {
+                        AlertDialog(
+                            onDismissRequest = { confirmClearUnpinned = false },
+                            title = { Text("Clear unpinned weights") },
+                            text = {
+                                Text(
+                                    "Delete $unpinnedCount unpinned checkpoint " +
+                                        (if (unpinnedCount == 1) "directory" else "directories") +
+                                        "? Sample images, pinned checkpoints, logs and other runs are kept.",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        confirmClearUnpinned = false
+                                        viewModel.clearUnpinnedWeights()
+                                    },
+                                ) { Text("Delete") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { confirmClearUnpinned = false }) { Text("Cancel") }
+                            },
+                        )
+                    }
+                }
+
+                item {
                     SampleRangeRow(
                         rows = checkpointCards,
                         batch = runningBatchJob,
@@ -360,6 +444,8 @@ fun DashboardScreen(
                     val card: @Composable (CheckpointRow) -> Unit = { row ->
                         CheckpointRowCard(
                             row = row,
+                            spark = avgLossSpark,
+                            saveEveryNSteps = uiState.runSaveEveryNSteps,
                             thumbSize = uiState.sampleThumbSize,
                             showSetBadges = showSetBadges,
                             newJobIds = uiState.sessionJobIds,
@@ -694,6 +780,10 @@ private fun MetricsSection(uiState: DashboardUiState) {
 private fun ChartsSection(
     uiState: DashboardUiState,
     onPickStep: (Float, Offset) -> Unit,
+    onStepSpan: (Float) -> Unit,
+    onOutlierClip: (Float) -> Unit,
+    onSmoothExtra: (Float) -> Unit,
+    onChartViewFinished: () -> Unit,
 ) {
     val metrics = uiState.metrics
     val smoothing = uiState.smoothing
@@ -702,30 +792,108 @@ private fun ChartsSection(
     val pickMarkers = uiState.chartPick?.let {
         ChartPickMarkers(clickedStep = it.step, matchedStep = it.checkpoint?.step)
     }
+    val avgPoints = metrics["Train/Avg_Loss"].orEmpty()
+    val epochMarks = epochBoundaries(
+        uiState.stepsPerEpoch,
+        avgPoints.maxOfOrNull { it.step }?.toFloat() ?: 0f,
+    )
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val isWide = maxWidth > 720.dp
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                HeaderSlider(
+                    label = "Steps: ${uiState.stepSpan.roundToInt()}",
+                    value = uiState.stepSpan,
+                    range = 100f..8000f,
+                    onChange = onStepSpan,
+                    onChangeFinished = onChartViewFinished,
+                    modifier = Modifier.weight(1f),
+                )
+                HeaderSlider(
+                    label = "Y clip: ${(uiState.outlierClip * 100).roundToInt()}%",
+                    value = uiState.outlierClip,
+                    range = 0f..0.40f,
+                    onChange = onOutlierClip,
+                    onChangeFinished = onChartViewFinished,
+                    modifier = Modifier.weight(1f),
+                )
+                HeaderSlider(
+                    label = "Smooth +: ${smoothExtraLabel(uiState.smoothExtraDp)} dp",
+                    value = uiState.smoothExtraDp,
+                    range = 0f..6f,
+                    onChange = onSmoothExtra,
+                    onChangeFinished = onChartViewFinished,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            uiState.chartViewError?.let { message ->
+                Text(
+                    text = message,
+                    color = colors.qualityRed,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             ChartCard(
                 "Train / Avg Loss",
-                metrics["Train/Avg_Loss"].orEmpty(),
+                avgPoints,
                 colors.accentPink,
-                smoothing = 0f,
+                smoothing = smoothing,
                 modifier = Modifier.fillMaxWidth(),
+                outlierClip = uiState.outlierClip,
                 strokeWidth = stroke,
                 chartHeight = 280.dp,
-                defaultStepSpan = DEFAULT_STEP_SPAN,
+                defaultStepSpan = uiState.stepSpan,
                 onPickStep = onPickStep,
                 showHoverStep = true,
                 pickMarkers = pickMarkers,
+                epochMarks = epochMarks,
+                smoothExtraDp = uiState.smoothExtraDp,
             )
             if (isWide) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    TrainingChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, stroke, Modifier.weight(1f))
-                    LearningRateChartCard(metrics, smoothing, stroke, Modifier.weight(1f))
+                    TrainingChartCard(
+                        "Train / Loss",
+                        metrics["Train/Loss"].orEmpty(),
+                        colors.qualityRed,
+                        smoothing,
+                        stroke,
+                        uiState.stepSpan,
+                        uiState.outlierClip,
+                        uiState.smoothExtraDp,
+                        Modifier.weight(1f),
+                    )
+                    LearningRateChartCard(
+                        metrics,
+                        smoothing,
+                        stroke,
+                        uiState.stepSpan,
+                        uiState.smoothExtraDp,
+                        Modifier.weight(1f),
+                    )
                 }
             } else {
-                TrainingChartCard("Train / Loss", metrics["Train/Loss"].orEmpty(), colors.qualityRed, smoothing, stroke, Modifier.fillMaxWidth())
-                LearningRateChartCard(metrics, smoothing, stroke, Modifier.fillMaxWidth())
+                TrainingChartCard(
+                    "Train / Loss",
+                    metrics["Train/Loss"].orEmpty(),
+                    colors.qualityRed,
+                    smoothing,
+                    stroke,
+                    uiState.stepSpan,
+                    uiState.outlierClip,
+                    uiState.smoothExtraDp,
+                    Modifier.fillMaxWidth(),
+                )
+                LearningRateChartCard(
+                    metrics,
+                    smoothing,
+                    stroke,
+                    uiState.stepSpan,
+                    uiState.smoothExtraDp,
+                    Modifier.fillMaxWidth(),
+                )
             }
         }
     }
@@ -739,6 +907,9 @@ private fun TrainingChartCard(
     color: Color,
     smoothing: Float,
     stroke: Float,
+    stepSpan: Float,
+    outlierClip: Float,
+    smoothExtraDp: Float,
     modifier: Modifier,
 ) {
     ChartCard(
@@ -747,9 +918,11 @@ private fun TrainingChartCard(
         color = color,
         smoothing = smoothing,
         modifier = modifier,
+        outlierClip = outlierClip,
         strokeWidth = stroke,
-        defaultStepSpan = DEFAULT_STEP_SPAN,
+        defaultStepSpan = stepSpan,
         showHoverStep = true,
+        smoothExtraDp = smoothExtraDp,
     )
 }
 
@@ -758,6 +931,8 @@ private fun LearningRateChartCard(
     metrics: Map<String, List<MetricPoint>>,
     smoothing: Float,
     stroke: Float,
+    stepSpan: Float,
+    smoothExtraDp: Float,
     modifier: Modifier,
 ) {
     val colors = rankoColors
@@ -770,10 +945,28 @@ private fun LearningRateChartCard(
         smoothing = smoothing,
         modifier = modifier,
         strokeWidth = stroke,
-        defaultStepSpan = DEFAULT_STEP_SPAN,
+        defaultStepSpan = stepSpan,
+        smoothExtraDp = smoothExtraDp,
         dualAxis = true,
         showHoverStep = true,
     )
+}
+
+private fun smoothExtraLabel(dp: Float): String {
+    val tenths = (dp * 10f).roundToInt().coerceAtLeast(0)
+    return "${tenths / 10}.${tenths % 10}"
+}
+
+private fun unpinnedClearLabel(result: UnpinnedClearResult): String {
+    result.error?.let { return it }
+    val removed = result.removed.size
+    val base = when (removed) {
+        0 -> "No unpinned checkpoints removed"
+        1 -> "Removed 1 unpinned checkpoint"
+        else -> "Removed $removed unpinned checkpoints"
+    }
+    if (result.errors.isEmpty()) return base
+    return "$base (${result.errors.size} failed)"
 }
 
 @Composable
@@ -783,6 +976,7 @@ private fun HeaderSlider(
     range: ClosedFloatingPointRange<Float>,
     onChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    onChangeFinished: () -> Unit = {},
 ) {
     Column(modifier = modifier) {
         Text(
@@ -793,7 +987,8 @@ private fun HeaderSlider(
         Slider(
             value = value,
             onValueChange = onChange,
-            valueRange = range
+            onValueChangeFinished = onChangeFinished,
+            valueRange = range,
         )
     }
 }
@@ -1053,10 +1248,17 @@ internal fun CheckpointExportStatus(inFlight: Boolean, result: CheckpointExport?
  * A pinned checkpoint ([CheckpointRow.pinned]) leads the section, is drawn on an accent-tinted
  * surface so it stands apart from the rest, and carries the pin button that put it there; the pin
  * list is the run's own state, kept in its log directory by the helper.
+ *
+ * [spark] is the run's Avg Loss at a fixed 0.85 smooth. It sits at a fixed width immediately left of
+ * Save As, as tall as the three header lines, and its step axis is at most `± 2 × [saveEveryNSteps]`
+ * around this card. [saveEveryNSteps] is the run's own snapshot; without one the chart is not drawn.
  */
 @Composable
 internal fun CheckpointRowCard(
     row: CheckpointRow,
+    spark: List<SparkPoint> = emptyList(),
+    /** This run's snapshot `save_every_n_steps`. Null is not the repo file's value. */
+    saveEveryNSteps: Int? = null,
     thumbSize: Float,
     showSetBadges: Boolean,
     newJobIds: Set<String>,
@@ -1093,6 +1295,18 @@ internal fun CheckpointRowCard(
 
     PorcelainCard(emphasized = row.pinned) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val sparkStep = row.step?.takeIf { it >= 0 }?.toFloat()
+            val cadence = saveEveryNSteps?.takeIf { it > 0 }
+            val showSpark = spark.size >= 2 && sparkStep != null && cadence != null
+            Row(
+                modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1135,7 +1349,39 @@ internal fun CheckpointRowCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (checkpoint != null) {
+            }
+
+            if (checkpoint != null) {
+                Text(
+                    text = checkpointSubtitle(checkpoint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.text,
+                )
+                Text(
+                    text = checkpoint.path,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            }
+            if (showSpark) {
+                CheckpointLossSpark(
+                    points = spark,
+                    step = sparkStep,
+                    saveEveryNSteps = cadence,
+                    modifier = Modifier
+                        .width(CheckpointSparkWidth)
+                        .fillMaxHeight()
+                        .heightIn(min = CheckpointSparkMinHeight),
+                )
+            }
+            if (checkpoint != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     val saveLabel = if (saving) "Saving…" else "Save As"
                     CapsuleButton(
                         text = saveLabel,
@@ -1202,20 +1448,6 @@ internal fun CheckpointRowCard(
                     }
                 }
             }
-
-            if (checkpoint != null) {
-                Text(
-                    text = checkpointSubtitle(checkpoint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.text,
-                )
-                Text(
-                    text = checkpoint.path,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.textDim,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
 
             if (slots.isEmpty()) {

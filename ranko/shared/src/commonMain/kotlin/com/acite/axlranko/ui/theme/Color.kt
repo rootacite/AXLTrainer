@@ -44,5 +44,11 @@ data class RankoPalette(
 
 val LocalRankoPalette = staticCompositionLocalOf { RankoPalette.SkySakura }
 
+/** Checkpoint sparkline: a rising Avg Loss slope, (255, 79, 0). */
+val SparkSlopeHigh = Color(0xFFFF4F00)
+
+/** Checkpoint sparkline: a falling Avg Loss slope, (0, 255, 127). */
+val SparkSlopeLow = Color(0xFF00FF7F)
+
 val rankoColors: RankoPalette
     @Composable get() = LocalRankoPalette.current

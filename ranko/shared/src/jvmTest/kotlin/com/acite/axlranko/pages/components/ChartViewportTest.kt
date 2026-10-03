@@ -1,5 +1,6 @@
 package com.acite.axlranko.pages.components
 
+import com.acite.axlranko.model.DashboardUiState
 import com.acite.axlranko.model.MetricPoint
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,9 +29,10 @@ class ChartViewportTest {
 
     @Test
     fun aSpanAsWideAsTheDataChangesNothing() {
-        val (lo, hi) = initialXWindow(120f, 1_320f, DEFAULT_STEP_SPAN)
+        val hiExpected = 120f + DEFAULT_STEP_SPAN
+        val (lo, hi) = initialXWindow(120f, hiExpected, DEFAULT_STEP_SPAN)
         assertEquals(120f, lo)
-        assertEquals(1_320f, hi)
+        assertEquals(hiExpected, hi)
     }
 
     @Test
@@ -86,5 +88,59 @@ class ChartViewportTest {
         // Zoomed into the top half: the tick at the top edge still names the domain's high end.
         assertEquals(1.5e-5f, axisTickValue(50f, 50f, 0f, 1e-5f, 2e-5f), 1e-12f)
         assertEquals(2e-5f, axisTickValue(50f, 50f, 1f, 1e-5f, 2e-5f), 1e-12f)
+    }
+
+    @Test
+    fun theShippedWindowIs800StepsAndMatchesTheDashboardDefault() {
+        assertEquals(800f, DEFAULT_STEP_SPAN)
+        assertEquals(0.15f, DEFAULT_OUTLIER_CLIP)
+        assertEquals(1.2f, DEFAULT_SMOOTH_EXTRA_DP)
+        assertEquals(DEFAULT_STEP_SPAN, DashboardUiState().stepSpan)
+        assertEquals(DEFAULT_OUTLIER_CLIP, DashboardUiState().outlierClip)
+        assertEquals(DEFAULT_SMOOTH_EXTRA_DP, DashboardUiState().smoothExtraDp)
+        // 1.2 dp at density 2 is 2.4 px on top of the raw stroke.
+        assertEquals(3.9f, smoothStrokeWidthPx(1.5f, 1.2f, 2f))
+    }
+
+    @Test
+    fun theNewestPointStaysInsideAClippedRange() {
+        val descending = (10 downTo 1).map { it.toFloat() }
+        val fitted = fittedYRange(descending, outlierClip = 0.15f, include = listOf(1f))!!
+        assertTrue(fitted.first <= 1f, "newest point ${fitted.first} was clipped below 1")
+        assertTrue(fitted.second >= 1f)
+    }
+
+    @Test
+    fun anOldSpikeOutsideThePercentileStaysOutside() {
+        val values = List(20) { 2f } + 100f
+        val fitted = fittedYRange(values, outlierClip = 0.15f, include = listOf(2f))!!
+        assertTrue(fitted.second < 100f, "spike pulled the range to ${fitted.second}")
+    }
+
+    @Test
+    fun theRangeFollowsTheSmoothedValuesItIsGiven() {
+        val fitted = fittedYRange(listOf(1.9f, 2f, 2.1f), outlierClip = 0f, include = listOf(2.1f))!!
+        assertTrue(fitted.second < 10f, "smoothed range reached ${fitted.second}")
+        assertTrue(fitted.first <= 1.9f && fitted.second >= 2.1f)
+    }
+
+    @Test
+    fun anEmptyFitIsNull() {
+        assertNull(fittedYRange(emptyList(), 0.15f, emptyList()))
+    }
+
+    @Test
+    fun epochLinesNameTheEpochToTheRightAndSkipTheOrigin() {
+        val marks = epochBoundaries(stepsPerEpoch = 10, lastStep = 25f)
+        assertEquals(listOf(EpochMark(10f, 2), EpochMark(20f, 3)), marks)
+        assertTrue(marks.none { it.step == 0f })
+    }
+
+    @Test
+    fun aBoundaryOnTheLastStepAndAMissingLengthDrawNothing() {
+        assertTrue(epochBoundaries(10, 20f).none { it.step == 20f })
+        assertEquals(emptyList(), epochBoundaries(null, 25f))
+        assertEquals(emptyList(), epochBoundaries(0, 25f))
+        assertEquals(emptyList(), epochBoundaries(10, 0f))
     }
 }

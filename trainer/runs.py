@@ -7,7 +7,11 @@ later run never overwrites an earlier one.
 
 from __future__ import annotations
 
+import json
+import math
+import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -211,3 +215,162 @@ def list_runs(
         )
     runs.sort(key=lambda item: (item["modified"], item["run_id"]), reverse=True)
     return runs
+
+
+STEPS_PER_EPOCH_FILENAME = "steps_per_epoch.json"
+
+
+def steps_per_epoch_path(log_dir: Union[str, Path]) -> Path:
+    """Where a run records how many optimizer steps one epoch took."""
+    return Path(log_dir) / STEPS_PER_EPOCH_FILENAME
+
+
+def write_steps_per_epoch(log_dir: Union[str, Path], steps: int) -> Path:
+    """Write `{steps_per_epoch: N}` atomically. The directory is created if needed."""
+    value = int(steps)
+    if value < 1:
+        raise ValueError(f"steps_per_epoch must be positive, not {steps}")
+    path = steps_per_epoch_path(log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"steps_per_epoch": value}), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def read_steps_per_epoch(log_dir: Union[str, Path]) -> Optional[int]:
+    """The recorded epoch length, or `None` when the file is missing, broken or not positive.
+
+    A missing file is a run from before this record existed (or one that has not reached the
+    dataloader yet). A broken file is warned about and treated the same way: the chart draws no
+    epoch lines rather than guessing.
+    """
+    path = steps_per_epoch_path(log_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[Warn] unreadable {path}: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        print(f"[Warn] {path} is not an object", file=sys.stderr)
+        return None
+    try:
+        value = int(payload.get("steps_per_epoch"))
+    except (TypeError, ValueError):
+        print(f"[Warn] {path} has no positive steps_per_epoch", file=sys.stderr)
+        return None
+    if value < 1:
+        return None
+    return value
+
+
+CHART_VIEW_FILENAME = "chart_view.json"
+DEFAULT_SMOOTH_EXTRA_DP = 1.2
+DEFAULT_OUTLIER_CLIP = 0.15
+DEFAULT_STEP_SPAN = 800
+SMOOTH_EXTRA_DP_MAX = 6.0
+OUTLIER_CLIP_MAX = 0.40
+STEP_SPAN_MIN = 100
+STEP_SPAN_MAX = 8000
+
+
+def chart_view_path(log_dir: Union[str, Path]) -> Path:
+    """Where a run keeps the Dashboard chart sliders that are not part of `config.toml`."""
+    return Path(log_dir) / CHART_VIEW_FILENAME
+
+
+def default_chart_view() -> dict[str, float | int]:
+    """Smoothed stroke extra in dp, the y-clip fraction (0.15 is 15%), and the step window."""
+    return {
+        "smooth_extra_dp": DEFAULT_SMOOTH_EXTRA_DP,
+        "outlier_clip": DEFAULT_OUTLIER_CLIP,
+        "step_span": DEFAULT_STEP_SPAN,
+    }
+
+
+def _chart_step_span(value: Any) -> Optional[int]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number != int(number):
+        return None
+    steps = int(number)
+    if steps < STEP_SPAN_MIN or steps > STEP_SPAN_MAX:
+        return None
+    return steps
+
+
+def _chart_number(value: Any, lo: float, hi: float) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < lo or number > hi:
+        return None
+    return number
+
+
+def read_chart_view(log_dir: Union[str, Path]) -> dict[str, float]:
+    """The run's chart sliders, or the defaults when the file is missing or unusable.
+
+    A missing file is a run whose sliders have not been moved. A broken value is warned about and
+    replaced with that field's default, so one bad number does not hide the other.
+    """
+    defaults = default_chart_view()
+    path = chart_view_path(log_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return defaults
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[Warn] unreadable {path}: {exc}", file=sys.stderr)
+        return defaults
+    if not isinstance(payload, dict):
+        print(f"[Warn] {path} is not an object", file=sys.stderr)
+        return defaults
+    extra = _chart_number(payload.get("smooth_extra_dp"), 0.0, SMOOTH_EXTRA_DP_MAX)
+    clip = _chart_number(payload.get("outlier_clip"), 0.0, OUTLIER_CLIP_MAX)
+    span = _chart_step_span(payload.get("step_span", DEFAULT_STEP_SPAN))
+    if extra is None or clip is None or span is None:
+        print(f"[Warn] {path} has a chart view value outside its range", file=sys.stderr)
+    return {
+        "smooth_extra_dp": defaults["smooth_extra_dp"] if extra is None else extra,
+        "outlier_clip": defaults["outlier_clip"] if clip is None else clip,
+        "step_span": defaults["step_span"] if span is None else span,
+    }
+
+
+def write_chart_view(
+    log_dir: Union[str, Path],
+    smooth_extra_dp: Any,
+    outlier_clip: Any,
+    step_span: Any = DEFAULT_STEP_SPAN,
+) -> Path:
+    """Replace the run's chart view atomically. The directory is created if needed."""
+    extra = _chart_number(smooth_extra_dp, 0.0, SMOOTH_EXTRA_DP_MAX)
+    clip = _chart_number(outlier_clip, 0.0, OUTLIER_CLIP_MAX)
+    span = _chart_step_span(step_span)
+    if extra is None:
+        raise ValueError(
+            f"smooth_extra_dp must be between 0 and {SMOOTH_EXTRA_DP_MAX:g}, not {smooth_extra_dp!r}"
+        )
+    if clip is None:
+        raise ValueError(
+            f"outlier_clip must be between 0 and {OUTLIER_CLIP_MAX:g}, not {outlier_clip!r}"
+        )
+    if span is None:
+        raise ValueError(
+            f"step_span must be an integer between {STEP_SPAN_MIN} and {STEP_SPAN_MAX}, not {step_span!r}"
+        )
+    path = chart_view_path(log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"smooth_extra_dp": extra, "outlier_clip": clip, "step_span": span}),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+    return path

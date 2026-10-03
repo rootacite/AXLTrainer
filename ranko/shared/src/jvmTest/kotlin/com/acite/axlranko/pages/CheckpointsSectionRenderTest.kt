@@ -35,6 +35,7 @@ import com.acite.axlranko.pages.components.JOB_MODE_EVALUATE
 import com.acite.axlranko.pages.components.JOB_MODE_SETS
 import com.acite.axlranko.pages.components.JOB_RUNNING
 import com.acite.axlranko.pages.components.CheckpointRow
+import com.acite.axlranko.pages.components.SparkPoint
 import com.acite.axlranko.pages.components.checkpointRowKey
 import com.acite.axlranko.pages.components.runningBatch
 import com.acite.axlranko.pages.components.checkpointRows
@@ -78,6 +79,10 @@ class CheckpointsSectionRenderTest {
         val clearingSamples: Boolean = false,
         /** What the last clear removed for one checkpoint, or why it failed. */
         val clearSamplesResult: SampleClearResult? = null,
+        /** Smoothed Avg Loss drawn in the card header. Empty leaves the header as it was. */
+        val spark: List<SparkPoint> = emptyList(),
+        /** The run snapshot's save interval. The chart is omitted when this is missing. */
+        val saveEveryNSteps: Int? = null,
     )
 
     private fun checkpoint(step: Int, final: Boolean = false) = CheckpointItem(
@@ -91,6 +96,14 @@ class CheckpointsSectionRenderTest {
         networkDim = 32,
         networkAlpha = 16,
         outputName = "rein",
+    )
+
+    /** A short smoothed series that covers the steps the cards in this test use. */
+    private fun lossSpark() = listOf(
+        SparkPoint(2700f, 0.9f),
+        SparkPoint(2900f, 0.6f),
+        SparkPoint(3050f, 0.4f),
+        SparkPoint(3200f, 0.55f),
     )
 
     private fun sample(step: Int, set: Int, repeat: Int = 0) = SampleItem(
@@ -240,6 +253,8 @@ class CheckpointsSectionRenderTest {
                                     val card: @Composable (CheckpointRow) -> Unit = { row ->
                                         CheckpointRowCard(
                                             row = row,
+                                            spark = current.spark,
+                                            saveEveryNSteps = current.saveEveryNSteps,
                                             thumbSize = 120f,
                                             showSetBadges = true,
                                             newJobIds = current.jobs.map { it.id }.toSet(),
@@ -368,6 +383,8 @@ class CheckpointsSectionRenderTest {
                     checkpoints = listOf(checkpoint(3050)),
                     samples = mapOf("3050" to listOf(sample(3050, 0), sample(3050, 1))),
                     jobs = listOf(setsJob("done_sets_gen_1", 3050, JOB_DONE, done = 6)),
+                    spark = lossSpark(),
+                    saveEveryNSteps = 200,
                 ),
                 // A checkpoint with nothing yet — the card the sampling switch exists for.
                 Case(checkpoints = listOf(checkpoint(3100))),
@@ -382,7 +399,12 @@ class CheckpointsSectionRenderTest {
                 Case(checkpoints = listOf(checkpoint(3100)), generatingPath = checkpoint(3100).path),
                 // A final checkpoint, and a step whose weights are gone but whose images stayed.
                 Case(checkpoints = listOf(checkpoint(3200, final = true))),
-                Case(checkpoints = emptyList(), samples = mapOf("3000" to listOf(sample(3000, 0)))),
+                Case(
+                    checkpoints = emptyList(),
+                    samples = mapOf("3000" to listOf(sample(3000, 0))),
+                    spark = lossSpark(),
+                    saveEveryNSteps = 200,
+                ),
                 // A failed pass, and an empty page.
                 Case(
                     checkpoints = listOf(checkpoint(3050)),

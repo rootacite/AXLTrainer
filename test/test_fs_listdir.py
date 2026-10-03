@@ -96,6 +96,27 @@ class AllowlistTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             api.parse_allow_networks(["not-an-ip"])
 
+    def test_unset_allow_defaults_to_the_lan(self):
+        nets = api.parse_allow_networks(api.resolve_allow_entries([], ""))
+        self.assertTrue(api.client_ip_allowed("192.168.1.20", nets))
+        self.assertTrue(api.client_ip_allowed("::ffff:192.168.0.1", nets))
+        self.assertTrue(api.client_ip_allowed("127.0.0.1", nets))
+        self.assertFalse(api.client_ip_allowed("10.0.0.1", nets))
+
+    def test_explicit_allow_replaces_the_default(self):
+        nets = api.parse_allow_networks(api.resolve_allow_entries(["10.1.2.3"], ""))
+        self.assertTrue(api.client_ip_allowed("10.1.2.3", nets))
+        self.assertFalse(api.client_ip_allowed("192.168.1.20", nets))
+
+    def test_env_allow_replaces_the_default(self):
+        nets = api.parse_allow_networks(api.resolve_allow_entries([], "10.0.0.0/8, 192.168.1.9"))
+        self.assertTrue(api.client_ip_allowed("10.2.0.1", nets))
+        self.assertTrue(api.client_ip_allowed("192.168.1.9", nets))
+        self.assertFalse(api.client_ip_allowed("192.168.1.8", nets))
+
+    def test_blank_env_still_uses_the_default(self):
+        self.assertEqual(api.resolve_allow_entries([], " , "), ["192.168.0.0/16"])
+
 
 class QuietWsCloseTest(unittest.TestCase):
     def test_filter_is_attached_to_server_logger(self):

@@ -19,6 +19,16 @@ data class DashboardResponse(
     @SerialName("run_id") val runId: String? = null,
     @SerialName("latest_stats") val latestStats: JsonObject = JsonObject(emptyMap()),
     val metrics: Map<String, List<MetricPoint>> = emptyMap(),
+    /**
+     * Optimizer steps in one epoch of this run (`steps_per_epoch.json`, else `state.json` when it
+     * names this run and divides evenly). Null draws no epoch lines.
+     */
+    @SerialName("steps_per_epoch") val stepsPerEpoch: Int? = null,
+    /**
+     * `[training].save_every_n_steps` from this run's own snapshot. Null when the run has no
+     * snapshot: the repo `config.toml` is not filled in here.
+     */
+    @SerialName("save_every_n_steps") val saveEveryNSteps: Int? = null,
 )
 
 @Serializable
@@ -274,6 +284,19 @@ data class SamplePromptsResponse(
  * [path] is the checkpoint whose card asked — the reply itself does not carry it — so both the
  * Ctrl+click panel and the section's card report only on their own checkpoint.
  */
+/**
+ * `chart_view`: the Dashboard sliders stored in `{logging_dir}/{run_id}/chart_view.json`.
+ * A run with no file answers with the defaults (smooth extra 1.2 dp, y clip 15%, 800 steps).
+ */
+@Serializable
+data class ChartViewResponse(
+    @SerialName("run_id") val runId: String? = null,
+    val file: String? = null,
+    @SerialName("smooth_extra_dp") val smoothExtraDp: Float = 1.2f,
+    @SerialName("outlier_clip") val outlierClip: Float = 0.15f,
+    @SerialName("step_span") val stepSpan: Int = 800,
+)
+
 @Serializable
 data class SampleClearResult(
     val path: String = "",
@@ -283,6 +306,20 @@ data class SampleClearResult(
     val jobs: List<String> = emptyList(),
     /** Every path that was removed, images and records alike. */
     val files: List<String> = emptyList(),
+    val error: String? = null,
+)
+
+/**
+ * `clear_unpinned_checkpoints`: the weight directories removed, and the pinned files that kept
+ * theirs. [error] is set by the client when the call itself failed; the helper's own per-directory
+ * failures come back in [errors] with the rest of the reply.
+ */
+@Serializable
+data class UnpinnedClearResult(
+    @SerialName("run_id") val runId: String? = null,
+    val removed: List<String> = emptyList(),
+    val kept: List<String> = emptyList(),
+    val errors: List<String> = emptyList(),
     val error: String? = null,
 )
 
@@ -576,6 +613,18 @@ data class DashboardUiState(
     val smoothing: Float = 0.90f,
     val chartStroke: Float = 1.5f,
     val sampleThumbSize: Float = 120f,
+    /** Newest steps a step-axis chart opens on. Matches [com.acite.axlranko.pages.components.DEFAULT_STEP_SPAN]. */
+    val stepSpan: Float = 800f,
+    /** Tail fraction dropped when fitting Avg Loss and Train/Loss. 0.15 is 15%. */
+    val outlierClip: Float = 0.15f,
+    /** Extra thickness of the smoothed stroke, in dp. Saved with [outlierClip] in the run's logs. */
+    val smoothExtraDp: Float = 1.2f,
+    /** Why the last chart-view save failed, if it did. */
+    val chartViewError: String? = null,
+    /** Epoch length of the run on screen, from `dashboard`. */
+    val stepsPerEpoch: Int? = null,
+    /** That run's own `save_every_n_steps`, from its snapshot. Null when it has none. */
+    val runSaveEveryNSteps: Int? = null,
     val previewIndex: Int? = null,
     val config: JsonObject = JsonObject(emptyMap()),
     val runId: String? = null,
@@ -643,6 +692,10 @@ data class DashboardUiState(
     val clearingSamplesPath: String? = null,
     /** Where the last clear landed, or why it failed; shown on the card it belongs to. */
     val clearSamplesResult: SampleClearResult? = null,
+    /** True while unpinned checkpoint weights are being deleted. */
+    val clearingUnpinned: Boolean = false,
+    /** The last unpinned-weight clear, shown above the checkpoint cards. */
+    val unpinnedClearResult: UnpinnedClearResult? = null,
     /** The tagger's own categories, for the dialog; fetched once when one opens. */
     val taggerInfo: TaggerInfoResult? = null,
     val hardware: HardwareStatus = HardwareStatus(),

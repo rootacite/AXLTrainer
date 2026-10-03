@@ -180,6 +180,18 @@ class IpcResourcesTest {
             ),
             IpcResources.claimsFor("clear_checkpoint_samples", params("run_id" to "rein_1")),
         )
+        assertEquals(
+            listOf(
+                ResourceClaim("run:rein_1", ResourceMode.Write, 1_000L),
+                ResourceClaim("gpu", ResourceMode.Write, 0L),
+            ),
+            IpcResources.claimsFor("clear_unpinned_checkpoints", params("run_id" to "rein_1")),
+        )
+        assertEquals(emptyList(), IpcResources.claimsFor("chart_view", params("run_id" to "rein_1")))
+        assertEquals(
+            listOf(ResourceClaim("run:rein_1", ResourceMode.Write, 1_000L)),
+            IpcResources.claimsFor("chart_view_set", params("run_id" to "rein_1")),
+        )
     }
 
     @Test
@@ -318,11 +330,17 @@ class IpcResourcesTest {
         assertEquals("blob", client.laneKindFor("ping", JsonObject(emptyMap()), blob = true))
         // The prompt store is read like any other read, and written on the control lane; clearing
         // a card's images holds the GPU, so it gets its own connection.
+        assertEquals("poll", client.laneKindFor("chart_view", params("run_id" to "rein_1")))
+        assertEquals("control", client.laneKindFor("chart_view_set", params("run_id" to "rein_1")))
         assertEquals("poll", client.laneKindFor("sample_prompts", params("run_id" to "rein_1")))
         assertEquals("control", client.laneKindFor("sample_prompts_set", params("run_id" to "rein_1")))
         assertEquals(
             "long",
             client.laneKindFor("clear_checkpoint_samples", params("checkpoint" to "/out/a.safetensors")),
+        )
+        assertEquals(
+            "long",
+            client.laneKindFor("clear_unpinned_checkpoints", params("run_id" to "rein_1")),
         )
     }
 

@@ -38,6 +38,7 @@ from trainer.config import (
     clear_sample_override,
     resolve_sample_sets,
     resolve_train_data_entries,
+    REPO_CONFIG_FILENAME,
     run_config_mapping,
     sample_override_path,
     write_sample_override,
@@ -61,7 +62,17 @@ from trainer.control import (
 )
 from trainer.hardware import collect_hardware_status
 from trainer import orphans
-from trainer.runs import find_samples_dir, list_runs, run_output_name, safe_name
+from trainer.runs import (
+    chart_view_path,
+    default_chart_view,
+    find_samples_dir,
+    list_runs,
+    read_chart_view,
+    read_steps_per_epoch,
+    run_output_name,
+    safe_name,
+    write_chart_view,
+)
 from trainer import automation, blobcodec, comfy, evaluation, fsrpc, genjob
 
 _TAG_BLOCKED = frozenset(
@@ -262,6 +273,7 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
     start_step = params.get("start_step")
     end_step = params.get("end_step")
     metrics: dict = {}
+    target_log_dir = None
     if run_id:
         target_log_dir = os.path.join(str(logging_dir), str(run_id))
         metrics = _get_tensorboard_metrics(target_log_dir, start_step, end_step)
@@ -298,7 +310,31 @@ def handle_dashboard(params: dict[str, Any]) -> dict[str, Any]:
         "latest_stats": latest_stats,
         "metrics": metrics,
         "sample_sets": sample_sets,
+        "steps_per_epoch": _steps_per_epoch_for(cfg, run_id),
+        # The checkpoint spark's x window. The repo file is not a stand-in: a run with no
+        # snapshot of its own answers null rather than today's save_every_n_steps.
+        "save_every_n_steps": _snapshot_save_every_n_steps(target_log_dir),
     }
+
+
+def _snapshot_save_every_n_steps(log_dir: Optional[str]) -> Optional[int]:
+    """`save_every_n_steps` from the run's own snapshot, or None when only the repo file exists."""
+    if not log_dir:
+        return None
+    mapping, source = run_config_mapping(log_dir)
+    try:
+        if Path(source).resolve() == Path(REPO_CONFIG_FILENAME).resolve():
+            return None
+    except OSError:
+        return None
+    raw = mapping.get("save_every_n_steps")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        steps = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return steps if steps >= 0 else None
 
 
 def _state_run_entry(
@@ -793,6 +829,150 @@ def _job_belongs_to(job: dict[str, Any], checkpoint: Path, step: Optional[int]) 
     if recorded:
         return recorded == str(checkpoint)
     return step is not None and job.get("step") == step
+
+
+def _steps_per_epoch_for(cfg: dict[str, Any], run_id: Optional[str]) -> Optional[int]:
+    """Steps in one epoch, for the Avg Loss epoch marks.
+
+    The run's own `steps_per_epoch.json` wins. A run that has not written that file yet (or a run
+    from before it existed) falls back to `state.json` only when that file names this same run and
+    `total_steps` divides evenly by `epochs`. Anything else — another run, a partial epoch count —
+    draws no lines rather than borrowing today's batch size.
+    """
+    if not run_id:
+        return None
+    steps = read_steps_per_epoch(_log_dir(cfg, run_id))
+    if steps is not None:
+        return steps
+    state = reconcile()
+    if str(state.get("run_id") or "") != str(run_id):
+        return None
+    training = state.get("training") or {}
+    try:
+        epochs = int(training.get("epochs") or 0)
+        total = int(training.get("total_steps") or 0)
+    except (TypeError, ValueError):
+        return None
+    if epochs > 0 and total > 0 and total % epochs == 0:
+        return total // epochs
+    return None
+
+
+def _chart_view_payload(cfg: dict[str, Any], run_id: Optional[str]) -> dict[str, Any]:
+    if not run_id:
+        return {**default_chart_view(), "run_id": None, "file": None}
+    log_dir = _log_dir(cfg, run_id)
+    return {**read_chart_view(log_dir), "run_id": run_id, "file": str(chart_view_path(log_dir))}
+
+
+def handle_chart_view(params: dict[str, Any]) -> dict[str, Any]:
+    """The displayed run's chart sliders. Never fails: no run, or no file, is the defaults."""
+    cfg = _train_config_dict()
+    run_id, _output_name = _resolve_run(params, cfg)
+    return _chart_view_payload(cfg, run_id)
+
+
+def handle_chart_view_set(params: dict[str, Any]) -> dict[str, Any]:
+    """Write the run's chart sliders into its log directory.
+
+    A field the request omits keeps the value already stored (or the default, when nothing is
+    stored yet), so moving one slider does not reset the other. The file is created on the first
+    change, including when the run's log directory is gone.
+    """
+    cfg = _train_config_dict()
+    run_id, _output_name = _resolve_run(params, cfg)
+    if not run_id:
+        raise ValueError("no run to store a chart view for")
+    if "smooth_extra_dp" not in params and "outlier_clip" not in params and "step_span" not in params:
+        raise ValueError("smooth_extra_dp, outlier_clip or step_span is required")
+    log_dir = _log_dir(cfg, run_id)
+    current = read_chart_view(log_dir)
+    extra = params["smooth_extra_dp"] if "smooth_extra_dp" in params else current["smooth_extra_dp"]
+    clip = params["outlier_clip"] if "outlier_clip" in params else current["outlier_clip"]
+    span = params["step_span"] if "step_span" in params else current["step_span"]
+    write_chart_view(log_dir, extra, clip, span)
+    return _chart_view_payload(cfg, run_id)
+
+
+def handle_clear_unpinned_checkpoints(params: dict[str, Any]) -> dict[str, Any]:
+    """Delete one run's checkpoint weight directories, except the ones that are pinned.
+
+    A pinned file keeps its whole directory (a directory holds one checkpoint). Sample images, the
+    pin file, logs and every other run stay. Refused while a live trainer is using the GPU (a
+    paused one is free) or a generation is running, the same gate as clearing one card's samples.
+    """
+    current = reconcile()
+    if _gpu_busy(current):
+        raise ValueError(
+            "training is using the GPU; pause the run (or stop it) before deleting unpinned checkpoints"
+        )
+
+    cfg = _train_config_dict()
+    running = _running_generation(_output_dir(cfg))
+    if running is not None:
+        raise ValueError(f"a generation is still using this card ({running.get('id')})")
+
+    run_id, output_name = _resolve_run(params, cfg)
+    if not run_id:
+        raise ValueError("no run to clear checkpoints for")
+
+    run_root = (_output_dir(cfg) / run_id).resolve()
+    samples_name = f"{output_name}_samples"
+    prefixes = {name for name in (output_name, safe_name(output_name)) if name}
+    pinned_files: set[Path] = set()
+    for entry in read_pins(_log_dir(cfg, run_id)):
+        resolved = _resolve_existing_or_path(str(entry.get("path") or ""))
+        if resolved is not None:
+            pinned_files.add(resolved)
+
+    removed: list[str] = []
+    kept: list[str] = []
+    errors: list[str] = []
+    if run_root.is_dir():
+        for child in sorted(run_root.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name == samples_name or child.name.endswith("_samples"):
+                continue
+            if prefixes and not any(child.name.startswith(prefix) for prefix in prefixes):
+                continue
+            try:
+                directory = child.resolve()
+                directory.relative_to(run_root)
+            except (OSError, ValueError) as exc:
+                errors.append(f"refusing to delete outside the run: {child} ({exc})")
+                continue
+            if directory == run_root:
+                continue
+            try:
+                files = sorted(path.resolve() for path in directory.glob("*.safetensors"))
+            except OSError as exc:
+                errors.append(f"{directory}: {exc}")
+                continue
+            if not files:
+                continue
+            pinned_here = [path for path in files if path in pinned_files]
+            if pinned_here:
+                kept.extend(str(path) for path in pinned_here)
+                continue
+            try:
+                shutil.rmtree(directory)
+            except OSError as exc:
+                errors.append(f"{directory}: {exc}")
+                continue
+            removed.append(str(directory))
+
+    return {"run_id": run_id, "removed": removed, "kept": kept, "errors": errors}
+
+
+def _resolve_existing_or_path(text: str) -> Optional[Path]:
+    raw = text.strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().resolve()
+    except OSError:
+        return None
 
 
 def handle_list_samples(params: dict[str, Any]) -> dict[str, Any]:
@@ -2328,6 +2508,8 @@ _HANDLERS = {
     "train_reset": handle_train_reset,
     "sample_prompts": handle_sample_prompts,
     "sample_prompts_set": handle_sample_prompts_set,
+    "chart_view": handle_chart_view,
+    "chart_view_set": handle_chart_view_set,
     "dataset_tag": handle_dataset_tag,
     "dataset_counts": handle_dataset_counts,
     "tagger_info": handle_tagger_info,
@@ -2336,6 +2518,7 @@ _HANDLERS = {
     "generate_checkpoint_samples": handle_generate_checkpoint_samples,
     "generate_checkpoint_samples_batch": handle_generate_checkpoint_samples_batch,
     "clear_checkpoint_samples": handle_clear_checkpoint_samples,
+    "clear_unpinned_checkpoints": handle_clear_unpinned_checkpoints,
     "evaluate_checkpoint": handle_evaluate_checkpoint,
     "evaluation_prompts": handle_evaluation_prompts,
     "cancel_generation": handle_cancel_generation,
@@ -2525,6 +2708,21 @@ def _reply_for(req: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         traceback.print_exc()
         return {"id": req_id, "ok": False, "error": str(exc)}
+
+
+# Used only when neither `--allow-ip` nor `AXL_WS_ALLOW` is set. Loopback is always admitted
+# on top of this, in `client_ip_allowed`. An explicit list replaces it — it is not appended.
+_DEFAULT_ALLOW = ("192.168.0.0/16",)
+
+
+def resolve_allow_entries(flag_entries: list[str], env_value: str) -> list[str]:
+    """Flag entries, then comma-split env entries. Empty means the shipped LAN default."""
+    flags = [part.strip() for part in flag_entries if part and part.strip()]
+    from_env = [part.strip() for part in (env_value or "").split(",") if part.strip()]
+    combined = flags + from_env
+    if combined:
+        return combined
+    return list(_DEFAULT_ALLOW)
 
 
 def parse_allow_networks(entries: list[str]) -> list[ipaddress._BaseNetwork]:
@@ -2723,11 +2921,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--allow-ip",
         action="append",
         default=[],
-        help="Client IP or CIDR allowed to connect (repeatable). Loopback is always allowed.",
+        help=(
+            "Client IP or CIDR allowed to connect (repeatable). "
+            "Loopback is always allowed. When this and AXL_WS_ALLOW are both unset, "
+            "the allowlist is 192.168.0.0/16."
+        ),
     )
     args = parser.parse_args(argv)
-    from_env = [part.strip() for part in os.environ.get("AXL_WS_ALLOW", "").split(",") if part.strip()]
-    networks = parse_allow_networks(list(args.allow_ip) + from_env)
+    entries = resolve_allow_entries(list(args.allow_ip), os.environ.get("AXL_WS_ALLOW", ""))
+    networks = parse_allow_networks(entries)
     run_ws_loop(args.host, args.port, networks)
 
 

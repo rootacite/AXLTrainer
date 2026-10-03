@@ -10,7 +10,9 @@ import com.acite.axlranko.model.GenerateSampleResponse
 import com.acite.axlranko.model.GeneratedSamplesResponse
 import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.RunsResponse
+import com.acite.axlranko.model.ChartViewResponse
 import com.acite.axlranko.model.SampleClearResult
+import com.acite.axlranko.model.UnpinnedClearResult
 import com.acite.axlranko.model.SamplePromptsResponse
 import com.acite.axlranko.model.SampleSetInfo
 import com.acite.axlranko.model.SamplesResponse
@@ -243,6 +245,44 @@ class TrainerIpcClient {
         return json.decodeFromJsonElement(result)
     }
 
+    /** The displayed run's chart sliders. No file, and no run, both answer with the defaults. */
+    suspend fun chartView(
+        name: String? = null,
+        runId: String? = null,
+    ): ChartViewResponse {
+        val result = call(
+            "chart_view",
+            buildJsonObject {
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * Store the chart sliders in the run's log directory. Omitted fields keep what is already there.
+     */
+    suspend fun setChartView(
+        smoothExtraDp: Float? = null,
+        outlierClip: Float? = null,
+        stepSpan: Int? = null,
+        name: String? = null,
+        runId: String? = null,
+    ): ChartViewResponse {
+        val result = call(
+            "chart_view_set",
+            buildJsonObject {
+                smoothExtraDp?.let { put("smooth_extra_dp", it) }
+                outlierClip?.let { put("outlier_clip", it) }
+                stepSpan?.let { put("step_span", it) }
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
     /**
      * Remove one checkpoint's sample images — the run's own at its step and every pass recorded for
      * it, with the job records that produced them. The helper refuses while the GPU is busy.
@@ -256,6 +296,24 @@ class TrainerIpcClient {
             "clear_checkpoint_samples",
             buildJsonObject {
                 put("checkpoint", checkpoint)
+                name?.let { put("name", it) }
+                runId?.let { put("run_id", it) }
+            },
+        )
+        return json.decodeFromJsonElement(result)
+    }
+
+    /**
+     * Delete every unpinned checkpoint weight directory of one run. Sample images stay, and so does
+     * any directory that holds a pinned file. The helper refuses while the GPU is busy.
+     */
+    suspend fun clearUnpinnedCheckpoints(
+        name: String? = null,
+        runId: String? = null,
+    ): UnpinnedClearResult {
+        val result = call(
+            "clear_unpinned_checkpoints",
+            buildJsonObject {
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

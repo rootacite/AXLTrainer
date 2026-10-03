@@ -307,6 +307,111 @@ class CheckpointPinIpcTest(unittest.TestCase):
 
         self.assertFalse(self._pin_file().exists())
 
+    def _sample(self, run_id: str = RUN_ID, name: str = "rein_000100_0.png") -> Path:
+        samples = self.out / run_id / "rein_samples"
+        samples.mkdir(parents=True, exist_ok=True)
+        image = samples / name
+        image.write_bytes(b"png")
+        return image
+
+    def test_clear_unpinned_keeps_pinned_weights_and_samples(self):
+        self._make_run()
+        self._record_run()
+        pinned = self._checkpoint(step=100)
+        loose = self._checkpoint(step=200)
+        image = self._sample()
+        api.dispatch("checkpoint_pin_set", {"path": str(pinned), "pinned": True, "step": 100})
+
+        result = api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID, "name": "rein"})
+
+        self.assertEqual(result["run_id"], self.RUN_ID)
+        self.assertEqual(result["removed"], [str(loose.parent.resolve())])
+        self.assertEqual(result["kept"], [str(pinned.resolve())])
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(pinned.is_file())
+        self.assertFalse(loose.parent.exists())
+        self.assertTrue(image.is_file())
+        self.assertTrue(self._pin_file().is_file())
+
+    def test_clear_unpinned_leaves_another_run_alone(self):
+        other = "rein_20260912_130000"
+        self._make_run()
+        self._make_run(other)
+        self._record_run()
+        loose = self._checkpoint(step=100)
+        elsewhere = self._checkpoint(other, step=50)
+
+        result = api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID})
+
+        self.assertEqual(result["removed"], [str(loose.parent.resolve())])
+        self.assertTrue(elsewhere.is_file())
+
+    def test_clear_unpinned_refuses_while_training_and_while_a_generation_runs(self):
+        from trainer import control
+
+        self._make_run()
+        self._record_run()
+        target = self._checkpoint(step=100)
+        control.write_state(
+            {"status": "training", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        with self.assertRaises(ValueError) as raised:
+            api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID})
+        self.assertIn("GPU", str(raised.exception))
+        self.assertTrue(target.is_file())
+
+        control.write_state(
+            {"status": "paused", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+        generated = self.out / self.RUN_ID / "rein_samples" / "generated"
+        generated.mkdir(parents=True)
+        (generated / "job1.json").write_text(
+            json.dumps({"id": "job1", "state": "running", "pid": os.getpid()}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError) as raised:
+            api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID})
+        self.assertIn("still using this card", str(raised.exception))
+        self.assertTrue(target.is_file())
+
+    def test_a_paused_run_with_no_generation_may_clear(self):
+        from trainer import control
+
+        self._make_run()
+        target = self._checkpoint(step=100)
+        control.write_state(
+            {"status": "paused", "pid": os.getpid(), "output_name": "rein", "run_id": self.RUN_ID},
+            force=True,
+        )
+
+        result = api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID})
+
+        self.assertEqual(result["removed"], [str(target.parent.resolve())])
+        self.assertFalse(target.parent.exists())
+
+    def test_clear_unpinned_without_a_run_is_refused(self):
+        with self.assertRaises(ValueError):
+            api.dispatch("clear_unpinned_checkpoints", {})
+
+    def test_a_pinned_file_keeps_the_directory_it_shares(self):
+        self._make_run()
+        self._record_run()
+        directory = self.out / self.RUN_ID / "rein_s000100"
+        directory.mkdir(parents=True, exist_ok=True)
+        pinned = directory / "rein.safetensors"
+        extra = directory / "extra.safetensors"
+        pinned.write_bytes(b"lora")
+        extra.write_bytes(b"lora")
+        api.dispatch("checkpoint_pin_set", {"path": str(pinned.resolve()), "pinned": True})
+
+        result = api.dispatch("clear_unpinned_checkpoints", {"run_id": self.RUN_ID})
+
+        self.assertEqual(result["removed"], [])
+        self.assertIn(str(pinned.resolve()), result["kept"])
+        self.assertTrue(extra.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
