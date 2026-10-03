@@ -9,7 +9,9 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -25,6 +27,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.acite.axlranko.model.ImageItem
+import com.acite.axlranko.model.ImageScreenState
 import com.acite.axlranko.pages.components.AspectLockedAsyncImage
 import com.acite.axlranko.pages.components.MaskPreview
 import com.acite.axlranko.util.BRUSH_RADIUS_MAX
@@ -38,6 +42,8 @@ import com.acite.axlranko.pages.components.DatasetDirBar
 import com.acite.axlranko.pages.components.datasetDirLabel
 import com.acite.axlranko.data.BlobRef
 import com.acite.axlranko.data.LocalThumbnailQuality
+import com.acite.axlranko.ui.isPortrait
+import com.acite.axlranko.ui.wheelScrollsHorizontally
 import com.acite.axlranko.ui.pointerIconHorizontalResize
 import com.acite.axlranko.ui.pointerIconVerticalResize
 
@@ -48,11 +54,11 @@ public fun ImagesScreen(
     val uiState by viewModel.uiState.collectAsState()
 
     val colors = rankoColors
-    val tokens = rankoTokens
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
+        val portrait = isPortrait(maxWidth, maxHeight)
 
         Column(modifier = Modifier.fillMaxSize()) {
             DatasetDirBar(
@@ -62,60 +68,49 @@ public fun ImagesScreen(
                 modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp)
             )
 
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-
-            Box(modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight)) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(uiState.imageItems, key = { it.imagePath }) { item ->
-                        val isSelected = uiState.selectedItem?.imagePath == item.imagePath
-                        val isDirty = item.isDirty
-
-                        val borderColor = when {
-                            isDirty -> colors.qualityRed
-                            isSelected -> colors.accentPink.copy(alpha = 0.28f)
-                            else -> Color.White.copy(alpha = 0.08f)
-                        }
+            if (portrait) {
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    val totalHeightPx = constraints.maxHeight.toFloat()
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        ImageThumbStrip(
+                            uiState = uiState,
+                            horizontal = true,
+                            onSelect = viewModel::selectItem,
+                            modifier = Modifier.fillMaxWidth().weight(uiState.portraitStripWeight),
+                        )
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(tokens.panel)
-                                .background(
-                                    if (isSelected) colors.accentPink.copy(alpha = 0.16f)
-                                    else colors.bgCard.copy(alpha = 0.55f)
-                                )
-                                .border(1.dp, borderColor, tokens.panel)
-                                .clickable { viewModel.selectItem(item) }
+                                .height(8.dp)
+                                .pointerHoverIcon(pointerIconVerticalResize)
+                                .pointerInput(totalHeightPx) {
+                                    detectVerticalDragGestures { _, dragAmount ->
+                                        if (totalHeightPx > 0f) {
+                                            viewModel.updatePortraitStripWeight(
+                                                uiState.portraitStripWeight + dragAmount / totalHeightPx,
+                                            )
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
                         ) {
-                            AspectLockedAsyncImage(
-                                path = item.imagePath,
-                                width = item.width,
-                                height = item.height,
-                                contentScale = ContentScale.FillWidth,
-                                filterQuality = FilterQuality.High,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            val showMaskBadge = item.hasMask || (isSelected && uiState.maskDirty)
-                            if (showMaskBadge) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(6.dp)
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (isSelected && uiState.maskDirty) colors.qualityRed
-                                            else colors.accentPink
-                                        )
-                                )
-                            }
+                            HorizontalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
                         }
+                        ImageEditorPane(
+                            uiState = uiState,
+                            viewModel = viewModel,
+                            modifier = Modifier.fillMaxWidth().weight(1f - uiState.portraitStripWeight),
+                        )
                     }
                 }
-            }
+            } else Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+
+            ImageThumbStrip(
+                uiState = uiState,
+                horizontal = false,
+                onSelect = viewModel::selectItem,
+                modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight),
+            )
 
             Box(
                 modifier = Modifier
@@ -138,10 +133,123 @@ public fun ImagesScreen(
                 )
             }
 
-            BoxWithConstraints(modifier = Modifier.fillMaxHeight().weight(1f - uiState.leftWeight)) {
-                val totalHeightPx = constraints.maxHeight.toFloat()
+            ImageEditorPane(
+                uiState = uiState,
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxHeight().weight(1f - uiState.leftWeight),
+            )
+        }
+        }
+    }
+}
 
-                Column(modifier = Modifier.fillMaxSize()) {
+@Composable
+private fun ImageThumbStrip(
+    uiState: ImageScreenState,
+    horizontal: Boolean,
+    onSelect: (ImageItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (horizontal) {
+        val listState = rememberLazyListState()
+        LazyRow(
+            state = listState,
+            modifier = modifier.wheelScrollsHorizontally(listState),
+            contentPadding = PaddingValues(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(uiState.imageItems, key = { it.imagePath }) { item ->
+                val ratio = if (item.height > 0) item.width.toFloat() / item.height.toFloat() else 1f
+                ImageThumbCell(
+                    item = item,
+                    selected = uiState.selectedItem?.imagePath == item.imagePath,
+                    maskDirty = uiState.maskDirty,
+                    onSelect = { onSelect(item) },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .aspectRatio(ratio, matchHeightConstraintsFirst = true),
+                    scale = ContentScale.FillHeight,
+                )
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = modifier,
+            contentPadding = PaddingValues(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(uiState.imageItems, key = { it.imagePath }) { item ->
+                ImageThumbCell(
+                    item = item,
+                    selected = uiState.selectedItem?.imagePath == item.imagePath,
+                    maskDirty = uiState.maskDirty,
+                    onSelect = { onSelect(item) },
+                    modifier = Modifier.fillMaxWidth(),
+                    scale = ContentScale.FillWidth,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageThumbCell(
+    item: ImageItem,
+    selected: Boolean,
+    maskDirty: Boolean,
+    onSelect: () -> Unit,
+    modifier: Modifier,
+    scale: ContentScale,
+) {
+    val colors = rankoColors
+    val tokens = rankoTokens
+    val borderColor = when {
+        item.isDirty -> colors.qualityRed
+        selected -> colors.accentPink.copy(alpha = 0.28f)
+        else -> Color.White.copy(alpha = 0.08f)
+    }
+    Box(
+        modifier = modifier
+            .clip(tokens.panel)
+            .background(
+                if (selected) colors.accentPink.copy(alpha = 0.16f)
+                else colors.bgCard.copy(alpha = 0.55f),
+            )
+            .border(1.dp, borderColor, tokens.panel)
+            .clickable(onClick = onSelect),
+    ) {
+        AspectLockedAsyncImage(
+            path = item.imagePath,
+            width = item.width,
+            height = item.height,
+            contentScale = scale,
+            filterQuality = FilterQuality.High,
+            modifier = if (scale == ContentScale.FillWidth) Modifier.fillMaxWidth() else Modifier.fillMaxSize(),
+        )
+        if (item.hasMask || (selected && maskDirty)) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(if (selected && maskDirty) colors.qualityRed else colors.accentPink),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImageEditorPane(
+    uiState: ImageScreenState,
+    viewModel: ImageScreenViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val colors = rankoColors
+    val tokens = rankoTokens
+    BoxWithConstraints(modifier) {
+        val totalHeightPx = constraints.maxHeight.toFloat()
+        Column(modifier = Modifier.fillMaxSize()) {
 
                     val hasSelection = uiState.selectedItem != null
                     Row(
@@ -349,7 +457,4 @@ public fun ImagesScreen(
                     }
                 }
             }
-        }
-        }
-    }
 }

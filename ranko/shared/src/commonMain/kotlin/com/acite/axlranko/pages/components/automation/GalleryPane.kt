@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,12 +13,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,10 +43,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -79,6 +92,7 @@ import kotlin.time.Clock
 fun GalleryPane(
     state: AutomationUiState,
     viewModel: AutomationScreenViewModel = metroViewModel(),
+    portrait: Boolean = false,
 ) {
     val colors = rankoColors
     val lang = state.language
@@ -105,22 +119,52 @@ fun GalleryPane(
                     if (state.jobsLoading) CircularProgressIndicator(modifier = Modifier.padding(2.dp).width(14.dp))
                     QuietTextButton(text = uiText(lang, "refresh"), onClick = viewModel::refreshJobs)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    JobFilter.entries.forEach { filter ->
-                        CapsuleChoice(
-                            text = uiText(lang, filterKey(filter)),
-                            selected = state.jobFilter == filter,
-                            onClick = { viewModel.setJobFilter(filter) },
+                if (portrait) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            JobFilter.entries.forEach { filter ->
+                                CapsuleChoice(
+                                    text = uiText(lang, filterKey(filter)),
+                                    selected = state.jobFilter == filter,
+                                    onClick = { viewModel.setJobFilter(filter) },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = state.jobSearch,
+                            onValueChange = viewModel::setJobSearch,
+                            singleLine = true,
+                            placeholder = { Text(uiText(lang, "search"), fontSize = 11.sp) },
+                            colors = rankoFieldColors(),
+                            modifier = Modifier.widthIn(min = 120.dp, max = 180.dp),
                         )
                     }
-                    OutlinedTextField(
-                        value = state.jobSearch,
-                        onValueChange = viewModel::setJobSearch,
-                        singleLine = true,
-                        placeholder = { Text(uiText(lang, "search"), fontSize = 11.sp) },
-                        colors = rankoFieldColors(),
-                        modifier = Modifier.width(220.dp),
-                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        JobFilter.entries.forEach { filter ->
+                            CapsuleChoice(
+                                text = uiText(lang, filterKey(filter)),
+                                selected = state.jobFilter == filter,
+                                onClick = { viewModel.setJobFilter(filter) },
+                            )
+                        }
+                        OutlinedTextField(
+                            value = state.jobSearch,
+                            onValueChange = viewModel::setJobSearch,
+                            singleLine = true,
+                            placeholder = { Text(uiText(lang, "search"), fontSize = 11.sp) },
+                            colors = rankoFieldColors(),
+                            modifier = Modifier.width(220.dp),
+                        )
+                    }
                 }
                 if (state.visibleJobs.isEmpty()) {
                     Text(text = uiText(lang, "no_jobs"), color = colors.textDim, fontSize = 11.sp)
@@ -154,69 +198,60 @@ fun GalleryPane(
                     // A pass owns the record and the folder while it runs, so every button that
                     // touches either is off for the whole of it.
                     val busy = detail.state == "running" || state.jobActionBusy != ""
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Text(
                             text = detail.id,
                             color = colors.text,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        CapsuleButton(
-                            text = uiText(lang, "append_all"),
-                            onClick = { viewModel.openPromptAppendAll(detail.id) },
-                            enabled = !busy,
-                            compact = true,
-                        )
-                        CapsuleButton(
-                            text = uiText(lang, "cancel_job"),
-                            onClick = { viewModel.cancelJob(detail.id) },
-                            enabled = detail.state == "running",
-                            danger = true,
-                            compact = true,
-                        )
-                        CapsuleButton(
-                            text = uiText(lang, "retry_failed"),
-                            onClick = { viewModel.retryFailedJob(detail.id) },
-                            enabled = detail.state != "running",
-                            compact = true,
-                        )
-                        CapsuleButton(
-                            text = uiText(lang, "save_records"),
-                            onClick = viewModel::downloadJobRecord,
-                            enabled = state.galleryImagePaths.isNotEmpty(),
-                            compact = true,
-                        )
-                        CapsuleButton(
-                            text = uiText(lang, "open_folder"),
-                            onClick = { openLocalDirectory(detail.outputDir) },
-                            enabled = detail.outputDir.isNotBlank(),
-                            compact = true,
-                        )
-                        CapsuleButton(
-                            text = uiText(lang, "delete"),
-                            onClick = { viewModel.confirmDeleteJob(detail.id) },
-                            enabled = detail.state != "running" && state.jobActionBusy == "",
-                            danger = true,
-                            compact = true,
-                        )
+                        Row(
+                            modifier = Modifier.weight(1.6f).horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            GalleryAction(uiText(lang, "append_all"), Icons.Default.Add, portrait, !busy) {
+                                viewModel.openPromptAppendAll(detail.id)
+                            }
+                            GalleryAction(uiText(lang, "cancel_job"), Icons.Default.Close, portrait, detail.state == "running", danger = true) {
+                                viewModel.cancelJob(detail.id)
+                            }
+                            GalleryAction(uiText(lang, "retry_failed"), Icons.Default.Refresh, portrait, detail.state != "running") {
+                                viewModel.retryFailedJob(detail.id)
+                            }
+                            GalleryAction(uiText(lang, "save_records"), Icons.Default.Save, portrait, state.galleryImagePaths.isNotEmpty()) {
+                                viewModel.downloadJobRecord()
+                            }
+                            GalleryAction(uiText(lang, "open_folder"), Icons.Default.FolderOpen, portrait, detail.outputDir.isNotBlank()) {
+                                openLocalDirectory(detail.outputDir)
+                            }
+                            GalleryAction(
+                                uiText(lang, "delete"),
+                                Icons.Default.Delete,
+                                portrait,
+                                detail.state != "running" && state.jobActionBusy == "",
+                                danger = true,
+                            ) {
+                                viewModel.confirmDeleteJob(detail.id)
+                            }
+                        }
                     }
                     detail.error?.let { Text(it, color = colors.qualityRed, fontSize = 11.sp) }
 
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = uiText(lang, "thumb_size"), color = colors.textDim, fontSize = 11.sp)
-                        Slider(
-                            value = state.galleryThumbSize,
-                            onValueChange = viewModel::setGalleryThumbSize,
-                            valueRange = 80f..360f,
-                            modifier = Modifier.width(220.dp),
-                        )
-                        Text(
-                            text = "${state.galleryThumbSize.toInt()}px",
-                            color = colors.textDim,
-                            fontSize = 11.sp,
-                        )
-                    }
+                    ThumbSizeLine(
+                        label = uiText(lang, "thumb_size"),
+                        value = "${state.galleryThumbSize.toInt()}px",
+                        sliderValue = state.galleryThumbSize,
+                        onSlider = viewModel::setGalleryThumbSize,
+                    )
 
                     if (state.galleryImagePaths.isEmpty()) {
                         Text(text = uiText(lang, "no_images_yet"), color = colors.textDim, fontSize = 11.sp)
@@ -234,6 +269,7 @@ fun GalleryPane(
                                 state = state,
                                 viewModel = viewModel,
                                 busy = busy,
+                                portrait = portrait,
                             )
                         }
                     }
@@ -505,6 +541,64 @@ private fun previewImages(state: AutomationUiState): List<PreviewImage> {
     }
 }
 
+/**
+ * Label, 220dp slider and the pixel readout on one row when they fit. Otherwise the two texts
+ * each take a line and the slider uses the full width, so neither text wraps.
+ */
+@Composable
+private fun ThumbSizeLine(
+    label: String,
+    value: String,
+    sliderValue: Float,
+    onSlider: (Float) -> Unit,
+) {
+    val colors = rankoColors
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val style = TextStyle(fontSize = 11.sp)
+        val labelWidth = measurer.measure(label, style = style, maxLines = 1, softWrap = false).size.width
+        val valueWidth = measurer.measure(value, style = style, maxLines = 1, softWrap = false).size.width
+        val gap = 8.dp
+        val needed = with(LocalDensity.current) { (220.dp + gap * 2).roundToPx() }
+        val fits = labelWidth + valueWidth + needed <= constraints.maxWidth
+        if (fits) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ThumbSizeText(label, colors.textDim)
+                Slider(
+                    value = sliderValue,
+                    onValueChange = onSlider,
+                    valueRange = 80f..360f,
+                    modifier = Modifier.width(220.dp),
+                )
+                ThumbSizeText(value, colors.textDim)
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                ThumbSizeText(label, colors.textDim)
+                ThumbSizeText(value, colors.textDim)
+                Slider(
+                    value = sliderValue,
+                    onValueChange = onSlider,
+                    valueRange = 80f..360f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThumbSizeText(text: String, color: androidx.compose.ui.graphics.Color) {
+    Text(
+        text = text,
+        color = color,
+        fontSize = 11.sp,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
 @Composable
 private fun JobRow(job: AutomationJobSummary, state: AutomationUiState, viewModel: AutomationScreenViewModel) {
     val colors = rankoColors
@@ -608,42 +702,61 @@ private fun PromptGalleryRow(
     state: AutomationUiState,
     viewModel: AutomationScreenViewModel,
     busy: Boolean,
+    portrait: Boolean,
 ) {
     val colors = rankoColors
     val lang = state.language
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Text(
                 text = "#${prompt.index + 1}",
                 color = colors.accentPink,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                softWrap = false,
             )
             Text(
-                text = prompt.text.take(80),
+                text = prompt.text,
                 color = colors.textDim,
                 fontSize = 11.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             // With a seed per image, the row-level number would be the last pass's and would
             // speak for images it did not draw, so it only shows for a record that has no list.
             if (prompt.imageSeeds.isEmpty()) {
-                prompt.seed?.let { Text(text = "seed $it", color = colors.textDim, fontSize = 10.sp) }
+                prompt.seed?.let {
+                    Text(
+                        text = "seed $it",
+                        color = colors.textDim,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
             }
-            QuietTextButton(
-                text = uiText(lang, "copy_prompt"),
-                onClick = { copyTextToClipboard(prompt.text) },
-            )
-            QuietTextButton(
-                text = uiText(lang, "edit_prompt"),
-                enabled = !busy,
-                onClick = { viewModel.openPromptEdit(jobId, prompt.index, prompt.text) },
-            )
-            QuietTextButton(
-                text = uiText(lang, "add_images"),
-                enabled = !busy,
-                onClick = { viewModel.openPromptExtend(jobId, prompt.index) },
-            )
+            Row(
+                modifier = Modifier.weight(if (portrait) 0.9f else 1.3f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GalleryAction(uiText(lang, "copy_prompt"), Icons.Default.ContentCopy, portrait) {
+                    copyTextToClipboard(prompt.text)
+                }
+                GalleryAction(uiText(lang, "edit_prompt"), Icons.Default.Edit, portrait, enabled = !busy) {
+                    viewModel.openPromptEdit(jobId, prompt.index, prompt.text)
+                }
+                GalleryAction(uiText(lang, "add_images"), Icons.Default.Add, portrait, enabled = !busy) {
+                    viewModel.openPromptExtend(jobId, prompt.index)
+                }
+            }
         }
         // The pass running on this record shows itself here, on the record it changes: a redraw
         // does not move the job's own counters, and the group is where the user just clicked.
@@ -726,6 +839,40 @@ private fun PromptGalleryRow(
         }
         if (prompt.state == "error" && prompt.error != null) {
             Text(text = prompt.error, color = colors.qualityRed, fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+private fun GalleryAction(
+    text: String,
+    icon: ImageVector,
+    iconOnly: Boolean,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    CapsuleButton(
+        text = text,
+        onClick = onClick,
+        enabled = enabled,
+        danger = danger,
+        compact = true,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = if (iconOnly) text else null,
+            modifier = Modifier.size(14.dp),
+        )
+        if (!iconOnly) {
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = text,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }

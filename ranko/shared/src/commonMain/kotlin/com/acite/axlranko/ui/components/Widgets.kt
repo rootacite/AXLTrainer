@@ -160,7 +160,15 @@ fun CapsuleChoice(
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = colors.text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text,
+            color = colors.text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -170,6 +178,8 @@ fun RankoChoiceRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /** False for a horizontal tab, which sizes to its label instead of the row. */
+    expand: Boolean = true,
     content: @Composable RowScope.() -> Unit,
 ) {
     val tokens = rankoTokens
@@ -177,7 +187,7 @@ fun RankoChoiceRow(
     Row(
         modifier
             .alpha(if (enabled) 1f else 0.45f)
-            .fillMaxWidth()
+            .then(if (expand) Modifier.fillMaxWidth() else Modifier)
             .clip(tokens.panel)
             .background(
                 if (selected) colors.accentPink.copy(alpha = 0.16f)

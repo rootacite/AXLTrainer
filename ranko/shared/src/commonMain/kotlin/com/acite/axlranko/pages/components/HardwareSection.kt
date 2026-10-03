@@ -1,7 +1,6 @@
 package com.acite.axlranko.pages.components
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,7 +25,7 @@ private const val BytesPerGiB = 1024.0 * 1024.0 * 1024.0
 private const val BytesPerTiB = BytesPerGiB * 1024.0
 
 @Composable
-fun HardwareSection(uiState: DashboardUiState) {
+fun HardwareSection(uiState: DashboardUiState, wideCards: Boolean = true) {
     val hardware = uiState.hardware
     val gpu = hardware.gpus.firstOrNull()
     val history = uiState.hardwareHistory
@@ -63,7 +62,7 @@ fun HardwareSection(uiState: DashboardUiState) {
             )
         }
         HardwareInfoRow(gpu, hardware.cpu)
-        HardwareMetricCards(gpu, hardware.cpu)
+        HardwareMetricCards(gpu, hardware.cpu, wideCards)
         HardwareCharts(history, stroke, gpu, hardware.cpu)
     }
 }
@@ -140,7 +139,7 @@ private fun HardwareInfoRow(gpu: HardwareGpu?, cpu: HardwareCpu) {
 }
 
 @Composable
-private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu) {
+private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu, wideCards: Boolean) {
     val colors = rankoColors
     val gpuUtil = formatPct(gpu?.gpuUtilPct)
     val vram = formatVram(gpu)
@@ -151,9 +150,7 @@ private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu) {
         formatRam(cpu).takeIf { it != "—" },
     ).joinToString(" · ").ifBlank { "—" }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isWide = maxWidth > 720.dp
-        if (isWide) {
+    if (wideCards) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("GPU", gpuUtil, colors.accentPink, Modifier.weight(1f))
                 MetricCard("VRAM", vram, colors.accentBlue, Modifier.weight(1f))
@@ -173,7 +170,6 @@ private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu) {
                 }
                 MetricCard("CPU", cpuLine, colors.accentLilac, Modifier.fillMaxWidth())
             }
-        }
     }
 }
 

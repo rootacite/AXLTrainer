@@ -9,7 +9,9 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +51,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,6 +94,8 @@ import dev.zacsweers.metrox.viewmodel.metroViewModel
 import com.acite.axlranko.localWallpaperModel
 import com.acite.axlranko.data.showsHelperEndpointSettings
 import com.acite.axlranko.data.wallpaperImagesSupported
+import com.acite.axlranko.ui.isPortrait
+import com.acite.axlranko.ui.wheelScrollsHorizontally
 import com.acite.axlranko.ui.pointerIconHorizontalResize
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -150,12 +155,31 @@ public fun UtilsScreen(
         modifier = Modifier.fillMaxSize()
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
+        val portrait = isPortrait(maxWidth, maxHeight)
 
-        Row(modifier = Modifier.fillMaxSize()) {
+        if (portrait) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SectionNav(
+                    uiState = uiState,
+                    appWindow = appWindow,
+                    horizontal = true,
+                    onSelect = viewModel::selectSection,
+                )
+                HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
+                UtilsEditor(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    appWindow = appWindow,
+                    portrait = true,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+        } else Row(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight)) {
                 SectionNav(
                     uiState = uiState,
                     appWindow = appWindow,
+                    horizontal = false,
                     onSelect = viewModel::selectSection
                 )
             }
@@ -178,47 +202,13 @@ public fun UtilsScreen(
                 VerticalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .weight(1f - uiState.leftWeight)
-            ) {
-                ConfigHeader(uiState = uiState, viewModel = viewModel)
-                HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    val scroll = rememberScrollState()
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scroll)
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Text(
-                            text = uiState.selectedSection.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = uiState.selectedSection.description,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = rankoColors.textDim
-                        )
-                        SectionFields(
-                            uiState = uiState,
-                            viewModel = viewModel,
-                            appWindow = appWindow,
-                        )
-                    }
-                    VerticalScrollbar(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
-                            .padding(vertical = 8.dp),
-                        adapter = rememberScrollbarAdapter(scroll)
-                    )
-                }
-            }
+            UtilsEditor(
+                uiState = uiState,
+                viewModel = viewModel,
+                appWindow = appWindow,
+                portrait = false,
+                modifier = Modifier.fillMaxHeight().weight(1f - uiState.leftWeight),
+            )
         }
 
         if (uiState.isSaving || uiState.isTagging) {
@@ -234,9 +224,66 @@ public fun UtilsScreen(
 }
 
 @Composable
-private fun ConfigHeader(
+private fun UtilsEditor(
     uiState: UtilsUiState,
-    viewModel: UtilsScreenViewModel
+    viewModel: UtilsScreenViewModel,
+    appWindow: AppWindow?,
+    portrait: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colors = rankoColors
+    Column(modifier = modifier) {
+        ConfigHeader(
+            uiState = uiState,
+            portrait = portrait,
+            onReload = viewModel::loadConfig,
+            onReset = viewModel::resetForm,
+            onSave = viewModel::saveConfig,
+        )
+        HorizontalDivider(color = colors.stroke.copy(alpha = 0.55f))
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val scroll = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scroll)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(
+                    text = uiState.selectedSection.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = uiState.selectedSection.description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = rankoColors.textDim,
+                )
+                SectionFields(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    appWindow = appWindow,
+                )
+            }
+            VerticalScrollbar(
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(vertical = 8.dp),
+                adapter = rememberScrollbarAdapter(scroll),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun ConfigHeader(
+    uiState: UtilsUiState,
+    portrait: Boolean,
+    onReload: () -> Unit,
+    onReset: () -> Unit,
+    onSave: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -244,73 +291,21 @@ private fun ConfigHeader(
             .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(
+        if (portrait) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                ConfigTitle(uiState, modifier = Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ConfigHeaderButtons(uiState, onReload, onReset, onSave)
+            }
+        } else Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Training Config",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (uiState.isDirty) {
-                        Spacer(Modifier.width(10.dp))
-                        AssistChip(
-                            onClick = {},
-                            enabled = false,
-                            label = { Text("Unsaved") }
-                        )
-                    }
-                }
-                Text(
-                    text = uiState.configPath.ifBlank { "config.toml" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = rankoColors.textDim,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = uiState.summaryLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = rankoColors.accentPink
-                )
-            }
-
+            ConfigTitle(uiState, modifier = Modifier.weight(1f).padding(end = 16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CapsuleButton(
-                    text = "Reload",
-                    onClick = { viewModel.loadConfig() },
-                    enabled = !uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
-                    compact = true,
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Reload", fontWeight = FontWeight.SemiBold)
-                }
-                CapsuleButton(
-                    text = "Reset",
-                    onClick = { viewModel.resetForm() },
-                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
-                    compact = true,
-                ) {
-                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Reset", fontWeight = FontWeight.SemiBold)
-                }
-                CapsuleButton(
-                    text = "Save",
-                    onClick = { viewModel.saveConfig() },
-                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
-                    compact = true,
-                    emphasized = true,
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Save", fontWeight = FontWeight.SemiBold)
-                }
+                ConfigHeaderButtons(uiState, onReload, onReset, onSave)
             }
         }
 
@@ -320,6 +315,85 @@ private fun ConfigHeader(
         uiState.statusMessage?.let { message ->
             StatusBanner(message = message, isError = false)
         }
+    }
+}
+
+@Composable
+private fun ConfigTitle(uiState: UtilsUiState, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Training Config",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+            )
+            if (uiState.isDirty) {
+                Spacer(Modifier.width(10.dp))
+                AssistChip(
+                    onClick = {},
+                    enabled = false,
+                    label = { Text("Unsaved", maxLines = 1, softWrap = false) }
+                )
+            }
+        }
+        Text(
+            text = uiState.configPath.ifBlank { "config.toml" },
+            style = MaterialTheme.typography.bodySmall,
+            color = rankoColors.textDim,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = uiState.summaryLine,
+            style = MaterialTheme.typography.bodySmall,
+            color = rankoColors.accentPink,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun ConfigHeaderButtons(
+    uiState: UtilsUiState,
+    onReload: () -> Unit,
+    onReset: () -> Unit,
+    onSave: () -> Unit,
+) {
+    CapsuleButton(
+        text = "Reload",
+        onClick = onReload,
+        enabled = !uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+        compact = true,
+    ) {
+        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Reload", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+    }
+    CapsuleButton(
+        text = "Reset",
+        onClick = onReset,
+        enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+        compact = true,
+    ) {
+        Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Reset", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+    }
+    CapsuleButton(
+        text = "Save",
+        onClick = onSave,
+        enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTagging,
+        compact = true,
+        emphasized = true,
+    ) {
+        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Save", fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
     }
 }
 
@@ -362,54 +436,81 @@ internal fun visibleSections(
 }
 
 @Composable
-private fun SectionNav(
+internal fun SectionNav(
     uiState: UtilsUiState,
     appWindow: AppWindow?,
+    horizontal: Boolean,
     onSelect: (ConfigSection) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        val sections = visibleSections(showsHelperEndpointSettings, appWindow)
-        items(sections, key = { it.name }) { section ->
-            val selected = uiState.selectedSection == section
-            val hasError = uiState.fieldErrors.keys.any { section.owns(it) }
-            val colors = rankoColors
-            RankoChoiceRow(
-                selected = selected,
-                onClick = { onSelect(section) },
-            ) {
-                Icon(
-                    imageVector = section.icon(),
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = when {
-                        hasError -> colors.qualityRed
-                        selected -> colors.accentPink
-                        else -> colors.textDim
-                    }
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = section.title,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (selected) colors.accentPink else colors.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (hasError) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = "Invalid fields",
-                        modifier = Modifier.size(16.dp),
-                        tint = colors.qualityRed
-                    )
-                }
+    val sections = visibleSections(showsHelperEndpointSettings, appWindow)
+    if (horizontal) {
+        val listState = rememberLazyListState()
+        LazyRow(
+            state = listState,
+            modifier = Modifier.fillMaxWidth().wheelScrollsHorizontally(listState),
+            contentPadding = PaddingValues(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items(sections, key = { it.name }) { section ->
+                SectionNavItem(uiState, section, expand = false, onSelect)
             }
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(sections, key = { it.name }) { section ->
+                SectionNavItem(uiState, section, expand = true, onSelect)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionNavItem(
+    uiState: UtilsUiState,
+    section: ConfigSection,
+    expand: Boolean,
+    onSelect: (ConfigSection) -> Unit,
+) {
+    val selected = uiState.selectedSection == section
+    val hasError = uiState.fieldErrors.keys.any { section.owns(it) }
+    val colors = rankoColors
+    RankoChoiceRow(
+        selected = selected,
+        onClick = { onSelect(section) },
+        expand = expand,
+    ) {
+        Icon(
+            imageVector = section.icon(),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = when {
+                hasError -> colors.qualityRed
+                selected -> colors.accentPink
+                else -> colors.textDim
+            }
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = section.title,
+            modifier = if (expand) Modifier.weight(1f) else Modifier,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) colors.accentPink else colors.text,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (hasError) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = "Invalid fields",
+                modifier = Modifier.size(16.dp),
+                tint = colors.qualityRed
+            )
         }
     }
 }

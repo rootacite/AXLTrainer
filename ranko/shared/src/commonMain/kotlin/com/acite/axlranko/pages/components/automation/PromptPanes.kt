@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -39,6 +41,7 @@ import com.acite.axlranko.prompt.ManifestModel
 import com.acite.axlranko.prompt.PromptMode
 import com.acite.axlranko.prompt.trimNumber
 import com.acite.axlranko.prompt.t
+import com.acite.axlranko.ui.SingleLineOrStacked
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -53,7 +56,12 @@ import kotlinx.datetime.toLocalDateTime
 
 /** The whole Prompts area: shared resources, the wizard or the configuration list, and the results. */
 @Composable
-fun PromptsPane(state: AutomationUiState, viewModel: AutomationScreenViewModel, warning: String?) {
+fun PromptsPane(
+    state: AutomationUiState,
+    viewModel: AutomationScreenViewModel,
+    warning: String?,
+    portrait: Boolean = false,
+) {
     val colors = rankoColors
     Column(
         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -70,34 +78,43 @@ fun PromptsPane(state: AutomationUiState, viewModel: AutomationScreenViewModel, 
 
         PromptProfilesCard(state, viewModel)
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            CapsuleChoice(
-                text = uiText(state.language, "wizard"),
-                selected = state.view == PromptView.Wizard,
-                onClick = { viewModel.setView(PromptView.Wizard) },
-            )
-            CapsuleChoice(
-                text = uiText(state.language, "manifest"),
-                selected = state.view == PromptView.Manifest,
-                onClick = { viewModel.setView(PromptView.Manifest) },
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = uiText(state.language, "mode_count")
-                    .replace("{mode}", state.spec.mode.wire)
-                    .replace("{count}", state.spec.count.toString()),
-                color = colors.textDim,
-                fontSize = 11.sp,
-            )
-        }
+        SingleLineOrStacked(
+            modifier = Modifier.fillMaxWidth(),
+            first = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CapsuleChoice(
+                        text = uiText(state.language, "wizard"),
+                        selected = state.view == PromptView.Wizard,
+                        onClick = { viewModel.setView(PromptView.Wizard) },
+                    )
+                    CapsuleChoice(
+                        text = uiText(state.language, "manifest"),
+                        selected = state.view == PromptView.Manifest,
+                        onClick = { viewModel.setView(PromptView.Manifest) },
+                    )
+                }
+            },
+            second = {
+                Text(
+                    text = uiText(state.language, "mode_count")
+                        .replace("{mode}", state.spec.mode.wire)
+                        .replace("{count}", state.spec.count.toString()),
+                    color = colors.textDim,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+        )
 
         if (state.view == PromptView.Wizard) {
-            PromptWizardView(state, viewModel, warning)
+            PromptWizardView(state, viewModel, warning, portrait)
         } else {
             PromptManifestView(state, viewModel)
         }
 
-        PromptResultsCard(state, viewModel)
+        PromptResultsCard(state, viewModel, portrait)
     }
 
     if (state.saveDialogOpen) PromptSaveDialog(state, viewModel)
@@ -240,15 +257,17 @@ private fun PromptProfileRow(
 }
 
 @Composable
-private fun PromptWizardView(state: AutomationUiState, viewModel: AutomationScreenViewModel, warning: String?) {
+private fun PromptWizardView(
+    state: AutomationUiState,
+    viewModel: AutomationScreenViewModel,
+    warning: String?,
+    portrait: Boolean,
+) {
     val colors = rankoColors
     val keys = state.applicablePageKeys
     val index = state.visiblePageIndex
     val pageKey = state.currentPageKey
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        Column(modifier = Modifier.width(150.dp)) {
-            PromptStepRail(keys = keys, currentIndex = index, lang = state.language, onSelect = viewModel::goToPage)
-        }
+    val page: @Composable () -> Unit = {
         PorcelainCard {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -280,6 +299,25 @@ private fun PromptWizardView(state: AutomationUiState, viewModel: AutomationScre
                     onNext = viewModel::nextPage,
                 )
             }
+        }
+    }
+    if (portrait) {
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PromptStepRail(
+                keys = keys,
+                currentIndex = index,
+                lang = state.language,
+                onSelect = viewModel::goToPage,
+                horizontal = true,
+            )
+            page()
+        }
+    } else {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(modifier = Modifier.width(150.dp)) {
+                PromptStepRail(keys = keys, currentIndex = index, lang = state.language, onSelect = viewModel::goToPage)
+            }
+            page()
         }
     }
 }
@@ -358,32 +396,75 @@ private fun PromptManifestView(state: AutomationUiState, viewModel: AutomationSc
 
 /** The generated lines, with the three exports the plan asked for. */
 @Composable
-private fun PromptResultsCard(state: AutomationUiState, viewModel: AutomationScreenViewModel) {
+private fun PromptResultsCard(
+    state: AutomationUiState,
+    viewModel: AutomationScreenViewModel,
+    portrait: Boolean,
+) {
     val colors = rankoColors
     PorcelainCard {
         Column(
             modifier = Modifier.fillMaxWidth().padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = uiText(state.language, "results"),
-                    color = colors.text,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    modifier = Modifier.weight(1f),
-                )
-                if (state.results.isNotEmpty()) {
+            if (state.results.isEmpty() || !portrait) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = uiText(state.language, "results_hint")
-                            .replace("{n}", state.results.size.toString())
-                            .replace("{seed}", (state.resultSeed ?: "—").toString()),
-                        color = colors.textDim,
-                        fontSize = 11.sp,
+                        text = uiText(state.language, "results"),
+                        color = colors.text,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
+                    if (state.results.isNotEmpty()) {
+                        Text(
+                            text = uiText(state.language, "results_hint")
+                                .replace("{n}", state.results.size.toString())
+                                .replace("{seed}", (state.resultSeed ?: "—").toString()),
+                            color = colors.textDim,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+            } else {
+                SingleLineOrStacked(
+                    modifier = Modifier.fillMaxWidth(),
+                    first = {
+                        Text(
+                            text = uiText(state.language, "results"),
+                            color = colors.text,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    second = {
+                        Text(
+                            text = uiText(state.language, "results_hint")
+                                .replace("{n}", state.results.size.toString())
+                                .replace("{seed}", (state.resultSeed ?: "—").toString()),
+                            color = colors.textDim,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 CapsuleButton(
                     text = uiText(state.language, "generate"),
                     onClick = viewModel::generate,

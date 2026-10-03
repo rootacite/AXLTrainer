@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -41,6 +43,7 @@ import com.acite.axlranko.model.AutomationUiState
 import com.acite.axlranko.model.jobProgress
 import com.acite.axlranko.model.PromptSource
 import com.acite.axlranko.pages.AutomationScreenViewModel
+import com.acite.axlranko.ui.SingleLineOrStacked
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.CapsuleChoice
 import com.acite.axlranko.ui.components.PorcelainCard
@@ -57,6 +60,7 @@ import kotlinx.coroutines.launch
 fun ComfyPane(
     state: AutomationUiState,
     viewModel: AutomationScreenViewModel = metroViewModel(),
+    portrait: Boolean = false,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -64,7 +68,7 @@ fun ComfyPane(
     ) {
         ServerCard(state, viewModel)
         WorkflowCard(state, viewModel)
-        BatchCard(state, viewModel)
+        BatchCard(state, viewModel, portrait)
         JobLogCard(state, viewModel)
     }
 }
@@ -78,28 +82,47 @@ private fun ServerCard(state: AutomationUiState, viewModel: AutomationScreenView
             modifier = Modifier.fillMaxWidth().padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = uiText(lang, "server"),
-                    color = colors.text,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    modifier = Modifier.weight(1f),
-                )
-                if (state.discovering) {
-                    CircularProgressIndicator(modifier = Modifier.size(14.dp))
-                } else if (state.comfy.found) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.qualityGreen, modifier = Modifier.size(16.dp))
+            SingleLineOrStacked(
+                modifier = Modifier.fillMaxWidth(),
+                first = {
                     Text(
-                        text = "${uiText(lang, "connected")} ${state.comfy.version}",
-                        color = colors.qualityGreen,
-                        fontSize = 12.sp,
+                        text = uiText(lang, "server"),
+                        color = colors.text,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                } else {
-                    Icon(Icons.Default.RadioButtonUnchecked, contentDescription = null, tint = colors.textDim, modifier = Modifier.size(16.dp))
-                    Text(text = uiText(lang, "not_found"), color = colors.textDim, fontSize = 12.sp)
-                }
-            }
+                },
+                second = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (state.discovering) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp))
+                        } else if (state.comfy.found) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = colors.qualityGreen, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = "${uiText(lang, "connected")} ${state.comfy.version}",
+                                color = colors.qualityGreen,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Icon(Icons.Default.RadioButtonUnchecked, contentDescription = null, tint = colors.textDim, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = uiText(lang, "not_found"),
+                                color = colors.textDim,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                },
+            )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = state.settings.server,
@@ -278,7 +301,7 @@ private fun WorkflowCard(state: AutomationUiState, viewModel: AutomationScreenVi
 }
 
 @Composable
-private fun BatchCard(state: AutomationUiState, viewModel: AutomationScreenViewModel) {
+private fun BatchCard(state: AutomationUiState, viewModel: AutomationScreenViewModel, portrait: Boolean) {
     val colors = rankoColors
     val lang = state.language
     val scope = rememberCoroutineScope()
@@ -295,8 +318,29 @@ private fun BatchCard(state: AutomationUiState, viewModel: AutomationScreenViewM
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 13.sp,
             )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(text = uiText(lang, "prompt_source"), color = colors.textDim, fontSize = 11.sp)
+            if (portrait) {
+                Text(
+                    text = uiText(lang, "prompt_source"),
+                    color = colors.textDim,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (!portrait) {
+                    Text(
+                        text = uiText(lang, "prompt_source"),
+                        color = colors.textDim,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
                 CapsuleChoice(
                     text = uiText(lang, "source_results").replace("{n}", state.results.size.toString()),
                     selected = state.promptSource == PromptSource.CurrentResults,

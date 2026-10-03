@@ -5,7 +5,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,6 +59,8 @@ import kotlin.math.roundToInt
 
 @Composable
 fun TrainControlCard(
+    /** Portrait: the five commands draw an icon and keep their name as the content description. */
+    iconOnly: Boolean = false,
     status: TrainStatus,
     commandInFlight: Boolean,
     controlsEnabled: Boolean = true,
@@ -113,6 +117,7 @@ fun TrainControlCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -132,7 +137,11 @@ fun TrainControlCard(
                     Text(
                         text = runName,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -234,7 +243,10 @@ fun TrainControlCard(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().then(if (runLocked) Modifier.alpha(0.45f) else Modifier),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (runLocked) Modifier.alpha(0.45f) else Modifier)
+                    .then(if (iconOnly) Modifier.horizontalScroll(rememberScrollState()) else Modifier),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ControlButton(
@@ -242,8 +254,9 @@ fun TrainControlCard(
                     icon = Icons.Default.PlayArrow,
                     enabled = canStart,
                     onClick = onStart,
-                    modifier = Modifier.weight(1f),
+                    modifier = if (iconOnly) Modifier else Modifier.weight(1f),
                     emphasized = true,
+                    iconOnly = iconOnly,
                 )
                 ControlButton(
                     text = if (phase == "pausing") "Pausing" else "Pause",
@@ -251,7 +264,8 @@ fun TrainControlCard(
                     enabled = canPause,
                     inFlight = phase == "pausing",
                     onClick = onPause,
-                    modifier = Modifier.weight(1f),
+                    modifier = if (iconOnly) Modifier else Modifier.weight(1f),
+                    iconOnly = iconOnly,
                 )
                 ControlButton(
                     text = if (phase == "resuming") "Resuming" else "Resume",
@@ -259,23 +273,26 @@ fun TrainControlCard(
                     enabled = canResume,
                     inFlight = phase == "resuming",
                     onClick = onResume,
-                    modifier = Modifier.weight(1f),
+                    modifier = if (iconOnly) Modifier else Modifier.weight(1f),
                     emphasized = true,
+                    iconOnly = iconOnly,
                 )
                 ControlButton(
                     text = "Early Stop",
                     icon = Icons.Default.Stop,
                     enabled = canStop,
                     onClick = { confirmStop = true },
-                    modifier = Modifier.weight(1f),
+                    modifier = if (iconOnly) Modifier else Modifier.weight(1f),
                     danger = true,
+                    iconOnly = iconOnly,
                 )
                 ControlButton(
                     text = "Reset",
                     icon = Icons.Default.RestartAlt,
                     enabled = canReset,
                     onClick = { confirmReset = true },
-                    modifier = Modifier.weight(1f),
+                    modifier = if (iconOnly) Modifier else Modifier.weight(1f),
+                    iconOnly = iconOnly,
                 )
             }
         }
@@ -630,6 +647,7 @@ private fun ControlButton(
     inFlight: Boolean = false,
     emphasized: Boolean = false,
     danger: Boolean = false,
+    iconOnly: Boolean = false,
 ) {
     CapsuleButton(
         text = text,
@@ -643,10 +661,12 @@ private fun ControlButton(
         if (inFlight) {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
         } else {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = if (iconOnly) text else null, modifier = Modifier.size(18.dp))
         }
-        Spacer(Modifier.width(6.dp))
-        Text(text, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        if (!iconOnly) {
+            Spacer(Modifier.width(6.dp))
+            Text(text, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+        }
     }
 }
 

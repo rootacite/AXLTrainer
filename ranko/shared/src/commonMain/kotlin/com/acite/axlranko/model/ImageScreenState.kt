@@ -12,6 +12,8 @@ data class ImageScreenState(
     val editorText: String = "",
     val leftWeight: Float = 0.18f,
     val topWeight: Float = 0.75f,
+    /** Portrait only: the top thumbnail strip's share of the height under the dataset bar. */
+    val portraitStripWeight: Float = 0.28f,
     val maskEditEnabled: Boolean = false,
     val maskOnly: Boolean = false,
     val brushRadiusPx: Float = 24f,

@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -49,6 +51,7 @@ import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import dev.zacsweers.metrox.viewmodel.metroViewModel
+import com.acite.axlranko.ui.isPortrait
 import com.acite.axlranko.ui.pointerIconHorizontalResize
 import com.acite.axlranko.ui.pointerIconVerticalResize
 
@@ -113,144 +116,65 @@ fun StatisticsScreen(
         } else {
         // 3. Main Interface Layout
     val colors = rankoColors
-    val tokens = rankoTokens
     BoxWithConstraints(
         modifier = Modifier.fillMaxWidth().weight(1f)
     ) {
         val totalWidthPx = constraints.maxWidth.toFloat()
+        val totalHeightPx = constraints.maxHeight.toFloat()
+        val portrait = isPortrait(maxWidth, maxHeight)
+        val onOpenImage = { item: com.acite.axlranko.model.DatasetItem ->
+            smViewModel.currentScreen = Screen.Images
+            // Images may have another dataset folder open; the jump follows the folder
+            // this thumbnail came from.
+            iviewModel.selectItemByTxtPath(item.txtPath, uiState.datasetDirIndex)
+        }
 
-        Row(modifier = Modifier.fillMaxSize()) {
-
-            // Left Panel: Tag Bar Chart
-            Box(modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight)) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Text(
-                        text = "Dataset Tag Distribution",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-
-                    OutlinedTextField(
-                        value = uiState.tagSearchQuery,
-                        onValueChange = viewModel::updateTagSearchQuery,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                        placeholder = { Text("Search tags...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                        singleLine = true,
-                        shape = tokens.panel,
-                        colors = rankoFieldColors(),
-                    )
-
-                    val listState = rememberLazyListState()
-                    val displayedTagStats = remember(uiState.tagStats, uiState.tagSearchQuery) {
-                        val q = uiState.tagSearchQuery.trim()
-                        if (q.isEmpty()) uiState.tagStats
-                        else uiState.tagStats.filter { TagTranslations.matchesQuery(it.tag, q) }
-                    }
-                    val totalItems = displayedTagStats.size
-
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(start = 16.dp, end = 24.dp, top = 8.dp, bottom = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            items(displayedTagStats, key = { it.tag }) { stat ->
-                                val isSelected = uiState.selectedTags.contains(stat.tag)
-                                val offsetX by animateDpAsState(
-                                    targetValue = if (isSelected) 16.dp else 0.dp,
-                                    animationSpec = tween(300)
-                                )
-                                val barColor = frequencyColor(stat.frequency, colors)
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(36.dp)
-                                        .animateItem()
-                                        .offset(x = offsetX)
-                                        .clip(tokens.panel)
-                                        .background(
-                                            if (isSelected) colors.accentPink.copy(alpha = 0.16f)
-                                            else Color.Transparent
-                                        )
-                                        .clickable { viewModel.toggleTagSelection(stat.tag) }
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxHeight()
-                                            .fillMaxWidth(fraction = (stat.frequency / 100f).coerceIn(0.01f, 1f))
-                                            .background(barColor)
+        if (portrait) {
+            val pagerState = rememberPagerState(pageCount = { 2 })
+            Column(modifier = Modifier.fillMaxSize()) {
+                StatisticsImageGrid(
+                    uiState = uiState,
+                    onOpenImage = onOpenImage,
+                    tagsBelow = true,
+                    modifier = Modifier.fillMaxWidth().weight(uiState.portraitImageWeight),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .pointerHoverIcon(pointerIconVerticalResize)
+                        .pointerInput(totalHeightPx) {
+                            detectVerticalDragGestures { _, dragAmount ->
+                                if (totalHeightPx > 0) {
+                                    viewModel.updatePortraitImageWeight(
+                                        uiState.portraitImageWeight + dragAmount / totalHeightPx,
                                     )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(horizontal = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.weight(1f),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(
-                                                text = TagTranslations.display(stat.tag),
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSelected) colors.accentPink else colors.text,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f, fill = false),
-                                            )
-                                            IconButton(
-                                                onClick = { copyTextToClipboard(stat.tag) },
-                                                modifier = Modifier
-                                                    .padding(start = 2.dp)
-                                                    .size(28.dp)
-                                                    .pointerHoverIcon(PointerIcon.Hand),
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.ContentCopy,
-                                                    contentDescription = "Copy English tag",
-                                                    modifier = Modifier.size(14.dp),
-                                                    tint = if (isSelected) colors.accentPink else colors.textDim,
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "${stat.count} (${formatFixed(stat.frequency, 1)}%)",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colors.text.copy(alpha = 0.7f),
-                                            modifier = Modifier.padding(start = 8.dp),
-                                        )
-                                    }
                                 }
                             }
-                        }
-
-                        if (totalItems == 0 && uiState.tagSearchQuery.isNotBlank()) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "No tags match \"${uiState.tagSearchQuery.trim()}\"",
-                                    color = colors.textDim
-                                )
-                            }
-                        }
-
-                        if (totalItems > 0) {
-                            VerticalScrollbar(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .fillMaxHeight()
-                                    .padding(vertical = 8.dp),
-                                adapter = rememberScrollbarAdapter(listState)
-                            )
-                        }
-                    }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    HorizontalDivider(thickness = 1.dp, color = colors.stroke.copy(alpha = 0.55f))
+                }
+                StatisticsDetailPager(
+                    uiState = uiState,
+                    onSearch = viewModel::updateTagSearchQuery,
+                    onToggleTag = viewModel::toggleTagSelection,
+                    pagerState = pagerState,
+                    modifier = Modifier.fillMaxWidth().weight(1f - uiState.portraitImageWeight),
+                ) { mod ->
+                    ControlPanel(uiState = uiState, viewModel = viewModel, modifier = mod)
                 }
             }
+        } else Row(modifier = Modifier.fillMaxSize()) {
+
+            // Left Panel: Tag Bar Chart
+            TagDistributionPane(
+                uiState = uiState,
+                onSearch = viewModel::updateTagSearchQuery,
+                onToggleTag = viewModel::toggleTagSelection,
+                modifier = Modifier.fillMaxHeight().weight(uiState.leftWeight),
+            )
 
             // Vertical Draggable Divider
             Box(
@@ -276,55 +200,11 @@ fun StatisticsScreen(
                 val totalHeightPx = constraints.maxHeight.toFloat()
                 Column(modifier = Modifier.fillMaxSize()) {
 
-                    // Top Right: Staggered Thumbnails Grid (Follows Logic Mode)
-                    Box(modifier = Modifier.fillMaxWidth().weight(uiState.topWeight)) {
-                        val filteredItems = uiState.filteredImages
-                        if (filteredItems.isEmpty()) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = if (uiState.selectedTags.isEmpty()) "Please select tags on the left" else "No images match the logical conditions",
-                                    color = colors.textDim
-                                )
-                            }
-                        } else {
-                            // Using StaggeredGrid to preserve original aspect ratios without cropping
-                            LazyVerticalStaggeredGrid(
-                                columns = StaggeredGridCells.Adaptive(minSize = 140.dp),
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalItemSpacing = 8.dp
-                            ) {
-                                items(filteredItems, key = { it.txtPath }) { item ->
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                                        shape = tokens.panel,
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = colors.bgCard.copy(alpha = 0.72f)
-                                        ),
-                                        onClick = {
-                                            smViewModel.currentScreen = Screen.Images
-                                            // Images may have another dataset folder open; the
-                                            // jump follows the folder this thumbnail came from.
-                                            iviewModel.selectItemByTxtPath(
-                                                item.txtPath,
-                                                uiState.datasetDirIndex,
-                                            )
-                                        }
-                                    ) {
-                                        AspectLockedAsyncImage(
-                                            path = item.imagePath,
-                                            width = item.width,
-                                            height = item.height,
-                                            contentScale = ContentScale.FillWidth,
-                                            filterQuality = FilterQuality.High,
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    StatisticsImageGrid(
+                        uiState = uiState,
+                        onOpenImage = onOpenImage,
+                        modifier = Modifier.fillMaxWidth().weight(uiState.topWeight),
+                    )
 
                     // Horizontal Draggable Divider
                     Box(
@@ -361,6 +241,242 @@ fun StatisticsScreen(
             )
         }
     }
+        }
+    }
+}
+
+@Composable
+private fun StatisticsImageGrid(
+    uiState: StatisticsUiState,
+    onOpenImage: (com.acite.axlranko.model.DatasetItem) -> Unit,
+    modifier: Modifier = Modifier,
+    tagsBelow: Boolean = false,
+) {
+    val colors = rankoColors
+    val tokens = rankoTokens
+    Box(modifier = modifier) {
+        val filteredItems = uiState.filteredImages
+        if (filteredItems.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = when {
+                        uiState.selectedTags.isNotEmpty() -> "No images match the logical conditions"
+                        tagsBelow -> "Please select tags below"
+                        else -> "Please select tags on the left"
+                    },
+                    color = colors.textDim,
+                )
+            }
+        } else {
+            LazyVerticalStaggeredGrid(
+                columns = StaggeredGridCells.Adaptive(minSize = 140.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalItemSpacing = 8.dp,
+            ) {
+                items(filteredItems, key = { it.txtPath }) { item ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+                        shape = tokens.panel,
+                        colors = CardDefaults.cardColors(
+                            containerColor = colors.bgCard.copy(alpha = 0.72f),
+                        ),
+                        onClick = { onOpenImage(item) },
+                    ) {
+                        AspectLockedAsyncImage(
+                            path = item.imagePath,
+                            width = item.width,
+                            height = item.height,
+                            contentScale = ContentScale.FillWidth,
+                            filterQuality = FilterQuality.High,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TagDistributionPane(
+    uiState: StatisticsUiState,
+    onSearch: (String) -> Unit,
+    onToggleTag: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = rankoColors
+    val tokens = rankoTokens
+    Column(modifier = modifier) {
+        Text(
+            text = "Dataset Tag Distribution",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(16.dp),
+        )
+        OutlinedTextField(
+            value = uiState.tagSearchQuery,
+            onValueChange = onSearch,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            placeholder = { Text("Search tags...") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+            singleLine = true,
+            shape = tokens.panel,
+            colors = rankoFieldColors(),
+        )
+        val listState = rememberLazyListState()
+        val displayedTagStats = remember(uiState.tagStats, uiState.tagSearchQuery) {
+            val q = uiState.tagSearchQuery.trim()
+            if (q.isEmpty()) uiState.tagStats
+            else uiState.tagStats.filter { TagTranslations.matchesQuery(it.tag, q) }
+        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 24.dp, top = 8.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(displayedTagStats, key = { it.tag }) { stat ->
+                    val isSelected = uiState.selectedTags.contains(stat.tag)
+                    val offsetX by animateDpAsState(
+                        targetValue = if (isSelected) 16.dp else 0.dp,
+                        animationSpec = tween(300),
+                    )
+                    val barColor = frequencyColor(stat.frequency, colors)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp)
+                            .animateItem()
+                            .offset(x = offsetX)
+                            .clip(tokens.panel)
+                            .background(
+                                if (isSelected) colors.accentPink.copy(alpha = 0.16f)
+                                else Color.Transparent,
+                            )
+                            .clickable { onToggleTag(stat.tag) },
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(fraction = (stat.frequency / 100f).coerceIn(0.01f, 1f))
+                                .background(barColor),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = TagTranslations.display(stat.tag),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) colors.accentPink else colors.text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                IconButton(
+                                    onClick = { copyTextToClipboard(stat.tag) },
+                                    modifier = Modifier
+                                        .padding(start = 2.dp)
+                                        .size(28.dp)
+                                        .pointerHoverIcon(PointerIcon.Hand),
+                                ) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = "Copy English tag",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = if (isSelected) colors.accentPink else colors.textDim,
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "${stat.count} (${formatFixed(stat.frequency, 1)}%)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.text.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            if (displayedTagStats.isEmpty() && uiState.tagSearchQuery.isNotBlank()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "No tags match \"${uiState.tagSearchQuery.trim()}\"",
+                        color = colors.textDim,
+                    )
+                }
+            }
+            if (displayedTagStats.isNotEmpty()) {
+                VerticalScrollbar(
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(vertical = 8.dp),
+                    adapter = rememberScrollbarAdapter(listState),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Tag distribution and the control panel, one page at a time. The tab titles stay visible;
+ * the page body is whichever one is current.
+ */
+@Composable
+internal fun StatisticsDetailPager(
+    uiState: StatisticsUiState,
+    onSearch: (String) -> Unit,
+    onToggleTag: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    pagerState: androidx.compose.foundation.pager.PagerState = rememberPagerState(pageCount = { 2 }),
+    control: @Composable (Modifier) -> Unit,
+) {
+    val colors = rankoColors
+    Column(modifier = modifier) {
+        Row(modifier = Modifier.fillMaxWidth().height(44.dp)) {
+            listOf("Dataset Tag Distribution", "Control Panel").forEachIndexed { index, title ->
+                val selected = pagerState.currentPage == index
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable { pagerState.requestScrollToPage(index) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = title,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (selected) colors.accentPink else colors.textDim,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                }
+            }
+        }
+        HorizontalPager(
+            state = pagerState,
+            beyondViewportPageCount = 0,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) { page ->
+            if (page == 0) {
+                TagDistributionPane(
+                    uiState = uiState,
+                    onSearch = onSearch,
+                    onToggleTag = onToggleTag,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                control(Modifier.fillMaxSize())
+            }
         }
     }
 }

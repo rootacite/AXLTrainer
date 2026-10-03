@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.acite.axlranko.prompt.BELLY_LEVELS
@@ -630,19 +632,23 @@ private fun bellyKeySuffix(level: String): String = when (level) {
 
 /** The stepper beside the wizard page: one row per page that applies to the current spec. */
 @Composable
-fun PromptStepRail(keys: List<String>, currentIndex: Int, lang: PromptLang, onSelect: (Int) -> Unit) {
+fun PromptStepRail(
+    keys: List<String>,
+    currentIndex: Int,
+    lang: PromptLang,
+    onSelect: (Int) -> Unit,
+    horizontal: Boolean = false,
+) {
     val colors = rankoColors
-    // No scroll of its own: the page pane already scrolls, and a nested scroll would be measured
-    // against an unbounded height.
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
+    // The vertical rail has no scroll of its own: the page pane already scrolls, and a nested
+    // vertical scroll would be measured against an unbounded height. The horizontal rail scrolls
+    // on the cross axis, which that pane still bounds.
+    val steps: @Composable () -> Unit = {
         keys.forEachIndexed { index, key ->
             val selected = index == currentIndex
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .then(if (horizontal) Modifier else Modifier.fillMaxWidth())
                     .clip(rankoTokens.panel)
                     .background(if (selected) colors.accentPink.copy(alpha = 0.16f) else Color.Transparent)
                     .clickable { onSelect(index) }
@@ -655,15 +661,31 @@ fun PromptStepRail(keys: List<String>, currentIndex: Int, lang: PromptLang, onSe
                     color = if (selected) colors.accentPink else colors.textDim,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    softWrap = false,
                 )
                 Text(
                     text = pageRailLabel(key, lang),
                     color = if (selected) colors.text else colors.textDim,
                     fontSize = 12.sp,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
+    }
+    if (horizontal) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) { steps() }
+    } else {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) { steps() }
     }
 }
 

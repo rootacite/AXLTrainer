@@ -195,6 +195,10 @@ class StatisticsScreenViewModel(
         _uiState.update { it.copy(topWeight = weight.coerceIn(0.2f, 0.8f)) }
     }
 
+    fun updatePortraitImageWeight(weight: Float) {
+        _uiState.update { it.copy(portraitImageWeight = weight.coerceIn(0.30f, 0.85f)) }
+    }
+
     fun updateDropRateText(text: String) {
         _uiState.update { it.copy(dropRateText = text) }
     }

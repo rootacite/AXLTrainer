@@ -307,6 +307,10 @@ class ImageScreenViewModel(
         _uiState.update { it.copy(topWeight = weight.coerceIn(0.1f, 0.9f)) }
     }
 
+    fun updatePortraitStripWeight(weight: Float) {
+        _uiState.update { it.copy(portraitStripWeight = weight.coerceIn(0.12f, 0.55f)) }
+    }
+
     fun setMaskEditEnabled(enabled: Boolean) {
         _uiState.update { it.copy(maskEditEnabled = enabled) }
     }

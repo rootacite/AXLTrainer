@@ -24,6 +24,8 @@ data class StatisticsUiState(
     val tagSearchQuery: String = "",
     val leftWeight: Float = 0.4f,
     val topWeight: Float = 0.6f,
+    /** Portrait only: the image pane's share of the height under the dataset bar. */
+    val portraitImageWeight: Float = 0.65f,
     val dropRateText: String = "0.5",
     val newTagText: String = "",
     val isAddStart: Boolean = true // true: Add to start, false: Add to end

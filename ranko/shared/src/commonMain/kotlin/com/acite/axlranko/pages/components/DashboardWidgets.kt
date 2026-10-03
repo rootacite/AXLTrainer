@@ -292,11 +292,13 @@ private fun countLabel(count: Int, noun: String): String =
 private val RUN_STAMP_RE = Regex("""_(\d{8})_(\d{6})(?:_\d+)?$""")
 
 @Composable
-fun PathChip(label: String, path: String) {
+fun PathChip(label: String, path: String, expand: Boolean = false) {
     val colors = rankoColors
-    FrostedSurface {
+    FrostedSurface(modifier = if (expand) Modifier.fillMaxWidth() else Modifier) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier
+                .then(if (expand) Modifier.fillMaxWidth() else Modifier)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -304,14 +306,18 @@ fun PathChip(label: String, path: String) {
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.accentPink,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
             )
             Text(
                 text = path,
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.textDim,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = if (expand) Modifier.weight(1f) else Modifier,
             )
         }
     }

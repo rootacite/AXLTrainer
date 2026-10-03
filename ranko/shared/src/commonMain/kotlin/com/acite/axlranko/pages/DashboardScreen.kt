@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -85,6 +86,8 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
@@ -175,6 +178,8 @@ import com.acite.axlranko.pages.components.trainingInfoAt
 import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.PorcelainCard
 import com.acite.axlranko.ui.components.rankoFieldColors
+import com.acite.axlranko.ui.isPortrait
+import com.acite.axlranko.ui.wideMetricRow
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.checkpointSubtitle
@@ -235,11 +240,13 @@ fun DashboardScreen(
 
     var dashboardOrigin by remember { mutableStateOf(Offset.Zero) }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { dashboardOrigin = it.positionInRoot() },
     ) {
+        val portrait = isPortrait(maxWidth, maxHeight)
+        val wideCards = wideMetricRow(maxWidth, maxHeight)
         Box(modifier = Modifier.fillMaxSize()) {
             val listState = rememberLazyListState()
             // One smooth of the run's Avg Loss. Every checkpoint card marks its own step on it.
@@ -262,6 +269,7 @@ fun DashboardScreen(
                     DashboardSectionHeader("Training Control")
                     Spacer(Modifier.height(4.dp))
                     TrainControlCard(
+                        iconOnly = portrait,
                         status = uiState.trainStatus,
                         commandInFlight = uiState.commandInFlight,
                         controlsEnabled = trainingControlsEnabled(uiState),
@@ -288,17 +296,17 @@ fun DashboardScreen(
                 item {
                     DashboardSectionHeader("Hardware")
                     Spacer(Modifier.height(4.dp))
-                    HardwareSection(uiState)
+                    HardwareSection(uiState, wideCards = wideCards)
                 }
 
                 item {
-                    PathRow(uiState.config, uiState.runId)
+                    PathRow(uiState.config, uiState.runId, portrait = portrait)
                 }
 
                 item {
                     DashboardSectionHeader("Real-time Metrics")
                     Spacer(Modifier.height(4.dp))
-                    MetricsSection(uiState)
+                    MetricsSection(uiState, wideCards = wideCards)
                 }
 
                 item {
@@ -443,6 +451,7 @@ fun DashboardScreen(
                     val restCards = checkpointCards.filterNot { it.pinned }
                     val card: @Composable (CheckpointRow) -> Unit = { row ->
                         CheckpointRowCard(
+                            portrait = portrait,
                             row = row,
                             spark = avgLossSpark,
                             saveEveryNSteps = uiState.runSaveEveryNSteps,
@@ -613,13 +622,19 @@ private fun DashboardHeader(
                 Text(
                     text = "Dashboard",
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = if (uiState.connected) "Helper connected" else "Helper disconnected",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (uiState.connected) rankoColors.accentPink
-                    else rankoColors.qualityRed
+                    else rankoColors.qualityRed,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 
@@ -635,7 +650,9 @@ private fun DashboardHeader(
                         text = if (uiState.autoRefresh) "3s ON" else "OFF",
                         style = MaterialTheme.typography.labelLarge,
                         color = if (uiState.autoRefresh) rankoColors.accentPink
-                        else rankoColors.textDim
+                        else rankoColors.textDim,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                     Switch(
                         checked = uiState.autoRefresh,
@@ -720,19 +737,28 @@ private fun DashboardHeader(
 }
 
 @Composable
-private fun PathRow(config: JsonObject, runId: String?) {
+internal fun PathRow(config: JsonObject, runId: String?, portrait: Boolean = false) {
     val loggingDir = config.string("logging_dir")
     val outputDir = config.string("output_dir")
     val run = runId?.takeIf { it.isNotBlank() }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        PathChip("Run", run ?: "—")
-        PathChip("Logs", run?.let { "$loggingDir/$it" } ?: "—")
-        PathChip("Output", run?.let { "$outputDir/$it" } ?: "—")
+    val chips = listOf(
+        "Run" to (run ?: "—"),
+        "Logs" to (run?.let { "$loggingDir/$it" } ?: "—"),
+        "Output" to (run?.let { "$outputDir/$it" } ?: "—"),
+    )
+    if (portrait) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            chips.forEach { (label, path) -> PathChip(label, path, expand = true) }
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            chips.forEach { (label, path) -> PathChip(label, path) }
+        }
     }
 }
 
 @Composable
-private fun MetricsSection(uiState: DashboardUiState) {
+private fun MetricsSection(uiState: DashboardUiState, wideCards: Boolean) {
     val stats = uiState.latestStats
     if (stats.isEmpty()) {
         PorcelainCard {
@@ -753,9 +779,7 @@ private fun MetricsSection(uiState: DashboardUiState) {
         ?.let { formatScientificTwoDecimals(it) } ?: "-"
 
     val colors = rankoColors
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isWide = maxWidth > 720.dp
-        if (isWide) {
+    if (wideCards) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
                 MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
@@ -773,7 +797,6 @@ private fun MetricsSection(uiState: DashboardUiState) {
                     MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
                 }
             }
-        }
     }
 }
 
@@ -1256,6 +1279,7 @@ internal fun CheckpointExportStatus(inFlight: Boolean, result: CheckpointExport?
  */
 @Composable
 internal fun CheckpointRowCard(
+    portrait: Boolean = false,
     row: CheckpointRow,
     spark: List<SparkPoint> = emptyList(),
     /** This run's snapshot `save_every_n_steps`. Null is not the repo file's value. */
@@ -1298,14 +1322,10 @@ internal fun CheckpointRowCard(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val sparkStep = row.step?.takeIf { it >= 0 }?.toFloat()
             val cadence = saveEveryNSteps?.takeIf { it > 0 }
-            val showSpark = spark.size >= 2 && sparkStep != null && cadence != null
-            Row(
-                modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
+            @Composable
+            fun Titles(modifier: Modifier) {
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = modifier,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
             Row(
@@ -1324,6 +1344,9 @@ internal fun CheckpointRowCard(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (row.pinned) {
@@ -1338,6 +1361,8 @@ internal fun CheckpointRowCard(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = colors.accentPink,
+                            maxLines = 1,
+                            softWrap = false,
                         )
                     }
                 }
@@ -1347,6 +1372,7 @@ internal fun CheckpointRowCard(
                     fontWeight = FontWeight.SemiBold,
                     color = colors.text,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
@@ -1357,29 +1383,54 @@ internal fun CheckpointRowCard(
                     text = checkpointSubtitle(checkpoint),
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.text,
+                    maxLines = if (portrait) 1 else Int.MAX_VALUE,
+                    softWrap = !portrait,
+                    overflow = if (portrait) TextOverflow.Ellipsis else TextOverflow.Clip,
                 )
                 Text(
                     text = checkpoint.path,
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.textDim,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
             }
-            if (showSpark) {
+            }
+
+            @Composable
+            fun SparkLine() {
+            val step = sparkStep
+            val every = cadence
+            if (step != null && every != null && spark.size >= 2) {
                 CheckpointLossSpark(
                     points = spark,
-                    step = sparkStep,
-                    saveEveryNSteps = cadence,
-                    modifier = Modifier
-                        .width(CheckpointSparkWidth)
-                        .fillMaxHeight()
-                        .heightIn(min = CheckpointSparkMinHeight),
+                    step = step,
+                    saveEveryNSteps = every,
+                    modifier = if (portrait) {
+                        Modifier
+                            .fillMaxWidth()
+                            .height(CheckpointSparkMinHeight)
+                    } else {
+                        Modifier
+                            .width(CheckpointSparkWidth)
+                            .fillMaxHeight()
+                            .heightIn(min = CheckpointSparkMinHeight)
+                    }.semantics { contentDescription = "Avg Loss" },
                 )
             }
+            }
+
+            @Composable
+            fun Actions() {
             if (checkpoint != null) {
                 Row(
+                    modifier = if (portrait) {
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    } else {
+                        Modifier
+                    },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -1390,9 +1441,15 @@ internal fun CheckpointRowCard(
                         enabled = exportInFlightPath == null,
                         compact = true,
                     ) {
-                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(saveLabel, fontWeight = FontWeight.SemiBold)
+                        Icon(
+                            Icons.Default.Save,
+                            contentDescription = if (portrait) saveLabel else null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        if (!portrait) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(saveLabel, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
                     }
                     val label = if (starting) "Starting…" else "Generate samples"
                     CapsuleButton(
@@ -1401,9 +1458,15 @@ internal fun CheckpointRowCard(
                         enabled = gpuFree && !starting && !busyElsewhere,
                         compact = true,
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(label, fontWeight = FontWeight.SemiBold)
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = if (portrait) label else null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        if (!portrait) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(label, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
                     }
                     val evaluateLabel = if (startingEvaluation) "Starting…" else "Evaluate"
                     CapsuleButton(
@@ -1412,9 +1475,15 @@ internal fun CheckpointRowCard(
                         enabled = gpuFree && !busyElsewhere && !startingEvaluation,
                         compact = true,
                     ) {
-                        Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(evaluateLabel, fontWeight = FontWeight.SemiBold)
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = if (portrait) evaluateLabel else null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        if (!portrait) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(evaluateLabel, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
                     }
                     val pinLabel = when {
                         pinning -> "Pinning…"
@@ -1443,12 +1512,39 @@ internal fun CheckpointRowCard(
                         enabled = slots.isNotEmpty() && !clearingSamples && !busyElsewhere && gpuFree,
                         compact = true,
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(clearLabel, fontWeight = FontWeight.SemiBold)
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = if (portrait) clearLabel else null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        if (!portrait) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(clearLabel, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
                     }
                 }
             }
+            }
+
+            if (portrait) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Titles(Modifier.fillMaxWidth())
+                    SparkLine()
+                    Actions()
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Titles(Modifier.weight(1f))
+                    SparkLine()
+                    Actions()
+                }
             }
 
             if (slots.isEmpty()) {

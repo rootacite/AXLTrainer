@@ -2,6 +2,7 @@ package com.acite.axlranko.pages
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
@@ -216,7 +217,10 @@ private fun BrandCard(version: String, gitHash: String, modifier: Modifier = Mod
             Image(
                 painter = painterResource(Res.drawable.app_icon),
                 contentDescription = "AxlRanko",
-                modifier = Modifier.size(64.dp).clip(CircleShape),
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .border(3.dp, Color.White, CircleShape),
             )
             Column {
                 Text(
