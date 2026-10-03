@@ -6,25 +6,39 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerButtons
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import com.acite.axlranko.ui.wideMetricRow
+import com.acite.axlranko.data.AutomationJobSummary
 import com.acite.axlranko.data.DatasetRefreshHub
 import com.acite.axlranko.data.DatasetSelection
 import com.acite.axlranko.data.TrainerIpcClient
 import com.acite.axlranko.model.AutomationSection
 import com.acite.axlranko.model.AutomationUiState
 import com.acite.axlranko.model.CheckpointItem
+import com.acite.axlranko.model.DashboardUiState
+import com.acite.axlranko.model.HardwareCpu
+import com.acite.axlranko.model.HardwareGpu
+import com.acite.axlranko.model.HardwareStatus
 import com.acite.axlranko.model.StatisticsUiState
 import com.acite.axlranko.model.TrainStatus
 import com.acite.axlranko.model.UtilsUiState
+import com.acite.axlranko.pages.components.CheckpointRow
+import com.acite.axlranko.pages.components.HardwareSection
+import com.acite.axlranko.pages.components.ImagePreviewOverlay
+import com.acite.axlranko.pages.components.PreviewImage
 import com.acite.axlranko.pages.components.SparkPoint
+import com.acite.axlranko.pages.components.automation.GalleryPane
 import com.acite.axlranko.pages.components.TrainControlCard
 import com.acite.axlranko.ui.theme.RankoTheme
 import com.acite.axlranko.util.PathPicker
@@ -43,11 +57,186 @@ import kotlin.test.assertTrue
 class PortraitLayoutTest {
 
     @Test
-    fun metricCardsWrapWhenNarrowerThanHalfTheHeight() {
-        assertTrue(wideMetricRow(800.dp, 900.dp))
-        assertTrue(wideMetricRow(450.dp, 900.dp))
-        assertTrue(!wideMetricRow(400.dp, 900.dp))
-        assertTrue(wideMetricRow(1400.dp, 800.dp))
+    fun portraitStacksHardwareCardsChartsAndMetrics() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val hardware = DashboardUiState(
+            hardware = HardwareStatus(
+                available = true,
+                gpus = listOf(
+                    HardwareGpu(
+                        gpuUtilPct = 17.0,
+                        powerW = 222.0,
+                        tempEdgeC = 40.0,
+                        tempJunctionC = 50.0,
+                        memUsedBytes = 8L * 1024 * 1024 * 1024,
+                        memTotalBytes = 16L * 1024 * 1024 * 1024,
+                    ),
+                ),
+                cpu = HardwareCpu(
+                    utilPct = 7.0,
+                    memUsedBytes = (1.5 * 1024 * 1024 * 1024).toLong(),
+                    memTotalBytes = 3L * 1024 * 1024 * 1024,
+                ),
+            ),
+        )
+        val metrics = DashboardUiState(
+            latestStats = buildJsonObject {
+                put("current_step", 10)
+                put("Train/Loss", 0.25)
+                put("UNet/LR/Effective_Actual_LR", 0.0001)
+                put("TE/LR/Effective_Actual_LR", 0.00002)
+            },
+        )
+        val portrait = scene(480, 1700) {
+            Column(Modifier.width(480.dp)) {
+                HardwareSection(hardware, portrait = true)
+                MetricsSection(metrics, portrait = true)
+            }
+        }
+        val landscape = scene(1200, 900) {
+            Column(Modifier.width(1200.dp)) {
+                HardwareSection(hardware, portrait = false)
+                MetricsSection(metrics, portrait = false)
+            }
+        }
+        try {
+            val tall = texts(nodes(portrait))
+            val gpu = tall.first { it.first == "17%" }.second
+            val power = tall.first { it.first == "222 W" }.second
+            val temp = tall.first { it.first == "40 °C / 50 °C" }.second
+            val cpu = tall.first { it.first == "7% · 1.5 / 3.0 GiB" }.second
+            assertTrue(power > gpu + 8f, "Power y=$power GPU y=$gpu")
+            assertEquals(power, temp, 4f)
+            assertTrue(cpu > power + 8f, "CPU y=$cpu Power y=$power")
+            val chartRows = bands(tall.filter { it.first == "No Data" }.map { it.second })
+            assertEquals(4, chartRows.size, "hardware charts shared rows: $chartRows")
+            assertTrue(chartRows.all { it.size == 1 })
+            assertTrue(chartRows[1][0] > chartRows[0][0] + 150f)
+            assertTrue(chartRows[3][0] > chartRows[2][0] + 150f)
+            val step = tall.first { it.first == "Current Step" }.second
+            val loss = tall.first { it.first == "Latest Loss" }.second
+            val unet = tall.first { it.first == "UNet LR" }.second
+            val te = tall.first { it.first == "TE Effective LR" }.second
+            assertEquals(step, loss, 4f)
+            assertEquals(unet, te, 4f)
+            assertTrue(unet > step + 8f, "metrics second row y=$unet first y=$step")
+
+            val wide = texts(nodes(landscape))
+            val wideGpu = wide.first { it.first == "17%" }.second
+            val widePower = wide.first { it.first == "222 W" }.second
+            val wideTemp = wide.first { it.first == "40 °C / 50 °C" }.second
+            val wideCpu = wide.first { it.first == "7% · 1.5 / 3.0 GiB" }.second
+            assertEquals(wideGpu, widePower, 4f)
+            assertEquals(wideGpu, wideTemp, 4f)
+            assertEquals(wideGpu, wideCpu, 4f)
+            val wideCharts = bands(wide.filter { it.first == "No Data" }.map { it.second })
+            assertEquals(2, wideCharts.size, "landscape charts: $wideCharts")
+            assertTrue(wideCharts.all { it.size == 2 })
+            val wideStep = wide.first { it.first == "Current Step" }.second
+            assertEquals(wideStep, wide.first { it.first == "Latest Loss" }.second, 4f)
+            assertEquals(wideStep, wide.first { it.first == "UNet LR" }.second, 4f)
+            assertEquals(wideStep, wide.first { it.first == "TE Effective LR" }.second, 4f)
+        } finally {
+            portrait.close()
+            landscape.close()
+        }
+    }
+
+    @Test
+    fun portraitSampleRangeSplitsTheButtonOntoTheNextRow() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val rows = listOf(100, 500).map { step ->
+            CheckpointRow(
+                checkpoint = CheckpointItem(
+                    path = "/out/rein_s$step/rein.safetensors",
+                    runId = "rein_20260911_120000",
+                    dir = "rein_s$step",
+                    filename = "rein.safetensors",
+                    step = step,
+                    outputName = "rein",
+                ),
+                step = step,
+                samples = emptyList(),
+                generated = emptyList(),
+                running = null,
+            )
+        }
+        val portrait = scene(420, 240) {
+            Column(Modifier.width(420.dp)) {
+                SampleRangeRow(
+                    rows = rows,
+                    batch = null,
+                    starting = false,
+                    canStart = true,
+                    note = null,
+                    onSampleRange = { _, _ -> },
+                    onCancel = {},
+                    portrait = true,
+                )
+            }
+        }
+        val landscape = scene(900, 160) {
+            Column(Modifier.width(900.dp)) {
+                SampleRangeRow(
+                    rows = rows,
+                    batch = null,
+                    starting = false,
+                    canStart = true,
+                    note = null,
+                    onSampleRange = { _, _ -> },
+                    onCancel = {},
+                    portrait = false,
+                )
+            }
+        }
+        try {
+            assertSampleRangeStacked(nodes(portrait), stacked = true)
+            assertSampleRangeStacked(nodes(landscape), stacked = false)
+        } finally {
+            portrait.close()
+            landscape.close()
+        }
+    }
+
+    private fun assertSampleRangeStacked(all: List<SemanticsNode>, stacked: Boolean) {
+        val lines = texts(all)
+        val from = lines.first { it.first == "from" }.second
+        val button = sampleButtonY(all)
+        val count = lines.first { it.first == "2 checkpoint(s)" }.second
+        if (stacked) {
+            assertTrue(button > from + 24f, "button y=$button from y=$from")
+            assertEquals(button, count, 16f)
+        } else {
+            assertTrue(button < from + 30f, "button y=$button from y=$from")
+            assertEquals(button, count, 16f)
+        }
+    }
+
+    /** The "Sample range" label and the button share their text; only the button is clickable. */
+    private fun sampleButtonY(nodes: List<SemanticsNode>): Float {
+        val button = nodes.first { node ->
+            node.config.getOrNull(SemanticsProperties.Text).orEmpty().any { it.text == "Sample range" } &&
+                hasClick(node)
+        }
+        return button.positionInRoot.y
+    }
+
+    private fun hasClick(node: SemanticsNode): Boolean {
+        var current: SemanticsNode? = node
+        while (current != null) {
+            if (current.config.getOrNull(SemanticsActions.OnClick) != null) return true
+            current = current.parent
+        }
+        return false
+    }
+
+    private fun bands(ys: List<Float>, tolerance: Float = 4f): List<List<Float>> {
+        val groups = mutableListOf<MutableList<Float>>()
+        for (y in ys.sorted()) {
+            val last = groups.lastOrNull()
+            if (last == null || y - last.last() > tolerance) groups += mutableListOf(y) else last += y
+        }
+        return groups
     }
 
 
@@ -68,10 +257,17 @@ class PortraitLayoutTest {
         node.children.forEach { walk(it, out) }
     }
 
-    private fun nodes(scene: ImageComposeScene): List<SemanticsNode> {
+    private fun nodes(scene: ImageComposeScene): List<SemanticsNode> = semantics(scene, merged = true)
+
+    private fun unmerged(scene: ImageComposeScene): List<SemanticsNode> = semantics(scene, merged = false)
+
+    private fun semantics(scene: ImageComposeScene, merged: Boolean): List<SemanticsNode> {
         scene.render()
         val found = mutableListOf<SemanticsNode>()
-        scene.semanticsOwners.forEach { owner -> walk(owner.rootSemanticsNode, found) }
+        scene.semanticsOwners.forEach { owner ->
+            val root = if (merged) owner.rootSemanticsNode else owner.unmergedRootSemanticsNode
+            walk(root, found)
+        }
         return found
     }
 
@@ -280,5 +476,123 @@ class PortraitLayoutTest {
             narrow.close()
             wide.close()
         }
+    }
+
+    @Test
+    fun portraitGalleryJobPutsTheNameUnderTheStatus() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val viewModel = AutomationScreenViewModel(
+            ipc = TrainerIpcClient(),
+            refreshHub = DatasetRefreshHub(),
+            datasetSelection = DatasetSelection(),
+            pathPicker = NoopPathPicker(),
+        )
+        val job = AutomationJobSummary(
+            id = "Kirika_20260928_042536",
+            state = "done",
+            startedAt = 1_790_540_736.0,
+            finishedAt = 1_790_540_790.0,
+            total = 2,
+            done = 1,
+            images = 2,
+        )
+        val state = AutomationUiState(section = AutomationSection.Gallery, jobs = listOf(job))
+        val counts = "1/2 · 2 images · 54s"
+        val portrait = scene(420, 640) {
+            Box(Modifier.width(420.dp).height(640.dp)) {
+                GalleryPane(state, viewModel, portrait = true)
+            }
+        }
+        val landscape = scene(1100, 640) {
+            Box(Modifier.width(1100.dp).height(640.dp)) {
+                GalleryPane(state, viewModel, portrait = false)
+            }
+        }
+        try {
+            // The card is clickable, so the merged tree reports every line at the card's top.
+            val tallNodes = unmerged(portrait)
+            val tall = texts(tallNodes)
+            val countsY = tall.first { it.first == counts }.second
+            val name = tallNodes.first { node ->
+                node.config.getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } == listOf(job.id)
+            }
+            assertTrue(name.positionInRoot.y > countsY + 8f, "name y=${name.positionInRoot.y} counts y=$countsY")
+            assertTrue(name.size.height <= 24, "job name wrapped, height ${name.size.height}")
+            assertTrue(tall.any { it.first == "Done" && kotlin.math.abs(it.second - countsY) < 8f })
+
+            val wide = texts(unmerged(landscape))
+            val wideCounts = wide.first { it.first == counts }.second
+            val wideName = wide.first { it.first == job.id }.second
+            assertEquals(wideCounts, wideName, 8f)
+        } finally {
+            portrait.close()
+            landscape.close()
+        }
+    }
+
+    @Test
+    fun portraitPreviewPagesFromTheSidesAndLandscapeKeepsArrows() {
+        if (GraphicsEnvironment.isHeadless()) return
+        val images = List(3) { index -> PreviewImage(path = "/img/$index.png", title = "frame-$index") }
+        val index = mutableStateOf(1)
+        val portrait = scene(400, 700) {
+            ImagePreviewOverlay(
+                images = images,
+                index = index.value,
+                onClose = {},
+                onPrev = { index.value = (index.value - 1).coerceAtLeast(0) },
+                onNext = { index.value = (index.value + 1).coerceAtMost(images.lastIndex) },
+                portrait = true,
+            )
+        }
+        try {
+            val described = descriptions(nodes(portrait))
+            assertTrue("Previous" !in described && "Next" !in described)
+            assertTrue(texts(nodes(portrait)).any { it.first == "2 / 3" })
+            click(portrait, 40f, 400f)
+            assertTrue(texts(nodes(portrait)).any { it.first == "1 / 3" }, "left side did not go back")
+            click(portrait, 360f, 400f)
+            assertTrue(texts(nodes(portrait)).any { it.first == "2 / 3" }, "right side did not go forward")
+            swipe(portrait, fromX = 300f, toX = 80f, y = 400f)
+            assertTrue(texts(nodes(portrait)).any { it.first == "3 / 3" }, "swipe left did not go forward")
+        } finally {
+            portrait.close()
+        }
+
+        index.value = 1
+        val landscape = scene(800, 500) {
+            ImagePreviewOverlay(
+                images = images,
+                index = index.value,
+                onClose = {},
+                onPrev = { index.value = (index.value - 1).coerceAtLeast(0) },
+                onNext = { index.value = (index.value + 1).coerceAtMost(images.lastIndex) },
+                portrait = false,
+            )
+        }
+        try {
+            val described = descriptions(nodes(landscape))
+            assertTrue("Previous" in described && "Next" in described)
+            click(landscape, 400f, 280f)
+            assertTrue(texts(nodes(landscape)).any { it.first == "2 / 3" }, "a click on the picture paged in landscape")
+        } finally {
+            landscape.close()
+        }
+    }
+
+    private fun click(scene: ImageComposeScene, x: Float, y: Float) {
+        val at = Offset(x, y)
+        val down = PointerButtons(isPrimaryPressed = true)
+        scene.sendPointerEvent(PointerEventType.Press, at, button = PointerButton.Primary, buttons = down)
+        scene.sendPointerEvent(PointerEventType.Release, at, button = PointerButton.Primary, buttons = PointerButtons())
+        scene.render()
+    }
+
+    private fun swipe(scene: ImageComposeScene, fromX: Float, toX: Float, y: Float) {
+        val down = PointerButtons(isPrimaryPressed = true)
+        scene.sendPointerEvent(PointerEventType.Press, Offset(fromX, y), button = PointerButton.Primary, buttons = down)
+        scene.sendPointerEvent(PointerEventType.Move, Offset(toX, y), buttons = down)
+        scene.sendPointerEvent(PointerEventType.Release, Offset(toX, y), button = PointerButton.Primary, buttons = PointerButtons())
+        scene.render()
     }
 }

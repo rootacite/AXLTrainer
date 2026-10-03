@@ -20,13 +20,6 @@ import kotlinx.coroutines.launch
 internal fun isPortrait(maxWidth: Dp, maxHeight: Dp): Boolean = maxHeight > maxWidth
 
 /**
- * Hardware and Real-time Metrics cards stay on one row while the viewport is at least half as wide
- * as it is tall. Narrower than that, they wrap onto extra rows.
- */
-internal fun wideMetricRow(width: Dp, height: Dp): Boolean =
-    height.value <= 0f || width >= height * 0.5f
-
-/**
  * Two slots on one row when their single-line widths fit, one above the other when they do not.
  *
  * Each slot must be a single root. Text inside a slot stays one line (`maxLines = 1`,

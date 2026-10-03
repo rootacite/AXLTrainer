@@ -179,7 +179,6 @@ import com.acite.axlranko.ui.components.CapsuleButton
 import com.acite.axlranko.ui.components.PorcelainCard
 import com.acite.axlranko.ui.components.rankoFieldColors
 import com.acite.axlranko.ui.isPortrait
-import com.acite.axlranko.ui.wideMetricRow
 import com.acite.axlranko.ui.theme.rankoColors
 import com.acite.axlranko.ui.theme.rankoTokens
 import com.acite.axlranko.util.checkpointSubtitle
@@ -246,7 +245,6 @@ fun DashboardScreen(
             .onGloballyPositioned { dashboardOrigin = it.positionInRoot() },
     ) {
         val portrait = isPortrait(maxWidth, maxHeight)
-        val wideCards = wideMetricRow(maxWidth, maxHeight)
         Box(modifier = Modifier.fillMaxSize()) {
             val listState = rememberLazyListState()
             // One smooth of the run's Avg Loss. Every checkpoint card marks its own step on it.
@@ -296,7 +294,7 @@ fun DashboardScreen(
                 item {
                     DashboardSectionHeader("Hardware")
                     Spacer(Modifier.height(4.dp))
-                    HardwareSection(uiState, wideCards = wideCards)
+                    HardwareSection(uiState, portrait = portrait)
                 }
 
                 item {
@@ -306,7 +304,7 @@ fun DashboardScreen(
                 item {
                     DashboardSectionHeader("Real-time Metrics")
                     Spacer(Modifier.height(4.dp))
-                    MetricsSection(uiState, wideCards = wideCards)
+                    MetricsSection(uiState, portrait = portrait)
                 }
 
                 item {
@@ -433,6 +431,7 @@ fun DashboardScreen(
                         note = uiState.batchError ?: uiState.generatedError,
                         onSampleRange = viewModel::startSampleBatch,
                         onCancel = { id -> viewModel.cancelGeneration(id) },
+                        portrait = portrait,
                     )
                 }
 
@@ -595,6 +594,7 @@ fun DashboardScreen(
                     onClose = viewModel::closePreview,
                     onPrev = viewModel::previewPrev,
                     onNext = viewModel::previewNext,
+                    portrait = portrait,
                 )
             }
         }
@@ -758,7 +758,7 @@ internal fun PathRow(config: JsonObject, runId: String?, portrait: Boolean = fal
 }
 
 @Composable
-private fun MetricsSection(uiState: DashboardUiState, wideCards: Boolean) {
+internal fun MetricsSection(uiState: DashboardUiState, portrait: Boolean) {
     val stats = uiState.latestStats
     if (stats.isEmpty()) {
         PorcelainCard {
@@ -779,24 +779,24 @@ private fun MetricsSection(uiState: DashboardUiState, wideCards: Boolean) {
         ?.let { formatScientificTwoDecimals(it) } ?: "-"
 
     val colors = rankoColors
-    if (wideCards) {
+    if (portrait) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
                 MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("UNet LR", unetLr, colors.accentBlue, Modifier.weight(1f))
                 MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
-                    MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("UNet LR", unetLr, colors.accentBlue, Modifier.weight(1f))
-                    MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
-                }
-            }
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("Current Step", currentStep, colors.accentPink, Modifier.weight(1f))
+            MetricCard("Latest Loss", latestLoss, colors.qualityRed, Modifier.weight(1f))
+            MetricCard("UNet LR", unetLr, colors.accentBlue, Modifier.weight(1f))
+            MetricCard("TE Effective LR", teLr, colors.accentLilac, Modifier.weight(1f))
+        }
     }
 }
 
@@ -1031,6 +1031,7 @@ internal fun SampleRangeRow(
     note: String?,
     onSampleRange: (Int, Int) -> Unit,
     onCancel: (String) -> Unit,
+    portrait: Boolean = false,
 ) {
     val colors = rankoColors
     val steps = checkpointSteps(rows)
@@ -1077,17 +1078,13 @@ internal fun SampleRangeRow(
         }
 
         if (steps.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(
-                    text = "Sample range",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.textDim,
-                )
-                val editable = canStart && batch == null
+            val editable = canStart && batch == null
+            val covered = if (fromStep != null && toStep != null) {
+                checkpointsInRange(rows, fromStep, toStep).size
+            } else {
+                0
+            }
+            val fromField: @Composable () -> Unit = {
                 OutlinedTextField(
                     value = from,
                     onValueChange = { text -> from = text.filter { it.isDigit() }.take(7) },
@@ -1099,6 +1096,8 @@ internal fun SampleRangeRow(
                     colors = rankoFieldColors(),
                     shape = rankoTokens.panel,
                 )
+            }
+            val toField: @Composable () -> Unit = {
                 OutlinedTextField(
                     value = to,
                     onValueChange = { text -> to = text.filter { it.isDigit() }.take(7) },
@@ -1110,11 +1109,8 @@ internal fun SampleRangeRow(
                     colors = rankoFieldColors(),
                     shape = rankoTokens.panel,
                 )
-                val covered = if (fromStep != null && toStep != null) {
-                    checkpointsInRange(rows, fromStep, toStep).size
-                } else {
-                    0
-                }
+            }
+            val sampleButton: @Composable () -> Unit = {
                 CapsuleButton(
                     text = if (starting) "Starting…" else "Sample range",
                     onClick = { if (fromStep != null && toStep != null) onSampleRange(fromStep, toStep) },
@@ -1123,12 +1119,53 @@ internal fun SampleRangeRow(
                 ) {
                     Text(if (starting) "Starting…" else "Sample range", fontWeight = FontWeight.SemiBold)
                 }
+            }
+            val coveredLabel: @Composable () -> Unit = {
                 if (batch == null && covered > 0) {
                     Text(
                         text = "$covered checkpoint(s)",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.textDim,
                     )
+                }
+            }
+            if (portrait) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = "Sample range",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.textDim,
+                        )
+                        fromField()
+                        toField()
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        sampleButton()
+                        coveredLabel()
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        text = "Sample range",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textDim,
+                    )
+                    fromField()
+                    toField()
+                    sampleButton()
+                    coveredLabel()
                 }
             }
 
@@ -2431,6 +2468,7 @@ private fun SamplePreviewOverlay(
     onClose: () -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
+    portrait: Boolean,
 ) {
     ImagePreviewOverlay(
         images = samples.map { PreviewImage(path = it.path, title = it.filename) },
@@ -2438,6 +2476,7 @@ private fun SamplePreviewOverlay(
         onClose = onClose,
         onPrev = onPrev,
         onNext = onNext,
+        portrait = portrait,
     )
 }
 

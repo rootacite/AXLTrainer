@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -180,7 +181,7 @@ fun GalleryPane(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         state.visibleJobs.forEach { job ->
-                            JobRow(job, state, viewModel)
+                            JobRow(job, state, viewModel, portrait)
                         }
                     }
                 }
@@ -499,6 +500,7 @@ fun GalleryPane(
                     onClose = viewModel::closeGalleryPreview,
                     onPrev = viewModel::previewPrev,
                     onNext = viewModel::previewNext,
+                    portrait = portrait,
                 )
             }
         }
@@ -600,11 +602,21 @@ private fun ThumbSizeText(text: String, color: androidx.compose.ui.graphics.Colo
 }
 
 @Composable
-private fun JobRow(job: AutomationJobSummary, state: AutomationUiState, viewModel: AutomationScreenViewModel) {
+private fun JobRow(
+    job: AutomationJobSummary,
+    state: AutomationUiState,
+    viewModel: AutomationScreenViewModel,
+    portrait: Boolean,
+) {
     val colors = rankoColors
     val lang = state.language
     val selected = state.selectedJobId == job.id
     val elapsed = jobElapsedSeconds(job, Clock.System.now().toEpochMilliseconds())
+    val counts = uiText(lang, "job_counts")
+        .replace("{done}", job.done.toString())
+        .replace("{total}", job.total.toString())
+        .replace("{images}", job.images.toString())
+        .replace("{elapsed}", formatElapsed(elapsed))
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -614,34 +626,71 @@ private fun JobRow(job: AutomationJobSummary, state: AutomationUiState, viewMode
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = stateGlyph(job.state),
-                color = stateColor(job.state),
-                fontSize = 12.sp,
-                modifier = Modifier.width(14.dp),
-            )
-            Text(
-                text = uiText(lang, jobStateKey(job.state)),
-                color = stateColor(job.state),
-                fontSize = 11.sp,
-                modifier = Modifier.width(64.dp),
-            )
+        if (portrait) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stateGlyph(job.state),
+                    color = stateColor(job.state),
+                    fontSize = 12.sp,
+                    modifier = Modifier.width(14.dp),
+                )
+                Text(
+                    text = uiText(lang, jobStateKey(job.state)),
+                    color = stateColor(job.state),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Text(
+                    text = counts,
+                    color = colors.textDim,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f),
+                )
+            }
             Text(
                 text = job.id,
                 color = colors.text,
                 fontSize = 12.sp,
-                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Text(
-                text = uiText(lang, "job_counts")
-                    .replace("{done}", job.done.toString())
-                    .replace("{total}", job.total.toString())
-                    .replace("{images}", job.images.toString())
-                    .replace("{elapsed}", formatElapsed(elapsed)),
-                color = colors.textDim,
-                fontSize = 11.sp,
-            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stateGlyph(job.state),
+                    color = stateColor(job.state),
+                    fontSize = 12.sp,
+                    modifier = Modifier.width(14.dp),
+                )
+                Text(
+                    text = uiText(lang, jobStateKey(job.state)),
+                    color = stateColor(job.state),
+                    fontSize = 11.sp,
+                    modifier = Modifier.width(64.dp),
+                )
+                Text(
+                    text = job.id,
+                    color = colors.text,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = counts,
+                    color = colors.textDim,
+                    fontSize = 11.sp,
+                )
+            }
         }
         if (job.state == "running") {
             LinearProgressIndicator(

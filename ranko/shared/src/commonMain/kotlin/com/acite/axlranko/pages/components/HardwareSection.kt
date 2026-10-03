@@ -25,7 +25,7 @@ private const val BytesPerGiB = 1024.0 * 1024.0 * 1024.0
 private const val BytesPerTiB = BytesPerGiB * 1024.0
 
 @Composable
-fun HardwareSection(uiState: DashboardUiState, wideCards: Boolean = true) {
+fun HardwareSection(uiState: DashboardUiState, portrait: Boolean = false) {
     val hardware = uiState.hardware
     val gpu = hardware.gpus.firstOrNull()
     val history = uiState.hardwareHistory
@@ -62,8 +62,8 @@ fun HardwareSection(uiState: DashboardUiState, wideCards: Boolean = true) {
             )
         }
         HardwareInfoRow(gpu, hardware.cpu)
-        HardwareMetricCards(gpu, hardware.cpu, wideCards)
-        HardwareCharts(history, stroke, gpu, hardware.cpu)
+        HardwareMetricCards(gpu, hardware.cpu, portrait)
+        HardwareCharts(history, stroke, gpu, hardware.cpu, portrait)
     }
 }
 
@@ -139,7 +139,7 @@ private fun HardwareInfoRow(gpu: HardwareGpu?, cpu: HardwareCpu) {
 }
 
 @Composable
-private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu, wideCards: Boolean) {
+private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu, portrait: Boolean) {
     val colors = rankoColors
     val gpuUtil = formatPct(gpu?.gpuUtilPct)
     val vram = formatVram(gpu)
@@ -150,26 +150,26 @@ private fun HardwareMetricCards(gpu: HardwareGpu?, cpu: HardwareCpu, wideCards: 
         formatRam(cpu).takeIf { it != "—" },
     ).joinToString(" · ").ifBlank { "—" }
 
-    if (wideCards) {
+    if (portrait) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("GPU", gpuUtil, colors.accentPink, Modifier.weight(1f))
                 MetricCard("VRAM", vram, colors.accentBlue, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("Power", power, colors.qualityOrange, Modifier.weight(1f))
                 MetricCard("Temp", temps, colors.qualityRed, Modifier.weight(1f))
-                MetricCard("CPU", cpuLine, colors.accentLilac, Modifier.weight(1f))
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("GPU", gpuUtil, colors.accentPink, Modifier.weight(1f))
-                    MetricCard("VRAM", vram, colors.accentBlue, Modifier.weight(1f))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    MetricCard("Power", power, colors.qualityOrange, Modifier.weight(1f))
-                    MetricCard("Temp", temps, colors.qualityRed, Modifier.weight(1f))
-                }
-                MetricCard("CPU", cpuLine, colors.accentLilac, Modifier.fillMaxWidth())
-            }
+            MetricCard("CPU", cpuLine, colors.accentLilac, Modifier.fillMaxWidth())
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("GPU", gpuUtil, colors.accentPink, Modifier.weight(1f))
+            MetricCard("VRAM", vram, colors.accentBlue, Modifier.weight(1f))
+            MetricCard("Power", power, colors.qualityOrange, Modifier.weight(1f))
+            MetricCard("Temp", temps, colors.qualityRed, Modifier.weight(1f))
+            MetricCard("CPU", cpuLine, colors.accentLilac, Modifier.weight(1f))
+        }
     }
 }
 
@@ -179,6 +179,7 @@ private fun HardwareCharts(
     stroke: Float,
     gpu: HardwareGpu?,
     cpu: HardwareCpu,
+    portrait: Boolean,
 ) {
     val colors = rankoColors
     val vramMax = gpu?.memTotalBytes?.toDouble()?.div(BytesPerGiB)?.toFloat()?.takeIf { it > 0f }
@@ -188,63 +189,88 @@ private fun HardwareCharts(
         ?: history.ramGiB.maxOfOrNull { it.value }?.takeIf { it > 0f }
         ?: 1f
 
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    val gpuChart: @Composable (Modifier) -> Unit = { modifier ->
+        MultiSeriesChartCard(
+            title = "GPU",
+            series = listOf(
+                ChartSeries("Util", history.gpuUtil, colors.accentPink, domainMin = 0f, domainMax = 100f),
+                ChartSeries("VRAM", history.vramGiB, colors.accentBlue, domainMin = 0f, domainMax = vramMax),
+            ),
+            smoothing = 0f,
+            modifier = modifier,
+            outlierClip = 0f,
+            strokeWidth = stroke,
+        )
+    }
+    val tempChart: @Composable (Modifier) -> Unit = { modifier ->
+        MultiSeriesChartCard(
+            title = "Temp",
+            series = listOf(
+                ChartSeries("Edge", history.tempEdge, colors.qualityRed),
+                ChartSeries("Junction", history.tempJunction, colors.qualityPurple),
+                ChartSeries("CPU", history.cpuTemp, colors.star),
+            ),
+            smoothing = 0f,
+            modifier = modifier,
+            outlierClip = 0f,
+            strokeWidth = stroke,
+        )
+    }
+    val powerChart: @Composable (Modifier) -> Unit = { modifier ->
+        MultiSeriesChartCard(
+            title = "Power",
+            series = listOf(
+                ChartSeries("GPU", history.powerW, colors.qualityOrange),
+            ),
+            smoothing = 0f,
+            modifier = modifier,
+            outlierClip = 0f,
+            strokeWidth = stroke,
+        )
+    }
+    val cpuChart: @Composable (Modifier) -> Unit = { modifier ->
+        MultiSeriesChartCard(
+            title = "CPU",
+            series = listOf(
+                ChartSeries("Util", history.cpuUtil, colors.accentLilac, domainMin = 0f, domainMax = 100f),
+                ChartSeries("RAM", history.ramGiB, colors.qualityMint, domainMin = 0f, domainMax = ramMax),
+            ),
+            smoothing = 0f,
+            modifier = modifier,
+            outlierClip = 0f,
+            strokeWidth = stroke,
+        )
+    }
+
+    if (portrait) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            MultiSeriesChartCard(
-                title = "GPU",
-                series = listOf(
-                    ChartSeries("Util", history.gpuUtil, colors.accentPink, domainMin = 0f, domainMax = 100f),
-                    ChartSeries("VRAM", history.vramGiB, colors.accentBlue, domainMin = 0f, domainMax = vramMax),
-                ),
-                smoothing = 0f,
-                modifier = Modifier.weight(1f),
-                outlierClip = 0f,
-                strokeWidth = stroke,
-            )
-            MultiSeriesChartCard(
-                title = "Temp",
-                series = listOf(
-                    ChartSeries("Edge", history.tempEdge, colors.qualityRed),
-                    ChartSeries("Junction", history.tempJunction, colors.qualityPurple),
-                    ChartSeries("CPU", history.cpuTemp, colors.star),
-                ),
-                smoothing = 0f,
-                modifier = Modifier.weight(1f),
-                outlierClip = 0f,
-                strokeWidth = stroke,
-            )
+            gpuChart(Modifier.fillMaxWidth())
+            tempChart(Modifier.fillMaxWidth())
+            powerChart(Modifier.fillMaxWidth())
+            cpuChart(Modifier.fillMaxWidth())
         }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    } else {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            MultiSeriesChartCard(
-                title = "Power",
-                series = listOf(
-                    ChartSeries("GPU", history.powerW, colors.qualityOrange),
-                ),
-                smoothing = 0f,
-                modifier = Modifier.weight(1f),
-                outlierClip = 0f,
-                strokeWidth = stroke,
-            )
-            MultiSeriesChartCard(
-                title = "CPU",
-                series = listOf(
-                    ChartSeries("Util", history.cpuUtil, colors.accentLilac, domainMin = 0f, domainMax = 100f),
-                    ChartSeries("RAM", history.ramGiB, colors.qualityMint, domainMin = 0f, domainMax = ramMax),
-                ),
-                smoothing = 0f,
-                modifier = Modifier.weight(1f),
-                outlierClip = 0f,
-                strokeWidth = stroke,
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                gpuChart(Modifier.weight(1f))
+                tempChart(Modifier.weight(1f))
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                powerChart(Modifier.weight(1f))
+                cpuChart(Modifier.weight(1f))
+            }
         }
     }
 }
