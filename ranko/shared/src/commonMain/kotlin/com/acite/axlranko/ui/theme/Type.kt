@@ -32,8 +32,8 @@ fun rememberRankoFontFamily(): FontFamily {
 }
 
 fun rankoTypography(fontFamily: FontFamily): Typography {
-    val text = RankoPalette.SkySakura.text
-    val dim = RankoPalette.SkySakura.textDim
+    val text = RankoPalette.Amber.text
+    val dim = RankoPalette.Amber.textDim
     return Typography(
         displayLarge = TextStyle(
             fontFamily = fontFamily,

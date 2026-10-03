@@ -310,6 +310,8 @@ data class AutomationJobSummary(
     val failed: Int = 0,
     val images: Int = 0,
     @SerialName("preview_paths") val previewPaths: List<String> = emptyList(),
+    /** The last few images the job wrote, newest last. Empty on a helper from before this field. */
+    @SerialName("recent_paths") val recentPaths: List<String> = emptyList(),
     val workflow: String = "",
     @SerialName("output_dir") val outputDir: String = "",
     @SerialName("positive_node") val positiveNode: String = "",

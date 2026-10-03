@@ -69,7 +69,7 @@ There is no HTTP API, no inference server, and no kohya `sd-scripts` fork. Train
 
 ## Ranko — The Control Center
 
-The visual theme uses a **Sky & Sakura** palette (deep purple, sakura pink, sky blue) with Nunito typography and card containers. The application features a floating navigation rail that snaps to window edges and collapses when idle.
+The visual theme uses an amber night palette (warm near-black, logo amber `#F8A818`) with Nunito typography and porcelain cards. The application opens on a Home page and keeps a floating navigation rail that snaps to window edges and collapses when idle.
 
 Appearance settings live under Utils -> Appearance: backdrop styles (Solid, Glow-orbs, Image), blur effects, text/icon scaling, and thumbnail quality settings, all stored in Java Preferences.
 

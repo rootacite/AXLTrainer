@@ -258,9 +258,9 @@ The handler table, the job-record shapes (`single` / `sets` / `batch` / `evaluat
 
 ## 7. Ranko (`ranko/`)
 
-Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura**: `RankoTheme` + Nunito + porcelain cards; raw hex lives only in `ui/theme/Color.kt`, and screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`.
+Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style follows KataHana's porcelain cards and Nunito, on an amber night palette (`RankoPalette.Amber` in `ui/theme/Color.kt`; the brand accent is the logo amber `#F8A818`). Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`.
 
-Screens: `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum). Look-and-feel (background, blur, font/icon scale) lives in Utils → **Appearance** and is persisted by `AppearanceRepository`; `App.kt` feeds it to `LocalDensity`, so font scale affects sp only and icon scale dp only.
+Screens: `Home` | `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum). The app opens on Home. Look-and-feel (background, blur, font/icon scale) lives in Utils → **Appearance** and is persisted by `AppearanceRepository`; `App.kt` feeds it to `LocalDensity`, so font scale affects sp only and icon scale dp only.
 
 Conventions that bite:
 

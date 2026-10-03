@@ -143,6 +143,7 @@ class DashboardScreenViewModel(
                 outlierClip = DashboardUiState().outlierClip,
                 smoothExtraDp = DashboardUiState().smoothExtraDp,
                 stepSpan = DashboardUiState().stepSpan,
+                sampleThumbSize = DashboardUiState().sampleThumbSize,
                 chartViewError = null,
                 clearingUnpinned = false,
                 unpinnedClearResult = null,
@@ -177,7 +178,9 @@ class DashboardScreenViewModel(
     }
 
     fun setSampleThumbSize(value: Float) {
-        _uiState.update { it.copy(sampleThumbSize = value.coerceIn(80f, 360f)) }
+        _uiState.update {
+            it.copy(sampleThumbSize = value.roundToInt().coerceIn(80, 360).toFloat(), chartViewError = null)
+        }
     }
 
     /** Newest steps a step-axis chart opens on. Stored as a whole number of steps. */
@@ -220,6 +223,7 @@ class DashboardScreenViewModel(
                         smoothExtraDp = response.smoothExtraDp,
                         outlierClip = response.outlierClip,
                         stepSpan = response.stepSpan.coerceIn(100, 8000).toFloat(),
+                        sampleThumbSize = response.sampleThumbDp.coerceIn(80, 360).toFloat(),
                         chartViewError = null,
                     )
                 }
@@ -243,6 +247,7 @@ class DashboardScreenViewModel(
                         smoothExtraDp = state.smoothExtraDp,
                         outlierClip = state.outlierClip,
                         stepSpan = state.stepSpan.roundToInt(),
+                        sampleThumbDp = state.sampleThumbSize.roundToInt(),
                         name = shown?.outputName,
                         runId = runId,
                     )
@@ -254,6 +259,7 @@ class DashboardScreenViewModel(
                         smoothExtraDp = response.smoothExtraDp,
                         outlierClip = response.outlierClip,
                         stepSpan = response.stepSpan.coerceIn(100, 8000).toFloat(),
+                        sampleThumbSize = response.sampleThumbDp.coerceIn(80, 360).toFloat(),
                         chartViewError = null,
                     )
                 }

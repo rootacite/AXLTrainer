@@ -883,14 +883,16 @@ def handle_chart_view_set(params: dict[str, Any]) -> dict[str, Any]:
     run_id, _output_name = _resolve_run(params, cfg)
     if not run_id:
         raise ValueError("no run to store a chart view for")
-    if "smooth_extra_dp" not in params and "outlier_clip" not in params and "step_span" not in params:
-        raise ValueError("smooth_extra_dp, outlier_clip or step_span is required")
+    known = ("smooth_extra_dp", "outlier_clip", "step_span", "sample_thumb_dp")
+    if not any(key in params for key in known):
+        raise ValueError("smooth_extra_dp, outlier_clip, step_span or sample_thumb_dp is required")
     log_dir = _log_dir(cfg, run_id)
     current = read_chart_view(log_dir)
     extra = params["smooth_extra_dp"] if "smooth_extra_dp" in params else current["smooth_extra_dp"]
     clip = params["outlier_clip"] if "outlier_clip" in params else current["outlier_clip"]
     span = params["step_span"] if "step_span" in params else current["step_span"]
-    write_chart_view(log_dir, extra, clip, span)
+    thumb = params["sample_thumb_dp"] if "sample_thumb_dp" in params else current["sample_thumb_dp"]
+    write_chart_view(log_dir, extra, clip, span, thumb)
     return _chart_view_payload(cfg, run_id)
 
 

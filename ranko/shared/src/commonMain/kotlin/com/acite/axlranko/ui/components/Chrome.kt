@@ -185,8 +185,10 @@ fun PorcelainCard(
     val tokens = rankoTokens
     val colors = rankoColors
     val hazeContext = LocalRankoHaze.current
-    val tint = colors.bgPanel.copy(alpha = 0.58f)
+    val tint = colors.bgPanel.copy(alpha = 0.62f)
     val cardTint = colors.bgCard.copy(alpha = 0.42f)
+    // Solid backdrop has nothing to blur, and a translucent dark tint on it reads as a dirty
+    // black. The opaque card color is the fill in that case.
     // The emphasis is a wash over the frosted fill every other card gets, not a different fill: a
     // pinned card is still a card, and only the accent border and the wash mark it apart.
     val wash = if (emphasized) colors.accentPink.copy(alpha = 0.14f) else Color.Transparent
@@ -199,7 +201,7 @@ fun PorcelainCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(tokens.card)
-            .rankoCardBlur(hazeContext, tint, cardTint)
+            .rankoCardBlur(hazeContext, tint, cardTint, colors.bgCard)
             .background(wash)
             .border(if (emphasized) 2.dp else 1.dp, border, tokens.card)
             .padding(horizontal = 14.dp, vertical = 14.dp),
@@ -227,7 +229,7 @@ fun FrostedSurface(
     Column(
         modifier
             .clip(tokens.card)
-            .rankoCardBlur(hazeContext, tint, cardTint)
+            .rankoCardBlur(hazeContext, tint, cardTint, colors.bgCard)
             .border(1.dp, Color.White.copy(alpha = 0.10f), tokens.card),
         content = content,
     )
@@ -237,10 +239,11 @@ private fun Modifier.rankoCardBlur(
     hazeContext: HazeContext,
     tint: Color,
     cardTint: Color,
+    solid: Color,
 ): Modifier {
     val state = hazeContext.state
     val blurDp = hazeContext.cardBlurRadiusDp
-    if (state == null || blurDp <= 0f) return background(tint)
+    if (state == null || blurDp <= 0f) return background(solid)
     return hazeBlur(
         input = HazeInput.Sources(state),
         style = HazeBlurStyle {
@@ -248,7 +251,7 @@ private fun Modifier.rankoCardBlur(
             backgroundColor(tint)
             colorEffects(listOf(HazeColorEffect.tint(cardTint)))
             noiseFactor(0.05f)
-            fallbackColorEffect(HazeColorEffect.tint(tint))
+            fallbackColorEffect(HazeColorEffect.tint(solid))
         },
-    ).background(tint)
+    )
 }

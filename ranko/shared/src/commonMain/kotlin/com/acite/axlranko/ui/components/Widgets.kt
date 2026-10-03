@@ -96,7 +96,8 @@ fun CapsuleButton(
         }
         val fg = when {
             !enabled -> colors.textDim
-            emphasized || danger -> Color.White
+            danger -> Color.White
+            emphasized -> colors.bgApp
             else -> colors.text
         }
         Box(
@@ -124,7 +125,11 @@ fun CapsuleButton(
         shape = tokens.capsule,
         colors = ButtonDefaults.buttonColors(
             containerColor = if (emphasized || danger) accent else colors.bgCard,
-            contentColor = if (emphasized || danger) Color.White else colors.text,
+            contentColor = when {
+                danger -> Color.White
+                emphasized -> colors.bgApp
+                else -> colors.text
+            },
             disabledContainerColor = colors.bgCard.copy(alpha = 0.5f),
             disabledContentColor = colors.textDim,
         ),

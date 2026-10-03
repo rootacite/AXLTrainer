@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material3.Icon
@@ -43,6 +44,7 @@ import com.acite.axlranko.pages.AutomationScreen
 import com.acite.axlranko.pages.AutomationScreenViewModel
 import com.acite.axlranko.pages.DashboardScreen
 import com.acite.axlranko.pages.DashboardScreenViewModel
+import com.acite.axlranko.pages.HomeRoute
 import com.acite.axlranko.pages.ImageScreenViewModel
 import com.acite.axlranko.pages.ImagesScreen
 import com.acite.axlranko.pages.StatisticsScreen
@@ -58,7 +60,7 @@ import org.jetbrains.compose.resources.painterResource
 import kotlin.math.roundToInt
 
 enum class Screen {
-    Images, Statistics, Utils, Dashboard, Automation
+    Home, Images, Statistics, Utils, Dashboard, Automation
 }
 
 @Composable
@@ -78,6 +80,29 @@ public fun Stage(
     )
     {
         val bounds = Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
+        val open: (Screen) -> Unit = { screen ->
+            viewModel.currentScreen = screen
+            when (screen) {
+                Screen.Home -> dsViewModel.onLeave()
+                Screen.Images -> {
+                    dsViewModel.onLeave()
+                    imViewModel.reloadFromDiskSafely()
+                }
+                Screen.Statistics -> {
+                    dsViewModel.onLeave()
+                    ssViewModel.scanDataset()
+                }
+                Screen.Utils -> {
+                    dsViewModel.onLeave()
+                    usViewModel.reloadFromDiskSafely()
+                }
+                Screen.Dashboard -> dsViewModel.onEnter()
+                Screen.Automation -> {
+                    dsViewModel.onLeave()
+                    auViewModel.onEnter()
+                }
+            }
+        }
 
         AnimatedContent(
             targetState = viewModel.currentScreen,
@@ -94,6 +119,13 @@ public fun Stage(
             modifier = Modifier.fillMaxSize()
         ) { targetScreen ->
             when (targetScreen) {
+                Screen.Home -> HomeRoute(
+                    onOpen = { open(it) },
+                    onOpenRun = { runId ->
+                        dsViewModel.selectRun(runId)
+                        open(Screen.Dashboard)
+                    },
+                )
                 Screen.Images -> ImagesScreen()
                 Screen.Statistics -> StatisticsScreen()
                 Screen.Utils -> UtilsScreen()
@@ -105,30 +137,12 @@ public fun Stage(
         FloatingNavRail(
             viewModel = viewModel,
             bounds = bounds,
-            onImages = {
-                viewModel.currentScreen = Screen.Images
-                dsViewModel.onLeave()
-                imViewModel.reloadFromDiskSafely()
-            },
-            onStatistics = {
-                viewModel.currentScreen = Screen.Statistics
-                dsViewModel.onLeave()
-                ssViewModel.scanDataset()
-            },
-            onUtils = {
-                viewModel.currentScreen = Screen.Utils
-                dsViewModel.onLeave()
-                usViewModel.reloadFromDiskSafely()
-            },
-            onDashboard = {
-                viewModel.currentScreen = Screen.Dashboard
-                dsViewModel.onEnter()
-            },
-            onAutomation = {
-                viewModel.currentScreen = Screen.Automation
-                dsViewModel.onLeave()
-                auViewModel.onEnter()
-            },
+            onHome = { open(Screen.Home) },
+            onImages = { open(Screen.Images) },
+            onStatistics = { open(Screen.Statistics) },
+            onUtils = { open(Screen.Utils) },
+            onDashboard = { open(Screen.Dashboard) },
+            onAutomation = { open(Screen.Automation) },
         )
     }
 }
@@ -137,6 +151,7 @@ public fun Stage(
 private fun FloatingNavRail(
     viewModel: StageViewModel,
     bounds: Size,
+    onHome: () -> Unit,
     onImages: () -> Unit,
     onStatistics: () -> Unit,
     onUtils: () -> Unit,
@@ -225,6 +240,12 @@ private fun FloatingNavRail(
                         .clip(CircleShape),
                 )
 
+                StageNavButton(
+                    icon = Icons.Default.Home,
+                    description = "Home",
+                    selected = viewModel.currentScreen == Screen.Home,
+                    onClick = onHome,
+                )
                 StageNavButton(
                     icon = Icons.Default.Image,
                     description = "Images",

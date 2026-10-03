@@ -267,6 +267,7 @@ class TrainerIpcClient {
         smoothExtraDp: Float? = null,
         outlierClip: Float? = null,
         stepSpan: Int? = null,
+        sampleThumbDp: Int? = null,
         name: String? = null,
         runId: String? = null,
     ): ChartViewResponse {
@@ -276,6 +277,7 @@ class TrainerIpcClient {
                 smoothExtraDp?.let { put("smooth_extra_dp", it) }
                 outlierClip?.let { put("outlier_clip", it) }
                 stepSpan?.let { put("step_span", it) }
+                sampleThumbDp?.let { put("sample_thumb_dp", it) }
                 name?.let { put("name", it) }
                 runId?.let { put("run_id", it) }
             },

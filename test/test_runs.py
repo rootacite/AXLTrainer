@@ -435,7 +435,7 @@ class ChartViewFileTest(unittest.TestCase):
     def test_missing_file_is_the_defaults(self):
         self.assertEqual(
             read_chart_view(self.log),
-            {"smooth_extra_dp": 1.2, "outlier_clip": 0.15, "step_span": 800},
+            {"smooth_extra_dp": 1.2, "outlier_clip": 0.15, "step_span": 800, "sample_thumb_dp": 180},
         )
         self.assertEqual(default_chart_view()["outlier_clip"], 0.15)
         self.assertEqual(default_chart_view()["step_span"], 800)
@@ -446,7 +446,7 @@ class ChartViewFileTest(unittest.TestCase):
         self.assertEqual(path, self.log / "chart_view.json")
         self.assertEqual(
             read_chart_view(self.log),
-            {"smooth_extra_dp": 2.5, "outlier_clip": 0.0, "step_span": 800},
+            {"smooth_extra_dp": 2.5, "outlier_clip": 0.0, "step_span": 800, "sample_thumb_dp": 180},
         )
         self.assertEqual(list(self.log.glob(".chart_view.json.*.tmp")), [])
 
@@ -458,7 +458,7 @@ class ChartViewFileTest(unittest.TestCase):
         )
         self.assertEqual(
             read_chart_view(self.log),
-            {"smooth_extra_dp": 1.2, "outlier_clip": 0.2, "step_span": 800},
+            {"smooth_extra_dp": 1.2, "outlier_clip": 0.2, "step_span": 800, "sample_thumb_dp": 180},
         )
 
     def test_a_corrupt_file_is_the_defaults(self):
@@ -528,8 +528,12 @@ class ChartViewIpcTest(unittest.TestCase):
         self.assertEqual(result["smooth_extra_dp"], 3)
         self.assertEqual(result["outlier_clip"], 0.05)
         self.assertEqual(result["step_span"], 800)
+        self.assertEqual(result["sample_thumb_dp"], 180)
         stored = json.loads((self.logs / self.RUN_ID / "chart_view.json").read_text(encoding="utf-8"))
-        self.assertEqual(stored, {"smooth_extra_dp": 3.0, "outlier_clip": 0.05, "step_span": 800})
+        self.assertEqual(
+            stored,
+            {"smooth_extra_dp": 3.0, "outlier_clip": 0.05, "step_span": 800, "sample_thumb_dp": 180},
+        )
 
     def test_another_run_is_left_alone(self):
         other = "rein_20260101_000000"
@@ -553,6 +557,12 @@ class ChartViewIpcTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "step_span": 9000})
         self.assertEqual(self.api.dispatch("chart_view", {"run_id": self.RUN_ID})["step_span"], 1200)
+        self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "sample_thumb_dp": 200})
+        self.assertEqual(self.api.dispatch("chart_view", {"run_id": self.RUN_ID})["sample_thumb_dp"], 200)
+        self.assertEqual(self.api.dispatch("chart_view", {"run_id": self.RUN_ID})["step_span"], 1200)
+        with self.assertRaises(ValueError):
+            self.api.dispatch("chart_view_set", {"run_id": self.RUN_ID, "sample_thumb_dp": 40})
+        self.assertEqual(self.api.dispatch("chart_view", {"run_id": self.RUN_ID})["sample_thumb_dp"], 200)
 
 
 if __name__ == "__main__":

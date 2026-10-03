@@ -501,6 +501,7 @@ class AutomationStoreTest(unittest.TestCase):
         self.assertEqual(2, summary["images"])
         self.assertEqual(2, len(summary["preview_paths"]))
         self.assertTrue(summary["preview_paths"][0].endswith("p0001_01.png"))
+        self.assertEqual(summary["preview_paths"], summary["recent_paths"])
 
 
 def _dead_pid() -> int:

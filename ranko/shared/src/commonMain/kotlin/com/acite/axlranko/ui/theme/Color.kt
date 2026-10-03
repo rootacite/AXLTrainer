@@ -25,24 +25,29 @@ data class RankoPalette(
     val qualityGreen: Color = Color(0xFF3DAA6D),
 ) {
     companion object {
-        val SkySakura = RankoPalette(
-            bgApp = Color(0xFF12101A),
-            bgPanel = Color(0xFF1B1730),
-            bgCard = Color(0xFF252042),
-            stroke = Color(0xFF3A3460),
-            text = Color(0xFFF4F0FF),
-            textDim = Color(0xFFA89BC8),
-            accentPink = Color(0xFFFF6BA8),
-            accentBlue = Color(0xFF7AB8FF),
-            accentLilac = Color(0xFFC9B6FF),
-            boardBg = Color(0xFF2A2450),
-            grid = Color(0xFF6E64A8),
-            star = Color(0xFFFF8EC8),
+        /**
+         * Night palette whose primary is the logo amber (`axltrainer.png`, sampled #F8A818).
+         * [accentPink] keeps its name: every screen already uses it as the brand accent.
+         * [accentBlue] stays a cool secondary so a running phase does not share that amber.
+         */
+        val Amber = RankoPalette(
+            bgApp = Color(0xFF16130F),
+            bgPanel = Color(0xFF3E3830),
+            bgCard = Color(0xFF514A40),
+            stroke = Color(0xFF74685A),
+            text = Color(0xFFFFF6E8),
+            textDim = Color(0xFFC4B096),
+            accentPink = Color(0xFFF8A818),
+            accentBlue = Color(0xFF7EB0D4),
+            accentLilac = Color(0xFFF0D39A),
+            boardBg = Color(0xFF3A342C),
+            grid = Color(0xFF8A7B68),
+            star = Color(0xFFF8A818),
         )
     }
 }
 
-val LocalRankoPalette = staticCompositionLocalOf { RankoPalette.SkySakura }
+val LocalRankoPalette = staticCompositionLocalOf { RankoPalette.Amber }
 
 /** Checkpoint sparkline: a rising Avg Loss slope, (255, 79, 0). */
 val SparkSlopeHigh = Color(0xFFFF4F00)

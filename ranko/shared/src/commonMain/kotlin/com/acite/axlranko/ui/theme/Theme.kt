@@ -9,13 +9,13 @@ import androidx.compose.ui.graphics.Color
 
 @Composable
 fun RankoTheme(content: @Composable () -> Unit) {
-    val palette = RankoPalette.SkySakura
+    val palette = RankoPalette.Amber
     val fonts = rememberRankoFontFamily()
     val typography = remember(fonts) { rankoTypography(fonts) }
     val scheme = remember(palette) {
         darkColorScheme(
             primary = palette.accentPink,
-            onPrimary = Color.White,
+            onPrimary = palette.bgApp,
             primaryContainer = palette.bgCard,
             onPrimaryContainer = palette.text,
             secondary = palette.accentBlue,

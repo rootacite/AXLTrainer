@@ -1091,5 +1091,6 @@ class DashboardIpcTest {
         assertEquals(1.2f, defaults.smoothExtraDp)
         assertEquals(0.15f, defaults.outlierClip)
         assertEquals(800, defaults.stepSpan)
+        assertEquals(180, defaults.sampleThumbDp)
     }
 }

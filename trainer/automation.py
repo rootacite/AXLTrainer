@@ -685,6 +685,7 @@ def job_summary(job: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(prompt, dict) and isinstance(prompt.get("images"), list):
             images.extend(str(name) for name in prompt["images"])
     preview = images[:8]
+    recent = images[-24:]
     done = sum(1 for p in prompts if isinstance(p, dict) and p.get("state") == PROMPT_STATE_DONE)
     failed = sum(1 for p in prompts if isinstance(p, dict) and p.get("state") == PROMPT_STATE_ERROR)
     output_dir = job.get("output_dir")
@@ -701,6 +702,7 @@ def job_summary(job: Mapping[str, Any]) -> dict[str, Any]:
         "failed": failed,
         "images": len(images),
         "preview_paths": [str(root / name) for name in preview] if root is not None else [],
+        "recent_paths": [str(root / name) for name in recent] if root is not None else [],
         "workflow": job.get("workflow"),
         "output_dir": job.get("output_dir"),
         "positive_node": job.get("positive_node"),

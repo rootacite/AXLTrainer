@@ -270,10 +270,13 @@ CHART_VIEW_FILENAME = "chart_view.json"
 DEFAULT_SMOOTH_EXTRA_DP = 1.2
 DEFAULT_OUTLIER_CLIP = 0.15
 DEFAULT_STEP_SPAN = 800
+DEFAULT_SAMPLE_THUMB_DP = 180
 SMOOTH_EXTRA_DP_MAX = 6.0
 OUTLIER_CLIP_MAX = 0.40
 STEP_SPAN_MIN = 100
 STEP_SPAN_MAX = 8000
+SAMPLE_THUMB_DP_MIN = 80
+SAMPLE_THUMB_DP_MAX = 360
 
 
 def chart_view_path(log_dir: Union[str, Path]) -> Path:
@@ -287,7 +290,21 @@ def default_chart_view() -> dict[str, float | int]:
         "smooth_extra_dp": DEFAULT_SMOOTH_EXTRA_DP,
         "outlier_clip": DEFAULT_OUTLIER_CLIP,
         "step_span": DEFAULT_STEP_SPAN,
+        "sample_thumb_dp": DEFAULT_SAMPLE_THUMB_DP,
     }
+
+
+def _chart_sample_thumb(value: Any) -> Optional[int]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number != int(number):
+        return None
+    thumb = int(number)
+    if thumb < SAMPLE_THUMB_DP_MIN or thumb > SAMPLE_THUMB_DP_MAX:
+        return None
+    return thumb
 
 
 def _chart_step_span(value: Any) -> Optional[int]:
@@ -334,12 +351,15 @@ def read_chart_view(log_dir: Union[str, Path]) -> dict[str, float]:
     extra = _chart_number(payload.get("smooth_extra_dp"), 0.0, SMOOTH_EXTRA_DP_MAX)
     clip = _chart_number(payload.get("outlier_clip"), 0.0, OUTLIER_CLIP_MAX)
     span = _chart_step_span(payload.get("step_span", DEFAULT_STEP_SPAN))
-    if extra is None or clip is None or span is None:
+    # Absent on a file written before sample size was stored: that is the default, not a bad value.
+    thumb = _chart_sample_thumb(payload.get("sample_thumb_dp", DEFAULT_SAMPLE_THUMB_DP))
+    if extra is None or clip is None or span is None or thumb is None:
         print(f"[Warn] {path} has a chart view value outside its range", file=sys.stderr)
     return {
         "smooth_extra_dp": defaults["smooth_extra_dp"] if extra is None else extra,
         "outlier_clip": defaults["outlier_clip"] if clip is None else clip,
         "step_span": defaults["step_span"] if span is None else span,
+        "sample_thumb_dp": defaults["sample_thumb_dp"] if thumb is None else thumb,
     }
 
 
@@ -348,11 +368,13 @@ def write_chart_view(
     smooth_extra_dp: Any,
     outlier_clip: Any,
     step_span: Any = DEFAULT_STEP_SPAN,
+    sample_thumb_dp: Any = DEFAULT_SAMPLE_THUMB_DP,
 ) -> Path:
     """Replace the run's chart view atomically. The directory is created if needed."""
     extra = _chart_number(smooth_extra_dp, 0.0, SMOOTH_EXTRA_DP_MAX)
     clip = _chart_number(outlier_clip, 0.0, OUTLIER_CLIP_MAX)
     span = _chart_step_span(step_span)
+    thumb = _chart_sample_thumb(sample_thumb_dp)
     if extra is None:
         raise ValueError(
             f"smooth_extra_dp must be between 0 and {SMOOTH_EXTRA_DP_MAX:g}, not {smooth_extra_dp!r}"
@@ -365,11 +387,23 @@ def write_chart_view(
         raise ValueError(
             f"step_span must be an integer between {STEP_SPAN_MIN} and {STEP_SPAN_MAX}, not {step_span!r}"
         )
+    if thumb is None:
+        raise ValueError(
+            f"sample_thumb_dp must be an integer between {SAMPLE_THUMB_DP_MIN} and "
+            f"{SAMPLE_THUMB_DP_MAX}, not {sample_thumb_dp!r}"
+        )
     path = chart_view_path(log_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(
-        json.dumps({"smooth_extra_dp": extra, "outlier_clip": clip, "step_span": span}),
+        json.dumps(
+            {
+                "smooth_extra_dp": extra,
+                "outlier_clip": clip,
+                "step_span": span,
+                "sample_thumb_dp": thumb,
+            }
+        ),
         encoding="utf-8",
     )
     os.replace(tmp, path)

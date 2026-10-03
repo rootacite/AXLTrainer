@@ -3,7 +3,7 @@
 > Detail behind `AGENT.md` §7. `AGENT.md` keeps the condensed rules; this file carries the full text.
 
 
-Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style is KataHana **Sky & Sakura**: `RankoTheme` + Nunito + porcelain cards. Raw hex lives only in `ui/theme/Color.kt`. Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
+Compose Multiplatform **desktop JVM** plus a **wasmJs** local/LAN companion (`:webApp`). Kotlin 2.4.10, Compose 1.12.0, Material 3, Metro DI, ktoml, Coil 3, haze 2.0. Visual style follows KataHana's porcelain cards and Nunito, on an amber night palette (`RankoPalette.Amber`). Raw hex lives only in `ui/theme/Color.kt`. The brand accent is the logo amber `#F8A818` (the field is still `accentPink`, which every screen already reads as that accent). Screens read `rankoColors` / `PorcelainCard` / `CapsuleButton`; Canvas helpers take colors as parameters.
 
 User-facing look-and-feel (background: Solid / Glow / Image, independent card vs background blur, font/icon scale, thumbnail JPEG quality) lives in the **Appearance** section of the Utils tab and is persisted by `AppearanceRepository` (Java Preferences, key `com/acite/axlranko/appearance`). `App.kt` consumes it and feeds `LocalDensity` so **font scale only affects sp** and **icon scale only affects dp** (`density * iconScale`, `fontScale * font / iconScale`). `RankoBackdrop` renders glow orbs for `Glow` and a cropped, dimmed photo for `Image`. A full-window haze layer uses `backgroundBlurRadiusDp` (gaps); `PorcelainCard` / `FrostedSurface` use `cardBlurRadiusDp`.
 
@@ -16,8 +16,8 @@ The Utils **WM** tab is the same kind of UI-only section (no config key) and is 
 | `ranko/desktopApp/…/main.kt` | Window; `createGraph<AppGraph>()` |
 | `ranko/webApp/…/main.kt` | `ComposeViewport` `#webApp`; same graph; no spawn |
 | `…/util/ProcessExitGuard.kt` (jvmMain) | One watcher per quit, armed from `main.kt`'s close request and from a shutdown hook: it kills the JVM if it is still there `DEFAULT_GRACE_SECONDS` later, start-time guarded so a reused PID is left alone. A hang inside the VM cannot be undone from inside the VM, and a windowless Ranko keeps the GPU render nodes and its `api.py` child. |
-| `ranko/shared/src/commonMain/…/App.kt`, `Stage.kt` | Shell + four screens |
-| `…/ui/theme/` | Sky & Sakura palette, tokens, Nunito, `RankoTheme` |
+| `ranko/shared/src/commonMain/…/App.kt`, `Stage.kt` | Shell, Home, and the five modules |
+| `…/ui/theme/` | Amber night palette, tokens, Nunito, `RankoTheme` |
 | `…/ui/components/` | Backdrop, porcelain/frosted surfaces, capsule controls |
 | `…/pages/*Screen.kt` + `*ViewModel.kt` | UI + state |
 | `…/data/TrainerIpcClient.kt` | WebSocket JSON-RPC client: four connections (`control` / `poll` / `blob` / `long`), each admitted with `hello`, each call with its own timeout; `IpcResources.kt` next to it holds the resource table and the per-method policy |
@@ -42,7 +42,9 @@ The Utils **WM** tab is the same kind of UI-only section (no config key) and is 
 | `…/jvmMain/` | WebSocket transport, helper spawn, FileKit, Coil fetcher |
 | `Graphs.kt` / `Factory.kt` | Metro `AppGraph` + ViewModel factory |
 
-Screens: `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum).
+Screens: `Home` | `Images` | `Statistics` | `Utils` | `Dashboard` | `Automation` (`Stage.kt` enum). The app opens on Home.
+
+Home (`pages/HomeScreen.kt`) is the KataHana home laid out for this app. Wide windows (≥ 840 dp) use a 345 dp left column: the brand card (logo, AxlRanko, version, short git hash) and, filling the space under it, **What's new** — the last 40 commits, with the same kind chips as KataHana (`[Feat]` / `[Fix]` / `[doc]`, plus any git tag). The right column is a scrolling **Recent runs** list (`list_runs`; a row opens the Dashboard pinned to that run) with the five module cards under it. Narrow windows stack brand, changelog, runs, then cards. Each card is a `PorcelainCard` and opens that module through the same enter/leave path as the nav rail. Dashboard shows the live `train_status` line, a one-line hardware reading (`hardware_status`: GPU use, VRAM, GPU temperature, RAM use), a mini Avg Loss chart (the run's `Train/Avg_Loss`, no hit testing) and up to four samples from the newest step. Automation shows the running job, else the newest one, and that job's newest images (`recent_paths`, the last 24) in at most two rows sized to the card. Statistics draws a short non-interactive tag-frequency bar list. Utils lists config fields as **name**: value. Images shows a random sample drawn round-robin from every train-data folder, also at most two rows. Home polls `train_status`, `list_samples`, `list_runs` and `automation_job_list` while it is open, and calls `dashboard()` only to read `Train/Avg_Loss`. The poll stops when Home leaves.
 
 Path pickers go through `PathPicker`. Desktop (`JvmPathPicker`) is FileKit (XDG portal on Linux). Web (`WasmPathPicker`) is an in-app porcelain dialog over `fs_listdir` / `fs_roots`, because the browser cannot return a POSIX path the trainer can open. Do not reintroduce `JFileChooser`. `initialDirectoryFor` seeds FileKit from the current field value; Save As on desktop may create a 0-byte placeholder that `deleteEmptyPlaceholder` removes.
 

@@ -286,7 +286,8 @@ data class SamplePromptsResponse(
  */
 /**
  * `chart_view`: the Dashboard sliders stored in `{logging_dir}/{run_id}/chart_view.json`.
- * A run with no file answers with the defaults (smooth extra 1.2 dp, y clip 15%, 800 steps).
+ * A run with no file answers with the defaults (smooth extra 1.2 dp, y clip 15%, 800 steps,
+ * sample thumbs 180 dp).
  */
 @Serializable
 data class ChartViewResponse(
@@ -295,6 +296,7 @@ data class ChartViewResponse(
     @SerialName("smooth_extra_dp") val smoothExtraDp: Float = 1.2f,
     @SerialName("outlier_clip") val outlierClip: Float = 0.15f,
     @SerialName("step_span") val stepSpan: Int = 800,
+    @SerialName("sample_thumb_dp") val sampleThumbDp: Int = 180,
 )
 
 @Serializable
@@ -612,7 +614,8 @@ data class DashboardUiState(
     val autoRefresh: Boolean = true,
     val smoothing: Float = 0.90f,
     val chartStroke: Float = 1.5f,
-    val sampleThumbSize: Float = 120f,
+    /** Sample thumbnail edge, in dp. Stored as `sample_thumb_dp` in the run's chart view. */
+    val sampleThumbSize: Float = 180f,
     /** Newest steps a step-axis chart opens on. Matches [com.acite.axlranko.pages.components.DEFAULT_STEP_SPAN]. */
     val stepSpan: Float = 800f,
     /** Tail fraction dropped when fitting Avg Loss and Train/Loss. 0.15 is 15%. */

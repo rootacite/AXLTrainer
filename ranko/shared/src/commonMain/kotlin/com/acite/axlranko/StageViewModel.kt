@@ -27,7 +27,7 @@ class StageViewModel : ViewModel()
     var navDock by mutableStateOf(NavDock.Left)
     var navDragging by mutableStateOf(false)
     var navPeeking by mutableStateOf(false)
-    var currentScreen by mutableStateOf(Screen.Images)
+    var currentScreen by mutableStateOf(Screen.Home)
 
     fun dragNavBy(delta: Offset, navSize: Size, bounds: Size) {
         navDragging = true

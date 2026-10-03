@@ -7,20 +7,20 @@ import kotlin.test.assertEquals
 
 class RankoPaletteTest {
     @Test
-    fun skySakuraKeepsKataHanaTokens() {
-        val palette = RankoPalette.SkySakura
-        assertEquals(Color(0xFF12101A), palette.bgApp)
-        assertEquals(Color(0xFF1B1730), palette.bgPanel)
-        assertEquals(Color(0xFF252042), palette.bgCard)
-        assertEquals(Color(0xFF3A3460), palette.stroke)
-        assertEquals(Color(0xFFF4F0FF), palette.text)
-        assertEquals(Color(0xFFA89BC8), palette.textDim)
-        assertEquals(Color(0xFFFF6BA8), palette.accentPink)
-        assertEquals(Color(0xFF7AB8FF), palette.accentBlue)
-        assertEquals(Color(0xFFC9B6FF), palette.accentLilac)
-        assertEquals(Color(0xFF2A2450), palette.boardBg)
-        assertEquals(Color(0xFF6E64A8), palette.grid)
-        assertEquals(Color(0xFFFF8EC8), palette.star)
+    fun amberMatchesTheLogo() {
+        val palette = RankoPalette.Amber
+        assertEquals(Color(0xFF16130F), palette.bgApp)
+        assertEquals(Color(0xFF3E3830), palette.bgPanel)
+        assertEquals(Color(0xFF514A40), palette.bgCard)
+        assertEquals(Color(0xFF74685A), palette.stroke)
+        assertEquals(Color(0xFFFFF6E8), palette.text)
+        assertEquals(Color(0xFFC4B096), palette.textDim)
+        assertEquals(Color(0xFFF8A818), palette.accentPink)
+        assertEquals(Color(0xFF7EB0D4), palette.accentBlue)
+        assertEquals(Color(0xFFF0D39A), palette.accentLilac)
+        assertEquals(Color(0xFF3A342C), palette.boardBg)
+        assertEquals(Color(0xFF8A7B68), palette.grid)
+        assertEquals(Color(0xFFF8A818), palette.star)
         assertEquals(Color(0xFFE85D4C), palette.qualityRed)
         assertEquals(Color(0xFFF08A3A), palette.qualityOrange)
         assertEquals(Color(0xFFF2C14E), palette.qualityYellow)

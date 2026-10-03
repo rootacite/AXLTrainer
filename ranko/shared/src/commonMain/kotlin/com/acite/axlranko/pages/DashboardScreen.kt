@@ -698,10 +698,11 @@ private fun DashboardHeader(
                 modifier = Modifier.weight(1f),
             )
             HeaderSlider(
-                label = "Sample Size: ${uiState.sampleThumbSize.roundToInt()}px",
+                label = "Sample Size: ${uiState.sampleThumbSize.roundToInt()} dp",
                 value = uiState.sampleThumbSize,
                 range = 80f..360f,
                 onChange = viewModel::setSampleThumbSize,
+                onChangeFinished = viewModel::saveChartView,
                 modifier = Modifier.weight(1f),
             )
         }

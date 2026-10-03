@@ -2,7 +2,7 @@
 
 Ranko ("AxlRanko") is the desktop GUI, built with Kotlin Multiplatform + Compose Multiplatform (JVM desktop target). It is a **controller, not a trainer**: it manages the dataset, edits the config, and drives the detached Python training process through the IPC helper (`api.py`).
 
-The chrome is the same **Sky & Sakura** night palette as KataHana (deep purple, sakura pink, sky blue, Nunito, porcelain cards). Utils → **Appearance** can switch the backdrop (solid / glow orbs / a local image), **card blur** vs **background blur** (independent; cards/nav vs the wallpaper in the gaps), font scale (text only), icon scale (icons, padding, component size), and **thumbnail quality** (JPEG 1–100 for dataset/sample thumbs over IPC). Those prefs live in Java Preferences, not `config.toml`.
+The chrome follows KataHana's porcelain cards and Nunito, on an amber night palette: warm near-black surfaces and the logo amber `#F8A818` as the brand accent (`ui/theme/Color.kt`). Utils → **Appearance** can switch the backdrop (solid / glow orbs / a local image), **card blur** vs **background blur** (independent; cards/nav vs the wallpaper in the gaps), font scale (text only), icon scale (icons, padding, component size), and **thumbnail quality** (JPEG 1–100 for dataset/sample thumbs over IPC). Those prefs live in Java Preferences, not `config.toml`.
 
 ![Dashboard — charts after a run](screenshots/dashboard-charts.webp)
 
@@ -22,9 +22,13 @@ cd ranko
 ./gradlew :desktopApp:packageDeb     # package an installer (also: packageDmg / packageMsi)
 ```
 
-## The five tabs
+## The six tabs
 
-The app opens with a floating, draggable navigation rail (Images / Statistics / Utils / Dashboard / Automation). It snaps to the nearest window edge, collapses to a ball after a short idle (tap to expand), and stays inside the window when dragged or when the window is resized. State is app-scoped, so switching tabs never loses your place.
+The app opens on **Home**, with a floating, draggable navigation rail (Home / Images / Statistics / Utils / Dashboard / Automation). It snaps to the nearest window edge, collapses to a ball after a short idle (tap to expand), and stays inside the window when dragged or when the window is resized. State is app-scoped, so switching tabs never loses your place.
+
+### Home — brand, recent runs, module cards
+
+Wide windows put a brand card at the top left (logo, AxlRanko, version, commit) with a changelog under it, and on the right a scrolling list of recent training runs with the module cards underneath. A run row opens the Dashboard on that run. Each card shows a short status: Dashboard (phase, step/total, GPU/VRAM/temperature/RAM, a mini Avg Loss chart, the newest samples), Automation (the job in progress or the latest one, and up to two rows of its newest images), Utils (named config fields), Statistics (folder, image and caption counts, a short tag-frequency bar chart), Images (folder counts, plus up to two rows of pictures drawn from every dataset). Narrow windows stack the same blocks. The page polls only while it is open.
 
 ### Images — dataset caption editor
 
@@ -351,7 +355,7 @@ of the app uses, so no new image path exists.
 - **Pan**: drag horizontally/vertically.
 - **Zoom X**: `Ctrl` + mouse wheel (anchored at the cursor).
 - **Zoom Y**: `Shift` + mouse wheel.
-- **Default window**: a chart whose x axis counts steps opens on the newest **800 steps** of the run (shorter runs show everything). The Steps slider above the charts changes that window (100–8000). The Y clip slider changes the percentile tail used for Avg Loss and Train/Loss and defaults to **15%**. The Smooth + slider adds that many dp to the smoothed stroke (default **1.2 dp**, range 0–6). Steps, Y clip and Smooth + are stored in the run's `chart_view.json` under its log directory. Widening Steps refits the curves into that window as the slider moves. The y range is fitted to the smoothed points inside the window and then expanded so the newest point stays visible. Hardware charts, whose x axis is time, keep their whole range and are not clipped.
+- **Default window**: a chart whose x axis counts steps opens on the newest **800 steps** of the run (shorter runs show everything). The Steps slider above the charts changes that window (100–8000). The Y clip slider changes the percentile tail used for Avg Loss and Train/Loss and defaults to **15%**. The Smooth + slider adds that many dp to the smoothed stroke (default **1.2 dp**, range 0–6). Steps, Y clip, Smooth + and Sample Size (default **180 dp**, range 80–360) are stored in the run's `chart_view.json` under its log directory. Widening Steps refits the curves into that window as the slider moves. The y range is fitted to the smoothed points inside the window and then expanded so the newest point stays visible. Hardware charts, whose x axis is time, keep their whole range and are not clipped.
 - **Checkpoint pick**: `Ctrl` + left click on **Train / Avg Loss** (a click, not a drag) resolves the checkpoint nearest to the clicked step and opens a floating panel (see below). A left **double click** does the same and is the trigger without a keyboard: two clicks within 400 ms, *wherever* they land — only the interval counts, not the distance between them — and the panel opens at the **second** click. A `Ctrl`+click picks immediately and never pairs with a following plain click; a third quick click starts a new pair rather than picking again; the click that fires must be inside the plot (the first one may be anywhere on the chart). The chart then marks the clicked step with a dashed line and the step the pick actually matched with a bold accent line, a dot, an axis flag and a `ckpt <step>` label, so the snapping is visible. Both marks disappear when the panel is closed.
 - Series are EMA-smoothed (slider), downsampled with LTTB to ≤500 points, and the initial viewport clips outlier percentiles.
 
